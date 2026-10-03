@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Eris — Login</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/auth.css" />
+</head>
+<body>
+  <main class="auth">
+    <div class="auth-card">
+      <h1 class="auth-brand">Eris</h1>
+      <div class="auth-tabs" role="tablist">
+        <button type="button" id="tabLogin" class="on" role="tab">Login</button>
+        <button type="button" id="tabReg" role="tab">Register</button>
+      </div>
+      <form id="fLogin">
+        <input id="liEmail" type="email" placeholder="Email" autocomplete="email" required />
+        <input id="liPw" type="password" placeholder="Password" autocomplete="current-password" required />
+        <div class="err" id="liErr" hidden></div>
+        <button class="auth-go" type="submit">Login</button>
+      </form>
+      <form id="fReg" hidden>
+        <input id="rgName" type="text" placeholder="Name" autocomplete="name" required />
+        <input id="rgEmail" type="email" placeholder="Email" autocomplete="email" required />
+        <input id="rgPw" type="password" placeholder="Password (min 6)" autocomplete="new-password" required />
+        <div class="err" id="rgErr" hidden></div>
+        <button class="auth-go" type="submit">Create account</button>
+      </form>
+    </div>
+  </main>
+  <script src="/auth.js"></script>
+</body>
+</html>

@@ -1,0 +1,89 @@
+.auth {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--space);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 340px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 28px 24px 24px;
+}
+
+.auth-brand {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 16px;
+  text-align: center;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.auth-tabs button {
+  flex: 1;
+  height: 34px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auth-tabs button.on {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.auth form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auth form[hidden] {
+  display: none;
+}
+
+.auth input {
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.auth input:focus {
+  outline: none;
+  border-color: var(--text);
+}
+
+.auth .err {
+  margin-top: 0;
+}
+
+.auth-go {
+  height: 38px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+}

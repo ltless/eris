@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Eris</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/sidebar.css" />
+</head>
+
+<body>
+  <div class="layout">
+
+    <aside class="side" id="side" aria-label="Chat history">
+      <div class="side-top">
+        <button class="side-toggle" id="sideToggle" aria-label="Collapse sidebar" aria-expanded="true"
+          title="Collapse sidebar (Ctrl+B)">
+          <span class="ic">
+            <svg class="icon-collapse" viewBox="0 0 24 24">
+              <rect x="3" y="4" width="18" height="16" rx="3" />
+              <path d="M9 4v16" />
+            </svg>
+            <svg class="icon-expand" viewBox="0 0 24 24">
+              <rect x="3" y="4" width="18" height="16" rx="3" />
+              <path d="M15 4v16" />
+            </svg>
+          </span>
+        </button>
+        <span class="side-brand">Eris</span>
+      </div>
+
+      <button class="side-new" id="sideNew" title="New chat">
+        <span class="ic"><svg viewBox="0 0 24 24">
+            <path d="M12 5v14M5 12h14" />
+          </svg></span>
+        <span class="lbl">New chat</span>
+      </button>
+
+      <div class="side-title"><span>History</span></div>
+      <nav class="side-history" id="sideHistory"></nav>
+
+      <div class="side-foot">
+        <button class="side-profile" id="sideProfile" title="Logout">
+          <span class="ic"><span class="side-avatar" id="sideAvatar">ME</span></span>
+          <span class="lbl" id="sideName">My account</span>
+        </button>
+      </div>
+    </aside>
+    <div class="side-scrim" id="sideScrim"></div>
+
+    <main class="main">
+      <header class="header">
+        <button class="menu-btn" id="menuBtn" aria-label="Open sidebar">
+          <svg viewBox="0 0 24 24">
+            <line x1="4" y1="6" x2="20" y2="6" />
+            <line x1="4" y1="12" x2="20" y2="12" />
+            <line x1="4" y1="18" x2="20" y2="18" />
+          </svg>
+        </button>
+        <div class="header-meta">
+          <h1 id="chatTitle">New chat</h1>
+        </div>
+        <div class="seg" role="tablist" aria-label="Chat mode">
+          <button type="button" id="modeAgentic" class="on" role="tab" title="Agentic mode">Agentic</button>
+          <button type="button" id="modePlanning" role="tab" title="Planning mode">Planning</button>
+        </div>
+      </header>
+
+      <section id="messages" class="messages">
+        <div class="empty" id="empty">
+          <p>Ask anything. Attach files or images. Markdown supported.</p>
+        </div>
+      </section>
+
+      <footer class="composer" id="composer">
+        <form id="form">
+          <div class="box" id="box">
+            <div id="atts" class="atts" hidden></div>
+            <textarea id="input" rows="1" placeholder="Ask Eris anything…" aria-label="Message"></textarea>
+            <div class="tools">
+              <button type="button" class="tool" id="attach" title="Attach files or images" aria-label="Attach file">
+                <svg viewBox="0 0 24 24">
+                  <path
+                    d="M21 12.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3" />
+                </svg>
+              </button>
+              <button type="button" class="tool" id="mic" title="Voice input" aria-label="Voice input" aria-pressed="false">
+                <svg viewBox="0 0 24 24">
+                  <rect x="9" y="3" width="6" height="11" rx="3" />
+                  <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+                </svg>
+              </button>
+              <button type="button" class="tool" id="searchBtn" aria-pressed="true" title="Search your documents">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+                </svg>
+              </button>
+              <button type="submit" class="send" id="send" title="Send (Enter)" aria-label="Send message" disabled>
+                <svg class="icon-send" viewBox="0 0 24 24">
+                  <path d="M12 19V5M5 12l7-7 7 7" />
+                </svg>
+                <svg class="icon-stop" viewBox="0 0 24 24">
+                  <rect x="4" y="4" width="16" height="16" rx="3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="bar">
+            <span class="spacer"></span>
+            <span class="count" id="count"></span>
+          </div>
+        </form>
+        <div class="hint">Enter to send · Shift+Enter for new line</div>
+        <input type="file" id="fileInput" accept="application/pdf,text/*,image/*" multiple hidden />
+      </footer>
+    </main>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="/sidebar.js"></script>
+  <script src="/app.js"></script>
+</body>
+
+</html>

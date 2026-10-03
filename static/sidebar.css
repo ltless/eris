@@ -1,0 +1,419 @@
+/* ==========================================================================
+   Eris Sidebar — Minimalist, Slim, Modern, Monochrome
+   Adheres to AGENTS.md: no motion, 1px hairline, ink #111113
+   Icon axis locked at 28px (pad 8px + slot 40px/2) across both modes.
+   ========================================================================== */
+
+:root {
+  --sw: 240px;
+  --rail: 56px;
+  --pad: 8px;
+  --gut: 40px;
+  --row: 34px;
+  --side-radius: 6px;
+}
+
+.layout {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+}
+
+/* --- Container Sidebar --- */
+.side {
+  width: var(--sw);
+  height: 100%;
+  box-sizing: border-box;
+  background-color: var(--bg);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: var(--pad);
+  flex-shrink: 0;
+  user-select: none;
+  font-family: var(--font);
+}
+
+.side * {
+  box-sizing: border-box;
+}
+
+/* Collapsed Mode (Rail 56px) */
+.side.collapsed {
+  width: var(--rail);
+}
+
+/* --- Icon Cell & Label --- */
+.ic {
+  width: var(--gut);
+  min-width: var(--gut);
+  height: var(--row);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.ic svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.lbl {
+  min-width: 0;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 6px;
+}
+
+/* Hide text labels when collapsed */
+.side.collapsed .lbl,
+.side.collapsed .side-brand,
+.side.collapsed .side-title,
+.side.collapsed .side-empty {
+  display: none !important;
+}
+
+/* Narrow rows to icon slot width when collapsed */
+.side.collapsed .side-top,
+.side.collapsed .side-new,
+.side.collapsed .side-row,
+.side.collapsed .side-profile {
+  width: var(--gut);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* --- 1. Header (Toggle & Brand) --- */
+.side-top {
+  display: flex;
+  align-items: center;
+  height: var(--row);
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+.side-toggle {
+  width: var(--gut);
+  height: var(--row);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--side-radius);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.side-toggle:hover {
+  background: transparent;
+  color: var(--faint);
+}
+
+.side-toggle .icon-collapse { display: block; }
+.side-toggle .icon-expand { display: none; }
+.side.collapsed .side-toggle .icon-collapse { display: none; }
+.side.collapsed .side-toggle .icon-expand { display: block; }
+
+.side-brand {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- 2. Action: New Chat --- */
+.side-new {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--row);
+  margin-bottom: 8px;
+  border: none;
+  border-radius: var(--side-radius);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+}
+
+.side-new .ic {
+  color: var(--muted);
+}
+
+.side-new:hover {
+  background: transparent;
+  color: var(--text);
+}
+
+.side-new:hover .ic {
+  color: var(--faint);
+}
+
+/* --- 3. Chat History --- */
+.side-title {
+  margin: 6px 0 4px;
+  padding: 4px 8px 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.side-history {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+}
+
+.side-history::-webkit-scrollbar {
+  width: 4px;
+}
+
+.side-history::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.side-history::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+.side-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--row);
+  border-radius: var(--side-radius);
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+}
+
+.side-row .lbl {
+  color: var(--muted);
+}
+
+.side-row:hover {
+  background: transparent;
+  color: var(--faint);
+}
+
+.side-row:hover .ic,
+.side-row:hover .lbl {
+  color: var(--faint);
+}
+
+.side-row.active {
+  background: transparent;
+  color: var(--text);
+}
+
+.side-row.active .ic,
+.side-row.active .lbl {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.side-row .row-x {
+  display: none;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.side-row:hover .row-x {
+  display: inline-flex;
+}
+
+.side-row .row-x:hover {
+  color: var(--text);
+}
+
+.side-row .row-x svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.side-row.pinned .lbl {
+  color: var(--text);
+}
+
+.side-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* --- 4. Footer & Profile --- */
+.side-foot {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.side-profile {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--row);
+  border-radius: var(--side-radius);
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+}
+
+.side-profile:hover {
+  background: transparent;
+  color: var(--faint);
+}
+
+.side-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.side button:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+/* --- Mobile Drawer (≤ 768px) --- */
+.menu-btn {
+  display: none;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border: none;
+  border-radius: var(--side-radius);
+  background: none;
+  cursor: pointer;
+  color: var(--text);
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.menu-btn:hover {
+  background: transparent;
+  color: var(--faint);
+}
+
+.menu-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.side-scrim {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .menu-btn {
+    display: inline-flex;
+  }
+
+  .side {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    display: none;
+    width: min(80vw, 260px) !important;
+    z-index: 50;
+    box-shadow: 2px 0 16px rgba(0, 0, 0, 0.08);
+  }
+
+  .side.open {
+    display: flex;
+  }
+
+  .side-scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    z-index: 40;
+  }
+
+  .side-scrim.show {
+    display: block;
+  }
+
+  .side.collapsed {
+    width: min(80vw, 260px) !important;
+  }
+
+  .side.collapsed .lbl,
+  .side.collapsed .side-brand,
+  .side.collapsed .side-title,
+  .side.collapsed .side-empty {
+    display: block !important;
+  }
+
+  .side.collapsed .side-top,
+  .side.collapsed .side-new,
+  .side.collapsed .side-row,
+  .side.collapsed .side-profile {
+    width: 100% !important;
+  }
+}

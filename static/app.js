@@ -1,0 +1,806 @@
+const els = {
+  messages: document.getElementById("messages"),
+  form: document.getElementById("form"),
+  input: document.getElementById("input"),
+  send: document.getElementById("send"),
+  menuBtn: document.getElementById("menuBtn"),
+  chatTitle: document.getElementById("chatTitle"),
+  atts: document.getElementById("atts"),
+  attach: document.getElementById("attach"),
+  fileInput: document.getElementById("fileInput"),
+  box: document.getElementById("box"),
+  mic: document.getElementById("mic"),
+  count: document.getElementById("count"),
+  searchBtn: document.getElementById("searchBtn"),
+  modeAgentic: document.getElementById("modeAgentic"),
+  modePlanning: document.getElementById("modePlanning"),
+};
+
+marked.setOptions({ breaks: true, gfm: true });
+
+const FILE_ICON =
+  '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
+const X_ICON = '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+const DOC_RE =
+  /\.(pdf|txt|md|markdown|csv|tsv|jsonl?|xml|ya?ml|toml|ini|cfg|conf|log|rst|tex|srt|vtt|py|js|jsx|ts|tsx|html?|css|scss|sql|sh|bash|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb|php|vue|svelte|env)$/i;
+const MAX_ATTS = 8;
+const MAX = 4000;
+
+let sessions = [];
+let activeId = null;
+let controller = null;
+let sending = false;
+let atts = [];
+let attSeq = 0;
+let model = "";
+let useRag = true;
+let userName = "";
+let chatMode = "agentic";
+
+const current = () => sessions.find((s) => s.id === activeId);
+
+function render(text) {
+  return DOMPurify.sanitize(marked.parse(text));
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function shortUrl(u) {
+  try {
+    const p = new URL(u);
+    return p.host + p.pathname.replace(/\/$/, "");
+  } catch {
+    return u;
+  }
+}
+
+const SRC_ICON = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>';
+
+function srcLine(x) {
+  const url = x.source || "";
+  const label = x.title || (/^https?:\/\//i.test(url) ? shortUrl(url) : url);
+  if (!/^https?:\/\//i.test(url)) return `<div class="src">${escapeHtml(label)}</div>`;
+  return `<div class="src"><a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${escapeHtml(url)}">${escapeHtml(label)}</a></div>`;
+}
+
+function webSearchBox() {
+  const el = document.createElement("details");
+  el.className = "think websearch";
+  el.innerHTML =
+    `<summary class="think-head">${SRC_ICON}<span class="st"></span></summary><div class="think-body srcs"></div>`;
+  return el;
+}
+
+function fillWebSearch(el, items, label) {
+  el.querySelector(".st").textContent =
+    label || `Searched web · ${items.length} source${items.length > 1 ? "s" : ""}`;
+  el.querySelector(".srcs").innerHTML = items.map(srcLine).join("");
+}
+
+function renderDocChips(container, items) {
+  const docs = (items || []).filter((x) => x.kind !== "web");
+  if (!docs.length) return;
+  const el = document.createElement("div");
+  el.className = "msg-sources";
+  el.innerHTML = docs
+    .map((x) => `<span class="chip" title="${escapeHtml(x.source)}">${escapeHtml(x.source)}</span>`)
+    .join("");
+  container.append(el);
+}
+
+
+function showEmpty() {
+  els.messages.innerHTML =
+    '<div class="empty" id="empty"><p>Ask anything. Attach files or images. Markdown supported.</p></div>';
+}
+
+function addMessage(role, text, images) {
+  document.getElementById("empty")?.remove();
+  const wrap = document.createElement("div");
+  wrap.className = `msg ${role}`;
+  const roleEl = document.createElement("div");
+  roleEl.className = "role";
+  roleEl.textContent = role === "user" ? "You" : "AI";
+  const body = document.createElement("div");
+  body.className = "body";
+  if (images && images.length) {
+    const imgs = document.createElement("div");
+    imgs.className = "imgs";
+    for (const src of images) {
+      const im = document.createElement("img");
+      im.src = src;
+      im.alt = "attachment";
+      im.addEventListener("click", () => window.open(src, "_blank"));
+      imgs.append(im);
+    }
+    body.append(imgs);
+  }
+  if (role === "user") {
+    const t = document.createElement("div");
+    t.className = "bubble";
+    t.textContent = text;
+    body.append(t);
+    const av = document.createElement("div");
+    av.className = "avatar";
+    av.textContent = (userName || "ME").slice(0, 2).toUpperCase();
+    wrap.append(av, body);
+  } else {
+    body.innerHTML = render(text);
+    wrap.append(roleEl, body);
+  }
+  els.messages.append(wrap);
+  els.messages.scrollTop = els.messages.scrollHeight;
+  return body;
+}
+
+function highlight(body) {
+  body.querySelectorAll("pre code").forEach((el) => {
+    if (!el.dataset.hl) {
+      hljs.highlightElement(el);
+      el.dataset.hl = "1";
+    }
+  });
+}
+
+/* ---------- attachments ---------- */
+
+function classify(file) {
+  if (file.type && file.type.startsWith("image/")) return "image";
+  if (file.type === "application/pdf" || file.type.startsWith("text/")) return "doc";
+  if (DOC_RE.test(file.name || "")) return "doc";
+  return null;
+}
+
+function fileToDataURL(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+async function shrinkToDataURL(file) {
+  const raw = await fileToDataURL(file);
+  if (file.type === "image/gif") return raw;
+  try {
+    const img = await new Promise((res, rej) => {
+      const i = new Image();
+      i.onload = () => res(i);
+      i.onerror = rej;
+      i.src = raw;
+    });
+    const scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight));
+    if (scale === 1 && file.size <= 1_000_000) return raw;
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.naturalWidth * scale);
+    c.height = Math.round(img.naturalHeight * scale);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL(file.type === "image/png" ? "image/png" : "image/jpeg", 0.85);
+  } catch {
+    return raw;
+  }
+}
+
+async function addFiles(fileList) {
+  for (const f of [...fileList]) {
+    if (atts.length >= MAX_ATTS) break;
+    const kind = classify(f);
+    const a = { id: ++attSeq, name: f.name || "file", kind: kind || "doc", file: f, status: "ok" };
+    if (!kind) {
+      a.status = "err";
+      a.msg = "unsupported type";
+      atts.push(a);
+      renderAtts();
+      continue;
+    }
+    if (kind === "image") {
+      a.status = "busy";
+      a.msg = "reading…";
+      atts.push(a);
+      renderAtts();
+      try {
+        a.dataUrl = await shrinkToDataURL(f);
+        a.status = "ok";
+        a.msg = "";
+      } catch {
+        a.status = "err";
+        a.msg = "read failed";
+      }
+      renderAtts();
+    } else {
+      atts.push(a);
+      renderAtts();
+    }
+  }
+}
+
+function renderAtts() {
+  els.atts.hidden = atts.length === 0;
+  els.atts.innerHTML = "";
+  for (const a of atts) {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (a.kind === "image" ? " chip-img" : "") + (a.status === "err" ? " err" : "");
+    chip.title = a.name + (a.msg ? ` — ${a.msg}` : "");
+    if (a.kind === "image" && a.dataUrl) {
+      const im = document.createElement("img");
+      im.className = "chip-thumb";
+      im.src = a.dataUrl;
+      im.alt = a.name;
+      chip.append(im);
+    } else {
+      const box = document.createElement("span");
+      box.innerHTML = FILE_ICON;
+      chip.append(box.firstChild);
+      const nm = document.createElement("span");
+      nm.className = "chip-name";
+      nm.textContent = a.name;
+      chip.append(nm);
+      if (a.status === "busy") {
+        const note = document.createElement("span");
+        note.className = "chip-note";
+        note.textContent = a.kind === "image" ? "reading…" : "indexing…";
+        chip.append(note);
+      }
+    }
+    if (a.status === "err" && a.msg) {
+      const note = document.createElement("span");
+      note.className = "chip-note";
+      note.textContent = a.msg;
+      chip.append(note);
+    }
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "chip-x";
+    x.title = "Remove";
+    x.setAttribute("aria-label", `Remove ${a.name}`);
+    x.innerHTML = X_ICON;
+    x.addEventListener("click", () => {
+      atts = atts.filter((t) => t.id !== a.id);
+      renderAtts();
+    });
+    chip.append(x);
+    els.atts.append(chip);
+  }
+  refresh();
+}
+
+function refresh() {
+  const len = els.input.value.length;
+  const has = els.input.value.trim().length > 0 || atts.some((a) => a.kind === "image" && a.status === "ok");
+  const over = len > MAX;
+  els.send.disabled = !sending && (!has || over);
+  els.count.textContent = len + " / " + MAX;
+  els.count.classList.toggle("show", len > MAX * 0.8);
+  els.count.classList.toggle("over", over);
+}
+
+function syncInput() {
+  els.input.style.height = "auto";
+  els.input.style.height = Math.min(els.input.scrollHeight, 200) + "px";
+  refresh();
+}
+
+async function uploadDocs() {
+  const docs = atts.filter((a) => a.kind === "doc" && a.status === "ok");
+  if (!docs.length) return;
+  docs.forEach((a) => (a.status = "busy"));
+  renderAtts();
+  await Promise.all(
+    docs.map(async (a) => {
+      try {
+        const fd = new FormData();
+        fd.append("file", a.file, a.name);
+        const r = await fetch("/api/documents/upload", { method: "POST", body: fd });
+        if (r.status === 401) location.href = "/auth.html";
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : `HTTP ${r.status}`);
+        a.status = "done";
+      } catch (e) {
+        a.status = "err";
+        a.msg = String(e.message || e).slice(0, 120);
+      }
+    })
+  );
+  atts = atts.filter((a) => a.status !== "done");
+  renderAtts();
+}
+
+function syncComposer() {
+  els.searchBtn.setAttribute("aria-pressed", String(useRag));
+}
+
+function setRag(v) {
+  useRag = v;
+  syncComposer();
+  saveSettings();
+}
+
+function loadSettings() {
+  try {
+    useRag = localStorage.getItem("eris-rag") !== "0";
+  } catch {}
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem("eris-rag", useRag ? "1" : "0");
+  } catch {}
+}
+
+
+function loadModel() {
+  fetch("/api/models").then((r) => r.json()).then((j) => {
+    try {
+      model = localStorage.getItem("eris-model") || j.default || "";
+    } catch {
+      model = j.default || "";
+    }
+  }).catch(() => {
+    try {
+      model = localStorage.getItem("eris-model") || "";
+    } catch {}
+  });
+}
+
+/* ---------- sessions ---------- */
+
+function blankChat() {
+  activeId = null;
+  ErisSidebar.setActive(null);
+  els.chatTitle.textContent = "New chat";
+  atts = [];
+  renderAtts();
+  els.messages.innerHTML = "";
+  showEmpty();
+  els.input.value = "";
+  syncInput();
+  els.input.focus();
+}
+
+function loadSession(id) {
+  const s = sessions.find((x) => x.id === id);
+  if (!s) return;
+  activeId = id;
+  ErisSidebar.setActive(id);
+  els.chatTitle.textContent = s.title;
+  atts = [];
+  renderAtts();
+  els.messages.innerHTML = "";
+  const paint = () => {
+    if (!s.messages.length) {
+      showEmpty();
+    } else {
+      s.messages.forEach((m) => {
+        const body = addMessage(m.role, m.content, m.images);
+        if (m.thinking) {
+          const t = document.createElement("details");
+          t.className = "think";
+          t.innerHTML =
+            '<summary class="think-head"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span class="st">Thought</span></summary><div class="think-body"></div>';
+          t.querySelector(".think-body").textContent = m.thinking;
+          body.prepend(t);
+        }
+        if (m.role === "assistant") {
+          const web = (m.sources || []).filter((x) => x.kind === "web");
+          if (web.length) {
+            const w = webSearchBox();
+            fillWebSearch(w, web);
+            const t = body.querySelector(".think");
+            if (t) t.after(w);
+            else body.append(w);
+          }
+          renderDocChips(body, m.sources);
+          highlight(body);
+        }
+      });
+    }
+  };
+  if (!s.messages.length && s.remote) {
+    fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
+      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, remote: true }));
+      s.remote = false;
+      paint();
+    }).catch(paint);
+  } else {
+    paint();
+  }
+}
+
+function toPayload(s) {
+  return s.messages.filter((m) => !m.remote).map((m) => {
+    if (m.images && m.images.length) {
+      const parts = [];
+      if (m.content) parts.push({ type: "text", text: m.content });
+      for (const url of m.images) parts.push({ type: "image_url", image_url: { url } });
+      return { role: m.role, content: parts };
+    }
+    return { role: m.role, content: m.content };
+  });
+}
+
+function setStreaming(on) {
+  els.send.classList.toggle("busy", on);
+  els.send.title = on ? "Stop generation" : "Send (Enter)";
+  els.send.setAttribute("aria-label", on ? "Stop generation" : "Send message");
+  refresh();
+}
+
+async function send(text) {
+  let s = current();
+  if (!s) {
+    s = { id: crypto.randomUUID(), title: "New chat", messages: [] };
+    sessions.unshift(s);
+    activeId = s.id;
+    ErisSidebar.setActive(activeId);
+  }
+  const images = atts.filter((a) => a.kind === "image" && a.status === "ok").map((a) => a.dataUrl);
+
+  sending = true;
+  refresh();
+  await uploadDocs();
+
+  addMessage("user", text, images);
+  s.messages.push({ role: "user", content: text, ...(images.length ? { images } : {}) });
+  if (s.messages.length === 1) {
+    s.title = text.slice(0, 40) || (images.length ? "Image" : "New chat");
+    els.chatTitle.textContent = s.title;
+    ErisSidebar.setChats(sessions);
+  }
+
+  const body = addMessage("assistant", "");
+  const setStatus = (label) => {
+    body.querySelector(".status")?.remove();
+    const el = document.createElement("div");
+    el.className = "status";
+    el.innerHTML = `<span class="dot"></span>${label}`;
+    body.append(el);
+  };
+  setStatus("Sending...");
+  let raw = "";
+  let thinkAll = "";
+  let thinkRaw = "";
+  let thinkEl = null;
+  let thinkStart = 0;
+  let sources = [];
+  let webItems = [];
+  let webEl = null;
+
+  const ensureWebBox = () => {
+    if (!webEl) {
+      webEl = webSearchBox();
+      body.append(webEl);
+    }
+    return webEl;
+  };
+  const thinkDur = () => `Thinking… ${Math.round((Date.now() - thinkStart) / 1000)}s`;
+  const finishThink = () => {
+    if (!thinkEl) return;
+    if (thinkRaw) {
+      thinkEl.querySelector(".think-body").textContent = thinkRaw;
+      thinkEl.querySelector(".st").textContent =
+        `Thought · ${Math.round((Date.now() - thinkStart) / 1000)}s`;
+    } else {
+      thinkEl.remove();
+    }
+    thinkEl = null;
+    thinkRaw = "";
+  };
+
+  controller = new AbortController();
+  setStreaming(true);
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        use_rag: useRag,
+        thinking: true,
+        mode: chatMode,
+        chat_id: s.id,
+        messages: toPayload(s),
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      if (res.status === 401) location.href = "/auth.html";
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const parts = buf.split("\n\n");
+      buf = parts.pop();
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        let evt;
+        try { evt = JSON.parse(data); } catch { continue; }
+
+        if (evt.type === "tool") {
+          finishThink();
+          fillWebSearch(ensureWebBox(), webItems, `Searching web — ${evt.query || "…"}…`);
+        } else if (evt.type === "sources") {
+          sources.push(...evt.items);
+          const web = evt.items.filter((x) => x.kind === "web");
+          if (web.length) {
+            webItems.push(...web);
+            fillWebSearch(ensureWebBox(), webItems);
+          }
+        } else if (evt.type === "thinking") {
+          if (!thinkEl) {
+            thinkStart = Date.now();
+            thinkEl = document.createElement("details");
+            thinkEl.className = "think";
+            thinkEl.innerHTML =
+              '<summary class="think-head"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span class="st"></span></summary><div class="think-body"></div>';
+            body.querySelector(".status")?.remove();
+            body.append(thinkEl);
+          }
+          thinkRaw += evt.text;
+          thinkAll += evt.text;
+          thinkEl.querySelector(".think-body").textContent = thinkRaw;
+          thinkEl.querySelector(".st").textContent = thinkDur();
+          els.messages.scrollTop = els.messages.scrollHeight;
+        } else if (evt.type === "delta") {
+          raw += evt.text;
+          let ans = body.querySelector(".ans");
+          if (!ans) {
+            finishThink();
+            body.querySelector(".status")?.remove();
+            ans = document.createElement("div");
+            ans.className = "ans";
+            body.append(ans);
+          }
+          ans.innerHTML = render(raw) + '<span class="cursor">&#9613;</span>';
+          els.messages.scrollTop = els.messages.scrollHeight;
+        } else if (evt.type === "error") {
+          const err = document.createElement("div");
+          err.className = "err";
+          err.textContent = evt.message;
+          body.append(err);
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") {
+      if (!raw && !thinkAll && !webEl) setStatus("Stopped.");
+    } else {
+      const err = document.createElement("div");
+      err.className = "err";
+      err.textContent = e.message;
+      body.append(err);
+    }
+  } finally {
+    controller = null;
+    sending = false;
+    setStreaming(false);
+    els.input.focus();
+    body.querySelector(".cursor")?.remove();
+    body.querySelector(".status")?.remove();
+    if (!raw && !thinkAll && !webEl && !body.querySelector(".err")) {
+      setStatus("No response.");
+    }
+    finishThink();
+    renderDocChips(body, sources);
+    highlight(body);
+    if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkAll || undefined, ...(sources.length ? { sources } : {}) });
+  }
+}
+
+
+/* ---------- events ---------- */
+
+els.form.addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (sending) {
+    if (controller) controller.abort();
+    return;
+  }
+  const text = els.input.value.trim();
+  if (els.input.value.length > MAX) return;
+  const hasImg = atts.some((a) => a.kind === "image" && a.status === "ok");
+  if (!text && !hasImg) return;
+  els.input.value = "";
+  syncInput();
+  send(text);
+});
+
+els.input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    if (!sending) els.form.requestSubmit();
+  }
+});
+
+els.input.addEventListener("input", syncInput);
+
+els.menuBtn.addEventListener("click", () => ErisSidebar.open());
+
+els.attach.addEventListener("click", () => els.fileInput.click());
+
+els.fileInput.addEventListener("change", () => {
+  addFiles(els.fileInput.files);
+  els.fileInput.value = "";
+});
+
+els.input.addEventListener("paste", (e) => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) {
+    e.preventDefault();
+    addFiles(files);
+  }
+});
+
+for (const ev of ["dragover", "dragenter"]) {
+  els.box.addEventListener(ev, (e) => {
+    e.preventDefault();
+    els.box.classList.add("drag");
+  });
+}
+for (const ev of ["dragleave", "drop"]) {
+  els.box.addEventListener(ev, (e) => {
+    e.preventDefault();
+    els.box.classList.remove("drag");
+  });
+}
+els.box.addEventListener("drop", (e) => {
+  const files = e.dataTransfer?.files;
+  if (files?.length) addFiles(files);
+});
+
+els.searchBtn.addEventListener("click", () => {
+  setRag(!useRag);
+  els.input.focus();
+});
+
+function setMode(m) {
+  chatMode = m;
+  els.modeAgentic.classList.toggle("on", m === "agentic");
+  els.modePlanning.classList.toggle("on", m === "planning");
+  try {
+    localStorage.setItem("eris-mode", m);
+  } catch {}
+}
+
+els.modeAgentic.addEventListener("click", () => setMode("agentic"));
+els.modePlanning.addEventListener("click", () => setMode("planning"));
+
+try {
+  if (localStorage.getItem("eris-mode") === "planning") {
+    chatMode = "planning";
+    els.modeAgentic.classList.remove("on");
+    els.modePlanning.classList.add("on");
+  }
+} catch {}
+
+
+/* ---------- voice input ---------- */
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) {
+  els.mic.hidden = true;
+} else {
+  const rec = new SR();
+  rec.interimResults = false;
+  rec.continuous = false;
+  let listening = false;
+  const endListen = () => {
+    listening = false;
+    els.mic.setAttribute("aria-pressed", "false");
+  };
+  rec.onresult = (e) => {
+    const t = e.results[0][0].transcript;
+    els.input.value = els.input.value.trim()
+      ? els.input.value.replace(/\s+$/, "") + " " + t
+      : t;
+    syncInput();
+    els.input.focus();
+  };
+  rec.onend = endListen;
+  rec.onerror = endListen;
+  els.mic.addEventListener("click", () => {
+    if (listening) {
+      rec.stop();
+      return;
+    }
+    try {
+      rec.start();
+      listening = true;
+      els.mic.setAttribute("aria-pressed", "true");
+    } catch {}
+  });
+}
+
+
+ErisSidebar.init({
+  chats: [],
+  onNew: () => blankChat(),
+  onSelect: (id) => loadSession(id),
+  onPin: async (id, pinned) => {
+    const s = sessions.find((x) => x.id === id);
+    if (s) s.pinned = pinned;
+    ErisSidebar.setChats(sessions);
+    await fetch(`/api/chats/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned }),
+    }).catch(() => {});
+  },
+  onRename: async (id, title) => {
+    const s = sessions.find((x) => x.id === id);
+    if (s) {
+      s.title = (title || "").trim().slice(0, 80) || s.title;
+      if (s.id === activeId) els.chatTitle.textContent = s.title;
+    }
+    ErisSidebar.setChats(sessions);
+    await fetch(`/api/chats/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }).catch(() => {});
+  },
+  onDelete: async (id) => {
+    sessions = sessions.filter((x) => x.id !== id);
+    ErisSidebar.setChats(sessions);
+    await fetch(`/api/chats/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+    if (id === activeId) {
+      if (!sessions.length) {
+        blankChat();
+      } else {
+        loadSession(sessions[0].id);
+      }
+    }
+  },
+});
+
+fetch("/api/auth/me").then((r) => {
+  if (!r.ok) location.href = "/auth.html";
+  return r.json().catch(() => ({}));
+}).then((u) => {
+  if (!u || !u.name) return;
+  userName = u.name;
+  const nm = document.getElementById("sideName");
+  const av = document.getElementById("sideAvatar");
+  if (nm) nm.textContent = u.name;
+  if (av) av.textContent = u.name.slice(0, 2).toUpperCase();
+});
+
+document.getElementById("sideProfile")?.addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  location.href = "/auth.html";
+});
+
+loadSettings();
+syncComposer();
+fetch("/api/chats").then((r) => r.json()).then((j) => {
+  sessions = (j.items || []).map((c) => ({ id: c.id, title: c.title, pinned: !!c.pinned, messages: [], remote: true }));
+  ErisSidebar.setChats(sessions);
+}).catch(() => {}).finally(() => {
+  if (!sessions.length) {
+    blankChat();
+  } else {
+    const first = sessions[0];
+    activeId = first.id;
+    ErisSidebar.setChats(sessions);
+    ErisSidebar.setActive(activeId);
+    els.chatTitle.textContent = first.title || "New chat";
+    showEmpty();
+  }
+});
+loadModel();
+syncInput();
+els.input.focus();

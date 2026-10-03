@@ -1,0 +1,23 @@
+services:
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - chroma-data:/data
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./searxng:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8082/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-changeme-eris-searxng-secret}
+
+volumes:
+  chroma-data:
