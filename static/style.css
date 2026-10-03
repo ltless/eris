@@ -448,11 +448,15 @@ body {
 }
 
 /* Attachment chips */
+/* Attachments strip: image tiles + doc pills, hairline divider under */
 .atts {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 2px 0 10px 0;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0 10px;
+  margin: 0 0 6px;
+  border-bottom: 1px solid var(--border);
 }
 
 .atts[hidden] {
@@ -460,15 +464,23 @@ body {
 }
 
 .atts .chip {
-  height: 30px;
-  max-width: 260px;
-  padding: 0 4px 0 8px;
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
+  height: 32px;
+  max-width: 220px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
 }
 
 .atts .chip > svg {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
   flex: none;
   stroke: currentColor;
   stroke-width: 1.8;
@@ -478,36 +490,55 @@ body {
   color: var(--muted);
 }
 
-.atts .chip.chip-img {
-  height: auto;
-  padding: 3px;
-}
-
-.atts .chip .chip-thumb {
-  width: 34px;
-  height: 34px;
-  border-radius: 4px;
-  object-fit: cover;
-  border: 1px solid var(--border);
-  display: block;
-}
-
 .atts .chip .chip-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .atts .chip .chip-note {
+  flex: none;
   font-size: 11px;
   color: var(--muted);
   white-space: nowrap;
 }
 
+/* Image: square thumb tile, remove button overlaid top-right */
+.atts .chip.chip-img {
+  position: relative;
+  height: 56px;
+  width: 56px;
+  max-width: 56px;
+  padding: 0;
+  border-radius: 8px;
+  background: none;
+}
+
+.atts .chip .chip-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 7px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  display: block;
+}
+
+.atts .chip.chip-img .chip-x {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+/* Error = danger red text only, no fill (monochrome rule) */
 .atts .chip.err {
   color: #d33;
-  background: #fff5f5;
-  border-color: #ffd6d6;
+  border-color: #d33;
 }
 
 .atts .chip.err > svg,

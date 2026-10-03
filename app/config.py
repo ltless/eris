@@ -21,6 +21,11 @@ class Settings:
     searxng_time_range = os.getenv("SEARXNG_TIME_RANGE", "")
 
     rag_top_k = int(os.getenv("RAG_TOP_K", "4"))
+
+    fetch_pages = os.getenv("FETCH_PAGES", "1") == "1"
+    fetch_top = int(os.getenv("FETCH_TOP", "3"))
+    fetch_max_chars = int(os.getenv("FETCH_MAX_CHARS", "2000"))
+    max_tool_rounds = int(os.getenv("MAX_TOOL_ROUNDS", "3"))
     system_prompt = os.getenv(
         "SYSTEM_PROMPT",
         "You are Eris, a helpful assistant. Answer clearly and use markdown when useful.",

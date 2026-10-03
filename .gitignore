@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 users.db
+static/uploads/
 chats.db
 models/
 AGENTS.md

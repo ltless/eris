@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Eris — Settings</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/settings.css" />
+</head>
+<body>
+  <div class="settings" id="settings">
+    <header class="s-head">
+      <a class="s-back" href="/">← Eris</a>
+      <h1>Settings</h1>
+    </header>
+
+    <section class="s-card" id="cardProfile">
+      <div class="s-cover" id="cover"></div>
+      <div class="s-prof">
+        <div class="s-av" id="avatar">ME</div>
+        <div class="s-acts">
+          <button type="button" class="s-btn" id="pickAvatar">Change picture</button>
+          <button type="button" class="s-btn" id="pickCover">Change cover</button>
+        </div>
+      </div>
+      <form id="fName" class="s-row">
+        <label for="inpName">Name</label>
+        <input id="inpName" type="text" maxlength="40" autocomplete="name" />
+        <button type="submit" class="s-go">Save</button>
+      </form>
+      <div class="s-note" id="emailRow"></div>
+    </section>
+
+    <section class="s-card">
+      <h2>Security</h2>
+      <form id="fPw" class="s-grid">
+        <label>Password<input id="pwOld" type="password" autocomplete="current-password" required /></label>
+        <label>New password<input id="pwNew" type="password" autocomplete="new-password" minlength="6" required /></label>
+        <label>Confirm<input id="pwNew2" type="password" autocomplete="new-password" required /></label>
+        <div class="s-msg" id="pwMsg" hidden></div>
+        <button type="submit" class="s-go">Change password</button>
+      </form>
+      <p class="s-note">Changing the password signs out all other sessions.</p>
+    </section>
+
+    <section class="s-card">
+      <h2>Model</h2>
+      <form id="fModel" class="s-grid">
+        <label>Model
+          <select id="selModel"></select>
+        </label>
+        <label>Context window (tokens)
+          <input id="inpCtx" type="number" min="2048" max="262144" step="1024" placeholder="server default" />
+        </label>
+        <label class="s-check"><input id="chkThink" type="checkbox" /> Enable thinking</label>
+        <div class="s-msg" id="modelMsg" hidden></div>
+        <button type="submit" class="s-go">Save</button>
+      </form>
+    </section>
+
+    <section class="s-card">
+      <button type="button" class="s-danger" id="logout">Log out</button>
+    </section>
+  </div>
+
+  <input type="file" id="fileImg" accept="image/*" hidden />
+  <script src="/settings.js"></script>
+</body>
+</html>

@@ -46,6 +46,10 @@ def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=Non
         return
     now = int(time.time() * 1000)
     meta = json.dumps(sources[:MAX_SOURCES]) if sources else None
+    if isinstance(thinking, list):
+        thinking = json.dumps([t[:MAX_THINKING] for t in thinking if t.strip()])
+    elif thinking:
+        thinking = thinking[:MAX_THINKING]
     webj = json.dumps(web) if web else None
     db().execute(
         "INSERT INTO turns(chat_id,role,content,thinking,sources,web,ts) VALUES(?,?,?,?,?,?,?)",
@@ -87,7 +91,8 @@ def turns(user_id, chat_id, limit=100):
     for r in rows:
         t = {"role": r["role"], "content": r["content"]}
         if r["thinking"]:
-            t["thinking"] = r["thinking"]
+            raw = r["thinking"]
+            t["thinking"] = json.loads(raw) if raw.startswith("[") else raw
         if r["sources"]:
             t["sources"] = json.loads(r["sources"])
         if r["web"]:

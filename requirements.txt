@@ -5,3 +5,4 @@ chromadb
 python-dotenv
 python-multipart
 pypdf
+beautifulsoup4

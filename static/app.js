@@ -21,6 +21,8 @@ marked.setOptions({ breaks: true, gfm: true });
 const FILE_ICON =
   '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+const IMG_ICON =
+  '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 16l5-5 4 4 3-3 6 6" /><circle cx="9" cy="9" r="1.4" /></svg>';
 
 const DOC_RE =
   /\.(pdf|txt|md|markdown|csv|tsv|jsonl?|xml|ya?ml|toml|ini|cfg|conf|log|rst|tex|srt|vtt|py|js|jsx|ts|tsx|html?|css|scss|sql|sh|bash|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb|php|vue|svelte|env)$/i;
@@ -190,9 +192,11 @@ function renderAtts() {
   els.atts.innerHTML = "";
   for (const a of atts) {
     const chip = document.createElement("span");
-    chip.className = "chip" + (a.kind === "image" ? " chip-img" : "") + (a.status === "err" ? " err" : "");
-    chip.title = a.name + (a.msg ? ` — ${a.msg}` : "");
-    if (a.kind === "image" && a.dataUrl) {
+    const thumb = a.kind === "image" && a.dataUrl;
+    chip.className = "chip" + (thumb ? " chip-img" : "") + (a.status === "err" ? " err" : "");
+    chip.title = a.msg ? `${a.name} — ${a.msg}` : a.name;
+
+    if (thumb) {
       const im = document.createElement("img");
       im.className = "chip-thumb";
       im.src = a.dataUrl;
@@ -200,25 +204,25 @@ function renderAtts() {
       chip.append(im);
     } else {
       const box = document.createElement("span");
-      box.innerHTML = FILE_ICON;
+      box.innerHTML = a.kind === "image" ? IMG_ICON : FILE_ICON;
       chip.append(box.firstChild);
       const nm = document.createElement("span");
       nm.className = "chip-name";
       nm.textContent = a.name;
       chip.append(nm);
-      if (a.status === "busy") {
+      if (a.status === "err" && a.msg) {
         const note = document.createElement("span");
         note.className = "chip-note";
-        note.textContent = a.kind === "image" ? "reading…" : "indexing…";
+        note.textContent = a.msg;
+        chip.append(note);
+      } else if (a.status === "busy") {
+        const note = document.createElement("span");
+        note.className = "chip-note";
+        note.textContent = a.kind === "image" ? "reading..." : "indexing...";
         chip.append(note);
       }
     }
-    if (a.status === "err" && a.msg) {
-      const note = document.createElement("span");
-      note.className = "chip-note";
-      note.textContent = a.msg;
-      chip.append(note);
-    }
+
     const x = document.createElement("button");
     x.type = "button";
     x.className = "chip-x";
@@ -232,7 +236,6 @@ function renderAtts() {
     chip.append(x);
     els.atts.append(chip);
   }
-  refresh();
 }
 
 function refresh() {
@@ -330,29 +333,38 @@ function loadSession(id) {
     } else {
       s.messages.forEach((m) => {
         const body = addMessage(m.role, m.content, m.images);
-        let lastCtl = null;
-        if (m.thinking) {
-          const th = ErisToolCall.thinking(body);
-          body.prepend(th.el);
-          th.append(m.thinking);
-          th.done("Thought");
-          lastCtl = th;
+        const thinkRounds = Array.isArray(m.thinking) ? m.thinking : m.thinking ? [m.thinking] : [];
+        const web = (m.sources || []).filter((x) => x.kind === "web");
+        const groups = (m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [])
+          .map((g) => ({ r: g.r ?? 0, query: g.query, items: g.items }));
+        const rows = new Map();
+        for (const g of groups) {
+          if (!rows.has(g.r)) rows.set(g.r, []);
+          rows.get(g.r).push(g);
+        }
+        let anchor = null;
+        const put = (el) => {
+          if (anchor) anchor.after(el);
+          else body.prepend(el);
+          anchor = el;
+        };
+        const rounds = Math.max(thinkRounds.length, ...[...rows.keys()].map((r) => r + 1), 0);
+        for (let i = 0; i < rounds; i++) {
+          if (i < thinkRounds.length) {
+            const th = ErisToolCall.thinking(body);
+            put(th.el);
+            th.append(thinkRounds[i]);
+            th.done("Thought");
+          }
+          for (const g of rows.get(i) || []) {
+            const tc = ErisToolCall.webSearch(body);
+            put(tc.el);
+            if (g.query) tc.addQuery(g.query);
+            tc.addResults(g.items);
+            tc.done();
+          }
         }
         if (m.role === "assistant") {
-          const web = (m.sources || []).filter((x) => x.kind === "web");
-          const groups = m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [];
-          if (groups.length) {
-            const tc = ErisToolCall.webSearch(body);
-            if (lastCtl) {
-              lastCtl.el.after(tc.el);
-            }
-            for (const g of groups) {
-              if (g.query) tc.addQuery(g.query);
-              tc.addResults(g.items);
-            }
-            tc.done();
-            lastCtl = tc;
-          }
           renderDocChips(body, m.sources);
           highlight(body);
         }
@@ -403,6 +415,9 @@ async function send(text) {
   refresh();
   await uploadDocs();
 
+  atts = [];
+  renderAtts();
+
   addMessage("user", text, images);
   s.messages.push({ role: "user", content: text, ...(images.length ? { images } : {}) });
   if (s.messages.length === 1) {
@@ -421,10 +436,12 @@ async function send(text) {
   };
   setStatus("Sending...");
   let raw = "";
+  let thinkRounds = [];
   let thinkAll = "";
   let thinkCtl = null;
   let thinkRound = "";
   let webCtl = null;
+  let webR = -1;
   let sources = [];
   let webGroups = [];
 
@@ -432,6 +449,7 @@ async function send(text) {
     if (!thinkCtl) return;
     if (thinkRound) {
       thinkCtl.done();
+      thinkRounds.push(thinkRound);
     } else {
       thinkCtl.el.remove();
     }
@@ -442,6 +460,7 @@ async function send(text) {
     if (!webCtl) return;
     webCtl.done();
     webCtl = null;
+    webR = -1;
   };
 
   controller = new AbortController();
@@ -453,7 +472,6 @@ async function send(text) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         use_rag: useRag,
-        thinking: true,
         mode: chatMode,
         chat_id: s.id,
         messages: toPayload(s),
@@ -485,12 +503,14 @@ async function send(text) {
 
         if (evt.type === "tool") {
           finishThink();
+          if (webCtl && evt.r !== webR) finishWeb();
           if (!webCtl) {
             body.querySelector(".status")?.remove();
             webCtl = ErisToolCall.webSearch(body);
+            webR = evt.r;
           }
           webCtl.addQuery(evt.query || "Search");
-          webGroups.push({ query: evt.query || "", items: [] });
+          webGroups.push({ r: evt.r, query: evt.query || "", items: [] });
         } else if (evt.type === "sources") {
           sources.push(...evt.items);
           const web = evt.items.filter((x) => x.kind === "web");
@@ -551,7 +571,7 @@ async function send(text) {
     finishWeb();
     renderDocChips(body, sources);
     highlight(body);
-    if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkAll || undefined, ...(sources.length ? { sources } : {}), ...(webGroups.filter((g) => g.items.length).length ? { web: webGroups.filter((g) => g.items.length) } : {}) });
+    if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkRounds.length ? thinkRounds : undefined, ...(sources.length ? { sources } : {}), ...(webGroups.filter((g) => g.items.length).length ? { web: webGroups.filter((g) => g.items.length) } : {}) });
   }
 }
 
@@ -730,12 +750,14 @@ fetch("/api/auth/me").then((r) => {
   const nm = document.getElementById("sideName");
   const av = document.getElementById("sideAvatar");
   if (nm) nm.textContent = u.name;
-  if (av) av.textContent = u.name.slice(0, 2).toUpperCase();
+  if (av) {
+    if (u.avatar) av.style.backgroundImage = `url("${u.avatar}")`;
+    else av.textContent = u.name.slice(0, 2).toUpperCase();
+  }
 });
 
-document.getElementById("sideProfile")?.addEventListener("click", async () => {
-  await fetch("/api/auth/logout", { method: "POST" });
-  location.href = "/auth.html";
+document.getElementById("sideProfile")?.addEventListener("click", () => {
+  location.href = "/settings.html";
 });
 
 loadSettings();

@@ -6,8 +6,10 @@ import sys
 
 sys.path.insert(0, ".")
 
+from datetime import datetime, timedelta, timezone
+
 from app import api
-from app.tools import search
+from app.tools import fetch, search
 
 TOOL = search.TOOL
 
@@ -41,13 +43,108 @@ def check_time_range():
 def check_render():
     out = search.render([{"title": "T", "url": "http://u", "snippet": "S"}])
     assert "[1] T — http://u" in out and out.endswith("S")
-    assert search.render([]) == "No results."
+    assert "Do NOT answer from memory" in search.render([])
 
 
 def check_run_accepts_dict():
     search.settings.searxng_url = "http://127.0.0.1:1"
     assert asyncio.run(search.run({"query": "x"})) == []
     assert asyncio.run(search.run("not json")) == []
+
+
+def check_rank():
+    hits = [
+        {"title": "Some blog", "url": "http://blog.example/x", "snippet": "s"},
+        {"title": "GPT-6 Astra announcement - OpenAI", "url": "https://openai.com/index/gpt-6-astra", "snippet": "s"},
+        {"title": "gpt 6 astra discussion", "url": "https://facebook.com/post/1", "snippet": "s"},
+    ]
+    out = search.rank("gpt 6 astra", hits)
+    assert out[0]["url"].startswith("https://openai.com"), out
+    assert out[1]["url"] == "http://blog.example/x", out
+    assert out[2]["url"] == "https://facebook.com/post/1", out
+
+
+def check_rank_freshness_dedup():
+    now = datetime.now(timezone.utc)
+    old_d = (now - timedelta(days=60)).isoformat()
+    new_d = (now - timedelta(days=1)).isoformat()
+    hits = [
+        {"title": "gpt news", "url": "https://a.com/1", "snippet": "", "published": old_d},
+        {"title": "gpt news", "url": "https://b.com/2", "snippet": "", "published": new_d},
+        {"title": "gpt blog", "url": "https://c.com/x?utm_source=tw", "snippet": ""},
+        {"title": "gpt blog dup", "url": "https://c.com/x", "snippet": ""},
+        {"title": "gpt d1", "url": "https://d.com/1", "snippet": ""},
+        {"title": "gpt d2", "url": "https://d.com/2", "snippet": ""},
+        {"title": "gpt d3", "url": "https://d.com/3", "snippet": ""},
+    ]
+    out = search.rank("gpt news", hits, fresh=True)
+    urls = [r["url"] for r in out]
+    assert "https://c.com/x" in urls and "https://c.com/x?utm_source=tw" not in urls, urls
+    assert sum(u.startswith("https://d.com") for u in urls) == 2, urls
+    assert out[0]["url"] == "https://b.com/2", urls
+    # without fresh, recency must not matter between same-score pages
+    out2 = search.rank("gpt news", hits, fresh=False)
+    assert out2[0]["url"] == "https://a.com/1", out2
+
+
+def check_fetch_tool_shape():
+    fn = fetch.TOOL["function"]
+    assert fn["name"] == "fetch_url"
+    assert fn["parameters"]["required"] == ["url"]
+    assert asyncio.run(fetch.run("not json")) == "No URL given."
+    # SSRF: private address never fetched, message says so
+    assert "Could not read" in asyncio.run(fetch.run({"url": "http://127.0.0.1:8000/"}))
+
+
+def check_ssrf_guard():
+    from app.tools import fetch
+
+    for bad in (
+        "http://127.0.0.1/x",
+        "http://localhost:8000/x",
+        "http://10.0.0.5/x",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://172.16.3.2/x",
+        "http://[::1]/x",
+        "ftp://8.8.8.8/x",
+        "http:///",
+    ):
+        assert not fetch.is_public_url(bad), bad
+    assert fetch.is_public_url("http://8.8.8.8/x")
+
+
+def check_extract_text():
+    from app.tools import fetch
+
+    html = (
+        "<html><head><title>T</title><style>.a{color:red}</style></head>"
+        "<body><script>var x=1;</script><h1>Hello</h1><p>  world   again </p></body></html>"
+    )
+    text = fetch.extract_text(html, 100)
+    assert text == "Hello world again", repr(text)
+    assert fetch.extract_text(html, 5) == "Hello"[:5]
+
+    page = (
+        "<html><head><title>T</title></head><body><header>menu menu</header>"
+        "<main><p>real content here</p></main><footer>copyright</footer></body></html>"
+    )
+    assert fetch.extract_text(page, 100) == "real content here"
+
+
+def check_render_page_content():
+    out = search.render([{"title": "T", "url": "http://u", "snippet": "S", "page": "full body text"}])
+    assert "Page content: full body text" in out
+    assert "http://u" in out
+
+
+def check_rag_per_user():
+    import inspect
+
+    from app import rag
+
+    assert not hasattr(rag, "chat_collection")
+    assert "user_id" in inspect.signature(rag.add_document).parameters
+    assert "user_id" in inspect.signature(rag.retrieve).parameters
 
 
 def check_native_stream():
@@ -130,6 +227,10 @@ def check_chats_sqlite():
     assert len(turns[1]["thinking"]) == 8000
     assert len(turns[1]["sources"]) == 8
     assert turns[1]["web"][0]["query"] == "q1"
+
+    chats.save_turn(1, "c1", "assistant", "hal", thinking=["satu", "dua"])
+    last = chats.turns(1, "c1")[-1]
+    assert last["thinking"] == ["satu", "dua"], last
     assert chats.turns(2, "c1") == []
 
     chats.set_meta(1, "c1", title="baru", pinned=True)

@@ -19,10 +19,6 @@ def collection():
     return client().get_or_create_collection(settings.chroma_collection)
 
 
-def chat_collection():
-    return client().get_or_create_collection(settings.chroma_collection + "-chats")
-
-
 async def embed(texts):
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(
@@ -42,7 +38,7 @@ def chunk(text, size=800, overlap=100):
     return [text[i : i + size] for i in range(0, len(text), step) if text[i : i + size].strip()]
 
 
-async def add_document(source, text):
+async def add_document(user_id, source, text):
     chunks = chunk(text)
     if not chunks:
         return 0
@@ -52,17 +48,17 @@ async def add_document(source, text):
         ids=ids,
         embeddings=vectors,
         documents=chunks,
-        metadatas=[{"source": source} for _ in chunks],
+        metadatas=[{"source": source, "user_id": user_id} for _ in chunks],
     )
     return len(chunks)
 
 
-async def retrieve(query, top_k=None):
+async def retrieve(user_id, query, top_k=None):
     top_k = top_k or settings.rag_top_k
     if not query.strip():
         return []
     vectors = await embed([query])
-    res = collection().query(query_embeddings=vectors, n_results=top_k)
+    res = collection().query(query_embeddings=vectors, n_results=top_k, where={"user_id": user_id})
     docs = res.get("documents", [[]])[0]
     metas = res.get("metadatas", [[]])[0]
     return [{"text": d, "source": m.get("source", "")} for d, m in zip(docs, metas)]

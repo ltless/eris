@@ -1,0 +1,218 @@
+/* Settings page. Monochrome, hairlines only, zero animation. */
+
+.settings {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px var(--space) 64px;
+  font-size: 14.5px;
+  color: var(--text);
+}
+
+.settings[hidden] {
+  display: none;
+}
+
+.s-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.s-head h1 {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.s-back {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.s-back:hover,
+.s-back:focus-visible {
+  color: var(--text);
+}
+
+.s-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px;
+  margin: 0 0 16px;
+}
+
+.s-card h2 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+
+/* Profile header */
+.s-cover {
+  height: 120px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-soft) center/cover no-repeat;
+}
+
+.s-prof {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -26px 10px 14px;
+  position: relative;
+}
+
+.s-av {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bg-soft) center/cover no-repeat;
+  border: 2px solid var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+}
+
+.s-acts {
+  display: flex;
+  gap: 6px;
+}
+
+.s-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.s-btn:hover {
+  border-color: var(--text);
+}
+
+.s-btn:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* Forms */
+.s-row,
+.s-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.s-row {
+  grid-template-columns: 1fr auto;
+  align-items: end;
+}
+
+.s-row label {
+  display: block;
+}
+
+.s-grid label {
+  display: grid;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.s-grid label.s-check {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.settings input,
+.settings select {
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  width: 100%;
+}
+
+.settings input:focus,
+.settings select:focus {
+  outline: none;
+  border-color: var(--text);
+}
+
+.s-go {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  justify-self: start;
+}
+
+.s-go:hover {
+  background: var(--text);
+}
+
+.s-go:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.s-danger {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: #d33;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.s-danger:hover {
+  border-color: #d33;
+}
+
+.s-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.s-msg {
+  font-size: 12.5px;
+}
+
+.s-msg.err {
+  color: #d33;
+}
+
+.s-msg.ok {
+  color: var(--muted);
+}
