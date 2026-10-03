@@ -101,6 +101,17 @@ def turns(user_id, chat_id, limit=100):
     return out
 
 
+def drop_last_assistant(user_id, chat_id):
+    row = db().execute(
+        "SELECT rowid FROM turns WHERE chat_id=? AND role='assistant' "
+        "AND chat_id IN (SELECT id FROM chats WHERE user_id=?) ORDER BY rowid DESC LIMIT 1",
+        (chat_id, user_id),
+    ).fetchone()
+    if row:
+        db().execute("DELETE FROM turns WHERE rowid=?", (row["rowid"],))
+        db().commit()
+
+
 def set_meta(user_id, chat_id, title=None, pinned=None):
     cur = db().execute(
         "SELECT id FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)

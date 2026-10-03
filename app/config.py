@@ -26,6 +26,7 @@ class Settings:
     fetch_top = int(os.getenv("FETCH_TOP", "3"))
     fetch_max_chars = int(os.getenv("FETCH_MAX_CHARS", "2000"))
     max_tool_rounds = int(os.getenv("MAX_TOOL_ROUNDS", "3"))
+    deep_tool_rounds = int(os.getenv("DEEP_TOOL_ROUNDS", "8"))
     system_prompt = os.getenv(
         "SYSTEM_PROMPT",
         "You are Eris, a helpful assistant. Answer clearly and use markdown when useful.",

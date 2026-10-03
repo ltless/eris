@@ -116,7 +116,7 @@ FRESH_RE = re.compile(
 )
 
 
-def render(results):
+def render(results, start=0):
     if not results:
         return (
             "No web results were found for this query. Tell the user you "
@@ -125,9 +125,11 @@ def render(results):
     head = f"Web results (as of {date.today().isoformat()}):\n\n"
     parts = []
     for i, r in enumerate(results):
-        block = f"[{i + 1}] {r['title']} — {r['url']}\n{r['snippet']}"
+        block = f"[{start + i + 1}] {r['title']} — {r['url']}\n{r['snippet']}"
         if r.get("page"):
             block += f"\nPage content: {r['page']}"
+        elif "page" in r:
+            block += "\n(the full page could not be read — snippet only)"
         parts.append(block)
     return head + "\n\n".join(parts)
 
@@ -184,6 +186,6 @@ async def run(args):
         pages = await fetch.fetch_pages(
             [h["url"] for h in hits[: settings.fetch_top]], settings.fetch_max_chars
         )
-        for h in hits:
+        for h in hits[: settings.fetch_top]:
             h["page"] = pages.get(h["url"])
     return hits

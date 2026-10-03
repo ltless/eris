@@ -24,6 +24,7 @@ from pypdf import PdfReader
 from ..config import settings
 
 TIMEOUT = 12
+MIN_READABLE = 200
 MAX_BYTES = 2_000_000
 MAX_REDIRECTS = 5
 USER_AGENT = "Mozilla/5.0 (compatible; ErisBot/1.0)"
@@ -109,9 +110,9 @@ async def fetch_page(client, url, max_chars):
                 text = "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(raw)).pages)
             except Exception:
                 return None
-            text = re.sub(r"\s+", " ", text).strip()
-            return text[:max_chars] or None
-        return extract_text(raw.decode("utf-8", errors="ignore"), max_chars)
+        else:
+            text = extract_text(raw.decode("utf-8", errors="ignore"), max_chars)
+        return text if text and len(text) >= MIN_READABLE else None
     return None
 
 

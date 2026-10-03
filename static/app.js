@@ -13,7 +13,7 @@ const els = {
   count: document.getElementById("count"),
   searchBtn: document.getElementById("searchBtn"),
   modeAgentic: document.getElementById("modeAgentic"),
-  modePlanning: document.getElementById("modePlanning"),
+  modeDeep: document.getElementById("modeDeep"),
 };
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -55,11 +55,31 @@ function renderDocChips(container, items) {
   const el = document.createElement("div");
   el.className = "msg-sources";
   el.innerHTML = docs
-    .map((x) => `<span class="chip" title="${escapeHtml(x.source)}">${escapeHtml(x.source)}</span>`)
+    .map((x) => {
+      const n = x.n ? `<span class="chip-n">${x.n}</span>` : "";
+      return `<span class="chip" title="${escapeHtml(x.source)}">${n}${escapeHtml(x.source)}</span>`;
+    })
     .join("");
   container.append(el);
 }
 
+
+function addRegen(body, s) {
+  if (body.querySelector(".regen")) return;
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "regen";
+  b.textContent = "Regenerate";
+  b.title = "Re-answer the last question (replaces this response)";
+  b.addEventListener("click", () => {
+    if (sending) return;
+    const last = s.messages.at(-1);
+    const q = s.messages.at(-2);
+    if (!last || last.role !== "assistant" || !q || q.role !== "user" || typeof q.content !== "string" || !q.content || (q.images && q.images.length)) return;
+    send(q.content, true);
+  });
+  body.append(b);
+}
 
 function showEmpty() {
   els.messages.innerHTML =
@@ -110,8 +130,69 @@ function highlight(body) {
     if (!el.dataset.hl) {
       hljs.highlightElement(el);
       el.dataset.hl = "1";
+      addCopy(el);
     }
   });
+}
+
+function addCopy(codeEl) {
+  const pre = codeEl.parentElement;
+  if (!pre || pre.querySelector(".cp")) return;
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "cp";
+  b.title = "Copy code";
+  b.textContent = "Copy";
+  b.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(codeEl.textContent);
+      b.textContent = "Copied";
+      setTimeout(() => {
+        b.textContent = "Copy";
+      }, 1500);
+    } catch {
+      b.textContent = "Failed";
+    }
+  });
+  pre.append(b);
+}
+
+function linkCitations(body, items) {
+  const ans = body.querySelector(".ans");
+  if (!ans) return;
+  const byN = new Map((items || []).filter((x) => x.n).map((x) => [x.n, x]));
+  const walker = document.createTreeWalker(ans, NodeFilter.SHOW_TEXT);
+  const targets = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.parentElement.closest("pre, code, a")) continue;
+    if (/\[\d{1,3}\]/.test(node.textContent)) targets.push(node);
+  }
+  for (const node of targets) {
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    for (const hit of node.textContent.matchAll(/\[(\d{1,3})\]/g)) {
+      frag.append(document.createTextNode(node.textContent.slice(last, hit.index)));
+      const a = document.createElement("a");
+      a.className = "cite";
+      a.textContent = `[${hit[1]}]`;
+      const src = byN.get(parseInt(hit[1], 10));
+      if (src && src.kind === "web" && /^https?:\/\//i.test(src.source)) {
+        a.href = src.source;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.title = src.source;
+      } else if (src) {
+        a.title = src.source;
+      } else {
+        a.className = "cite cite-x";
+        a.title = "source not in this answer";
+      }
+      frag.append(a);
+      last = hit.index + hit[0].length;
+    }
+    frag.append(document.createTextNode(node.textContent.slice(last)));
+    node.replaceWith(frag);
+  }
 }
 
 /* ---------- attachments ---------- */
@@ -367,6 +448,8 @@ function loadSession(id) {
         if (m.role === "assistant") {
           renderDocChips(body, m.sources);
           highlight(body);
+          linkCitations(body, m.sources);
+          if (m === s.messages.at(-1) && m.content) addRegen(body, s);
         }
       });
     }
@@ -401,7 +484,7 @@ function setStreaming(on) {
   refresh();
 }
 
-async function send(text) {
+async function send(text, regen = false) {
   let s = current();
   if (!s) {
     s = { id: crypto.randomUUID(), title: "New chat", messages: [] };
@@ -409,21 +492,29 @@ async function send(text) {
     activeId = s.id;
     ErisSidebar.setActive(activeId);
   }
-  const images = atts.filter((a) => a.kind === "image" && a.status === "ok").map((a) => a.dataUrl);
+  let images = [];
+
+  if (!regen) {
+    images = atts.filter((a) => a.kind === "image" && a.status === "ok").map((a) => a.dataUrl);
+    await uploadDocs();
+    atts = [];
+    renderAtts();
+  }
 
   sending = true;
   refresh();
-  await uploadDocs();
 
-  atts = [];
-  renderAtts();
-
-  addMessage("user", text, images);
-  s.messages.push({ role: "user", content: text, ...(images.length ? { images } : {}) });
-  if (s.messages.length === 1) {
-    s.title = text.slice(0, 40) || (images.length ? "Image" : "New chat");
-    els.chatTitle.textContent = s.title;
-    ErisSidebar.setChats(sessions);
+  if (!regen) {
+    addMessage("user", text, images);
+    s.messages.push({ role: "user", content: text, ...(images.length ? { images } : {}) });
+    if (s.messages.length === 1) {
+      s.title = text.slice(0, 40) || (images.length ? "Image" : "New chat");
+      els.chatTitle.textContent = s.title;
+      ErisSidebar.setChats(sessions);
+    }
+  } else if (s.messages.at(-1)?.role === "assistant") {
+    s.messages.pop();
+    els.messages.lastElementChild?.remove();
   }
 
   const body = addMessage("assistant", "");
@@ -474,6 +565,7 @@ async function send(text) {
         use_rag: useRag,
         mode: chatMode,
         chat_id: s.id,
+        regenerate: regen,
         messages: toPayload(s),
       }),
       signal: controller.signal,
@@ -571,7 +663,9 @@ async function send(text) {
     finishWeb();
     renderDocChips(body, sources);
     highlight(body);
+    linkCitations(body, sources);
     if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkRounds.length ? thinkRounds : undefined, ...(sources.length ? { sources } : {}), ...(webGroups.filter((g) => g.items.length).length ? { web: webGroups.filter((g) => g.items.length) } : {}) });
+    if (raw) addRegen(body, s);
   }
 }
 
@@ -644,20 +738,18 @@ els.searchBtn.addEventListener("click", () => {
 function setMode(m) {
   chatMode = m;
   els.modeAgentic.classList.toggle("on", m === "agentic");
-  els.modePlanning.classList.toggle("on", m === "planning");
+  els.modeDeep.classList.toggle("on", m === "deep");
   try {
     localStorage.setItem("eris-mode", m);
   } catch {}
 }
 
 els.modeAgentic.addEventListener("click", () => setMode("agentic"));
-els.modePlanning.addEventListener("click", () => setMode("planning"));
+els.modeDeep.addEventListener("click", () => setMode("deep"));
 
 try {
-  if (localStorage.getItem("eris-mode") === "planning") {
-    chatMode = "planning";
-    els.modeAgentic.classList.remove("on");
-    els.modePlanning.classList.add("on");
+  if (localStorage.getItem("eris-mode") === "deep") {
+    setMode("deep");
   }
 } catch {}
 

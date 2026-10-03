@@ -9,7 +9,7 @@ sys.path.insert(0, ".")
 from datetime import datetime, timedelta, timezone
 
 from app import api
-from app.tools import fetch, search
+from app.tools import calc, doc_search, fetch, search
 
 TOOL = search.TOOL
 
@@ -96,6 +96,45 @@ def check_fetch_tool_shape():
     assert "Could not read" in asyncio.run(fetch.run({"url": "http://127.0.0.1:8000/"}))
 
 
+def check_numbering():
+    out = search.render([{"title": "A", "url": "http://a", "snippet": "s"}], start=4)
+    assert "[5] A" in out, out
+    docs = doc_search.render([{"source": "f.txt", "text": "isi"}], start=4)
+    assert "[5] (f.txt)" in docs, docs
+
+
+def check_drop_last_assistant():
+    import os
+    import tempfile
+    from app import chats
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    os.environ["CHAT_DB"] = path
+    chats._db = None
+
+    chats.save_turn(1, "c1", "user", "q")
+    chats.save_turn(1, "c1", "assistant", "ans1")
+    chats.save_turn(1, "c1", "user", "q2")
+    chats.save_turn(1, "c1", "assistant", "ans2")
+
+    chats.drop_last_assistant(1, "c1")
+    turns = chats.turns(1, "c1")
+    assert [x["content"] for x in turns] == ["q", "ans1", "q2"], turns
+
+    chats.drop_last_assistant(1, "c1")
+    assert [x["content"] for x in chats.turns(1, "c1")] == ["q", "q2"], chats.turns(1, "c1")
+    chats.drop_last_assistant(1, "c1")
+    assert [x["content"] for x in chats.turns(1, "c1")] == ["q", "q2"], chats.turns(1, "c1")
+    chats.drop_last_assistant(9, "nope")
+
+    chats._db.close()
+    chats._db = None
+    del os.environ["CHAT_DB"]
+    os.unlink(path)
+
+
 def check_ssrf_guard():
     from app.tools import fetch
 
@@ -135,6 +174,35 @@ def check_render_page_content():
     out = search.render([{"title": "T", "url": "http://u", "snippet": "S", "page": "full body text"}])
     assert "Page content: full body text" in out
     assert "http://u" in out
+
+    failed = search.render([{"title": "T", "url": "http://u", "snippet": "S", "page": None}])
+    assert "could not be read" in failed
+    skipped = search.render([{"title": "T", "url": "http://u", "snippet": "S"}])
+    assert "could not be read" not in skipped
+
+
+def check_calc():
+    assert asyncio.run(calc.run({"expression": "2*1000000 + 6*3000000"})) == "2*1000000 + 6*3000000 = 20000000"
+    assert "= 2.5" in asyncio.run(calc.run({"expression": "5/2"}))
+    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "__import__('os').system('echo x')"}))
+    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "'abc'}"}))
+    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "2**9999999"}))
+    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "1/0"}))
+    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "9**9**9"}))
+    assert "= 81" in asyncio.run(calc.run({"expression": "(1+2)**(2+2)"}))
+    assert "no expression" in asyncio.run(calc.run({}))
+
+
+def check_doc_search_shape():
+    fn = doc_search.TOOL["function"]
+    assert fn["name"] == "doc_search"
+    assert fn["parameters"]["required"] == ["query"]
+    assert "do not invent" in doc_search.render([])
+    out = doc_search.render([{"source": "a.txt", "text": "halo"}])
+    assert "[1] (a.txt)" in out
+
+    from app import api as api_mod
+    assert api_mod.TOOL_NAMES == {"web_search", "fetch_url", "calc", "doc_search"}
 
 
 def check_rag_per_user():

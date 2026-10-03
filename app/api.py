@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from . import auth, chats, rag
 from .config import settings
-from .tools import fetch, search
+from .tools import calc, doc_search, fetch, search
 
 app = FastAPI(title="Eris")
 
@@ -53,6 +53,7 @@ class ChatRequest(BaseModel):
     thinking: bool = False
     mode: str = "agentic"
     chat_id: str | None = None
+    regenerate: bool = False
 
 
 class RegisterRequest(BaseModel):
@@ -71,6 +72,18 @@ def require_user(session: str | None = Cookie(None)):
     if not u:
         raise HTTPException(401, "Login required")
     return u
+
+
+def tool_result(call, content):
+    m = {"role": "tool", "content": content}
+    if call.get("id"):
+        m["tool_call_id"] = call["id"]
+    return m
+
+
+TOOL_NAMES = {
+    t["function"]["name"] for t in (search.TOOL, fetch.TOOL, calc.TOOL, doc_search.TOOL)
+}
 
 
 def sse(obj):
@@ -169,10 +182,20 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
             "\n\nUse the context below when relevant. "
             "Cite sources as [n].\n\nContext:\n" + context
         )
+    if req.mode == "deep":
+        sys_prompt += (
+            "\n\nDeep research mode: run focused searches, read the pages, "
+            "and if coverage is still thin, search again with different terms "
+            "before answering. Only claim what you fetched; state gaps plainly."
+        )
+    rounds = settings.deep_tool_rounds if req.mode == "deep" else settings.max_tool_rounds
     messages = [{"role": "system", "content": sys_prompt}] + messages
 
     async def gen():
-        used = [{"source": s["source"], "kind": "doc"} for s in sources]
+        if req.regenerate:
+            chats.drop_last_assistant(u["id"], req.chat_id)
+        used = [{"n": i + 1, "source": s["source"], "kind": "doc"} for i, s in enumerate(sources)]
+        next_n = len(used)
         if sources:
             yield sse({"type": "sources", "items": used})
         answer = []
@@ -180,9 +203,9 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         web_groups = []
         msgs = messages
         try:
-            for round_no in range(settings.max_tool_rounds):
+            for round_no in range(rounds):
                 calls = []
-                tools = [search.TOOL, fetch.TOOL]
+                tools = [search.TOOL, fetch.TOOL, calc.TOOL, doc_search.TOOL]
                 async for kind, text in stream_completion(
                     msgs, model=model, thinking=thinking, tools=tools, ctx=ctx
                 ):
@@ -199,13 +222,11 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                 valid = []
                 for call in calls:
                     fn = call.get("function") or {}
-                    if fn.get("name") not in (
-                        search.TOOL["function"]["name"],
-                        fetch.TOOL["function"]["name"],
-                    ):
+                    name = fn.get("name")
+                    if name not in TOOL_NAMES:
                         continue
                     valid.append(call)
-                    if fn.get("name") == search.TOOL["function"]["name"]:
+                    if name == search.TOOL["function"]["name"]:
                         args = fn.get("arguments") or {}
                         yield sse({"type": "tool", "r": round_no, "query": str(args.get("query", "") or "")})
                 if not valid:
@@ -214,40 +235,53 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                 think_parts.append("")
                 for call in valid:
                     name = call["function"].get("name")
-                    if name == fetch.TOOL["function"]["name"]:
-                        text = await fetch.run(call["function"]["arguments"])
-                        tool_msg = {"role": "tool", "content": text}
-                        if call.get("id"):
-                            tool_msg["tool_call_id"] = call["id"]
-                        msgs.append(tool_msg)
-                        continue
-                    q = str((call["function"].get("arguments") or {}).get("query", "") or "")
-                    web_groups.append({"r": round_no, "query": q, "items": []})
-                    hits = await search.run(call["function"]["arguments"])
-                    tool_msg = {"role": "tool", "content": search.render(hits)}
-                    if call.get("id"):
-                        tool_msg["tool_call_id"] = call["id"]
-                    msgs.append(tool_msg)
-                    if hits:
-                        web = [{"source": h["url"] or h["title"], "title": h["title"] or h["url"], "kind": "web"} for h in hits]
-                        web_groups[-1]["items"] = web
-                        used.extend(web)
-                        yield sse({"type": "sources", "items": web})
+                    args = call["function"].get("arguments")
+                    if name == search.TOOL["function"]["name"]:
+                        q = str((args or {}).get("query", "") or "")
+                        web_groups.append({"r": round_no, "query": q, "items": []})
+                        hits = await search.run(args)
+                        msgs.append(tool_result(call, search.render(hits, next_n)))
+                        if hits:
+                            web = [
+                                {"n": next_n + j + 1, "source": h["url"] or h["title"], "title": h["title"] or h["url"], "kind": "web"}
+                                for j, h in enumerate(hits)
+                            ]
+                            next_n += len(hits)
+                            web_groups[-1]["items"] = web
+                            used.extend(web)
+                            yield sse({"type": "sources", "items": web})
+                    elif name == doc_search.TOOL["function"]["name"]:
+                        docs = await doc_search.run(u["id"], args)
+                        msgs.append(tool_result(call, doc_search.render(docs, next_n)))
+                        if docs:
+                            items = [{"n": next_n + j + 1, "source": d["source"], "kind": "doc"} for j, d in enumerate(docs)]
+                            next_n += len(docs)
+                            used.extend(items)
+                            yield sse({"type": "sources", "items": items})
+                    elif name == fetch.TOOL["function"]["name"]:
+                        msgs.append(tool_result(call, await fetch.run(args)))
+                    else:
+                        msgs.append(tool_result(call, await calc.run(args)))
         except HTTPException as e:
             yield sse({"type": "error", "message": e.detail})
         except httpx.HTTPError as e:
             yield sse({"type": "error", "message": f"Cannot reach model server: {e}"})
-        if req.chat_id and (query or answer):
-            if query:
-                chats.save_turn(u["id"], req.chat_id, "user", query)
-                chats.touch_title(req.chat_id, query)
-            if answer:
-                chats.save_turn(
-                    u["id"], req.chat_id, "assistant", "".join(answer),
-                    thinking=[t for t in think_parts if t.strip()] or None, sources=used,
-                    web=[g for g in web_groups if g["items"]],
-                )
-        yield "data: [DONE]\n\n"
+        else:
+            yield "data: [DONE]\n\n"
+        finally:
+            # Persist even if the client hit Stop mid-stream: the turn happened
+            # (Odysseus's registry survives refresh; ours must too). No yields
+            # allowed here — GeneratorExit lands on the paused yield.
+            if req.chat_id and (query or answer):
+                if query:
+                    chats.save_turn(u["id"], req.chat_id, "user", query)
+                    chats.touch_title(req.chat_id, query)
+                if answer:
+                    chats.save_turn(
+                        u["id"], req.chat_id, "assistant", "".join(answer),
+                        thinking=[t for t in think_parts if t.strip()] or None, sources=used,
+                        web=[g for g in web_groups if g["items"]],
+                    )
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
