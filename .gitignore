@@ -3,5 +3,6 @@
 __pycache__/
 *.pyc
 users.db
+chats.db
 models/
 AGENTS.md

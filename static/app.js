@@ -33,7 +33,6 @@ let controller = null;
 let sending = false;
 let atts = [];
 let attSeq = 0;
-let model = "";
 let useRag = true;
 let userName = "";
 let chatMode = "agentic";
@@ -48,40 +47,8 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-function shortUrl(u) {
-  try {
-    const p = new URL(u);
-    return p.host + p.pathname.replace(/\/$/, "");
-  } catch {
-    return u;
-  }
-}
-
-const SRC_ICON = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>';
-
-function srcLine(x) {
-  const url = x.source || "";
-  const label = x.title || (/^https?:\/\//i.test(url) ? shortUrl(url) : url);
-  if (!/^https?:\/\//i.test(url)) return `<div class="src">${escapeHtml(label)}</div>`;
-  return `<div class="src"><a href="${escapeHtml(url)}" target="_blank" rel="noopener" title="${escapeHtml(url)}">${escapeHtml(label)}</a></div>`;
-}
-
-function webSearchBox() {
-  const el = document.createElement("details");
-  el.className = "think websearch";
-  el.innerHTML =
-    `<summary class="think-head">${SRC_ICON}<span class="st"></span></summary><div class="think-body srcs"></div>`;
-  return el;
-}
-
-function fillWebSearch(el, items, label) {
-  el.querySelector(".st").textContent =
-    label || `Searched web · ${items.length} source${items.length > 1 ? "s" : ""}`;
-  el.querySelector(".srcs").innerHTML = items.map(srcLine).join("");
-}
-
 function renderDocChips(container, items) {
-  const docs = (items || []).filter((x) => x.kind !== "web");
+  const docs = (items || []).filter((x) => x.kind === "doc");
   if (!docs.length) return;
   const el = document.createElement("div");
   el.className = "msg-sources";
@@ -332,19 +299,6 @@ function saveSettings() {
 }
 
 
-function loadModel() {
-  fetch("/api/models").then((r) => r.json()).then((j) => {
-    try {
-      model = localStorage.getItem("eris-model") || j.default || "";
-    } catch {
-      model = j.default || "";
-    }
-  }).catch(() => {
-    try {
-      model = localStorage.getItem("eris-model") || "";
-    } catch {}
-  });
-}
 
 /* ---------- sessions ---------- */
 
@@ -376,22 +330,28 @@ function loadSession(id) {
     } else {
       s.messages.forEach((m) => {
         const body = addMessage(m.role, m.content, m.images);
+        let lastCtl = null;
         if (m.thinking) {
-          const t = document.createElement("details");
-          t.className = "think";
-          t.innerHTML =
-            '<summary class="think-head"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span class="st">Thought</span></summary><div class="think-body"></div>';
-          t.querySelector(".think-body").textContent = m.thinking;
-          body.prepend(t);
+          const th = ErisToolCall.thinking(body);
+          body.prepend(th.el);
+          th.append(m.thinking);
+          th.done("Thought");
+          lastCtl = th;
         }
         if (m.role === "assistant") {
           const web = (m.sources || []).filter((x) => x.kind === "web");
-          if (web.length) {
-            const w = webSearchBox();
-            fillWebSearch(w, web);
-            const t = body.querySelector(".think");
-            if (t) t.after(w);
-            else body.append(w);
+          const groups = m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [];
+          if (groups.length) {
+            const tc = ErisToolCall.webSearch(body);
+            if (lastCtl) {
+              lastCtl.el.after(tc.el);
+            }
+            for (const g of groups) {
+              if (g.query) tc.addQuery(g.query);
+              tc.addResults(g.items);
+            }
+            tc.done();
+            lastCtl = tc;
           }
           renderDocChips(body, m.sources);
           highlight(body);
@@ -401,7 +361,7 @@ function loadSession(id) {
   };
   if (!s.messages.length && s.remote) {
     fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
-      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, remote: true }));
+      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, web: m.web, remote: true }));
       s.remote = false;
       paint();
     }).catch(paint);
@@ -462,32 +422,26 @@ async function send(text) {
   setStatus("Sending...");
   let raw = "";
   let thinkAll = "";
-  let thinkRaw = "";
-  let thinkEl = null;
-  let thinkStart = 0;
+  let thinkCtl = null;
+  let thinkRound = "";
+  let webCtl = null;
   let sources = [];
-  let webItems = [];
-  let webEl = null;
+  let webGroups = [];
 
-  const ensureWebBox = () => {
-    if (!webEl) {
-      webEl = webSearchBox();
-      body.append(webEl);
-    }
-    return webEl;
-  };
-  const thinkDur = () => `Thinking… ${Math.round((Date.now() - thinkStart) / 1000)}s`;
   const finishThink = () => {
-    if (!thinkEl) return;
-    if (thinkRaw) {
-      thinkEl.querySelector(".think-body").textContent = thinkRaw;
-      thinkEl.querySelector(".st").textContent =
-        `Thought · ${Math.round((Date.now() - thinkStart) / 1000)}s`;
+    if (!thinkCtl) return;
+    if (thinkRound) {
+      thinkCtl.done();
     } else {
-      thinkEl.remove();
+      thinkCtl.el.remove();
     }
-    thinkEl = null;
-    thinkRaw = "";
+    thinkCtl = null;
+    thinkRound = "";
+  };
+  const finishWeb = () => {
+    if (!webCtl) return;
+    webCtl.done();
+    webCtl = null;
   };
 
   controller = new AbortController();
@@ -498,7 +452,6 @@ async function send(text) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model,
         use_rag: useRag,
         thinking: true,
         mode: chatMode,
@@ -532,34 +485,34 @@ async function send(text) {
 
         if (evt.type === "tool") {
           finishThink();
-          fillWebSearch(ensureWebBox(), webItems, `Searching web — ${evt.query || "…"}…`);
+          if (!webCtl) {
+            body.querySelector(".status")?.remove();
+            webCtl = ErisToolCall.webSearch(body);
+          }
+          webCtl.addQuery(evt.query || "Search");
+          webGroups.push({ query: evt.query || "", items: [] });
         } else if (evt.type === "sources") {
           sources.push(...evt.items);
           const web = evt.items.filter((x) => x.kind === "web");
           if (web.length) {
-            webItems.push(...web);
-            fillWebSearch(ensureWebBox(), webItems);
+            (webGroups[webGroups.length - 1] ||= { query: "", items: [] }).items.push(...web);
+            webCtl?.addResults(web);
           }
         } else if (evt.type === "thinking") {
-          if (!thinkEl) {
-            thinkStart = Date.now();
-            thinkEl = document.createElement("details");
-            thinkEl.className = "think";
-            thinkEl.innerHTML =
-              '<summary class="think-head"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg><span class="st"></span></summary><div class="think-body"></div>';
+          if (!thinkCtl) {
             body.querySelector(".status")?.remove();
-            body.append(thinkEl);
+            thinkCtl = ErisToolCall.thinking(body);
           }
-          thinkRaw += evt.text;
           thinkAll += evt.text;
-          thinkEl.querySelector(".think-body").textContent = thinkRaw;
-          thinkEl.querySelector(".st").textContent = thinkDur();
+          thinkRound += evt.text;
+          thinkCtl.append(evt.text);
           els.messages.scrollTop = els.messages.scrollHeight;
         } else if (evt.type === "delta") {
           raw += evt.text;
           let ans = body.querySelector(".ans");
           if (!ans) {
             finishThink();
+            finishWeb();
             body.querySelector(".status")?.remove();
             ans = document.createElement("div");
             ans.className = "ans";
@@ -577,7 +530,7 @@ async function send(text) {
     }
   } catch (e) {
     if (e.name === "AbortError") {
-      if (!raw && !thinkAll && !webEl) setStatus("Stopped.");
+      if (!raw && !thinkAll && !webCtl) setStatus("Stopped.");
     } else {
       const err = document.createElement("div");
       err.className = "err";
@@ -591,13 +544,14 @@ async function send(text) {
     els.input.focus();
     body.querySelector(".cursor")?.remove();
     body.querySelector(".status")?.remove();
-    if (!raw && !thinkAll && !webEl && !body.querySelector(".err")) {
+    if (!raw && !thinkAll && !webCtl && !body.querySelector(".err")) {
       setStatus("No response.");
     }
     finishThink();
+    finishWeb();
     renderDocChips(body, sources);
     highlight(body);
-    if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkAll || undefined, ...(sources.length ? { sources } : {}) });
+    if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkAll || undefined, ...(sources.length ? { sources } : {}), ...(webGroups.filter((g) => g.items.length).length ? { web: webGroups.filter((g) => g.items.length) } : {}) });
   }
 }
 
@@ -801,6 +755,5 @@ fetch("/api/chats").then((r) => r.json()).then((j) => {
     showEmpty();
   }
 });
-loadModel();
 syncInput();
 els.input.focus();

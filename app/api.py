@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader
 from pydantic import BaseModel
 
-from . import auth, rag
+from . import auth, chats, rag
 from .config import settings
 from .tools import search
 
@@ -24,15 +24,9 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
     use_rag: bool = True
-    model: str | None = None
     thinking: bool = False
     mode: str = "agentic"
     chat_id: str | None = None
-
-
-class DocumentRequest(BaseModel):
-    source: str
-    text: str
 
 
 class RegisterRequest(BaseModel):
@@ -44,10 +38,6 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str
     password: str
-
-
-def me_from_cookie(session: str | None = Cookie(None)):
-    return auth.get_session(session)
 
 
 def require_user(session: str | None = Cookie(None)):
@@ -77,9 +67,9 @@ def to_native(messages):
     return out
 
 
-async def stream_completion(messages, model=None, thinking=False, tools=None):
+async def stream_completion(messages, thinking=False, tools=None):
     payload = {
-        "model": model or settings.model_name,
+        "model": settings.model_name,
         "messages": to_native(messages),
         "stream": True,
         "think": bool(thinking),
@@ -135,45 +125,35 @@ async def chat(req: ChatRequest, session: str | None = Cookie(None)):
         "For anything current or recent, answer only from the search "
         "results you receive, never from training memory."
     )
-
     if req.use_rag:
         try:
             sources = await rag.retrieve(query)
         except Exception:
             sources = []
-        if sources:
-            context = "\n\n".join(
-                f"[{i + 1}] ({s['source']})\n{s['text']}" for i, s in enumerate(sources)
-            )
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        sys_prompt
-                        + "\n\nUse the context below when relevant. "
-                        "Cite sources as [n].\n\nContext:\n"
-                        + context
-                    ),
-                }
-            ] + messages
-        else:
-            messages = [{"role": "system", "content": sys_prompt}] + messages
-    else:
-        messages = [{"role": "system", "content": sys_prompt}] + messages
+    if sources:
+        context = "\n\n".join(
+            f"[{i + 1}] ({s['source']})\n{s['text']}" for i, s in enumerate(sources)
+        )
+        sys_prompt += (
+            "\n\nUse the context below when relevant. "
+            "Cite sources as [n].\n\nContext:\n" + context
+        )
+    messages = [{"role": "system", "content": sys_prompt}] + messages
 
     async def gen():
         used = [{"source": s["source"], "kind": "doc"} for s in sources]
         if sources:
-            yield sse({"type": "sources", "items": sources})
+            yield sse({"type": "sources", "items": used})
         answer = []
         think_parts = []
+        web_groups = []
         msgs = messages
         try:
             # ponytail: one tool round. Raise when a second tool needs its own step.
             for round_no in range(2):
                 calls = []
                 tools = [search.TOOL] if round_no == 0 else None
-                async for kind, text in stream_completion(msgs, req.model, req.thinking, tools):
+                async for kind, text in stream_completion(msgs, req.thinking, tools):
                     if kind == "tool_calls":
                         calls = text
                         continue
@@ -196,10 +176,13 @@ async def chat(req: ChatRequest, session: str | None = Cookie(None)):
                     break
                 msgs = msgs + [{"role": "assistant", "content": "", "tool_calls": valid}]
                 for call in valid:
+                    q = str((call["function"].get("arguments") or {}).get("query", "") or "")
+                    web_groups.append({"query": q, "items": []})
                     hits = await search.run(call["function"]["arguments"])
                     msgs.append({"role": "tool", "content": search.render(hits)})
                     if hits:
                         web = [{"source": h["url"] or h["title"], "title": h["title"] or h["url"], "kind": "web"} for h in hits]
+                        web_groups[-1]["items"] = web
                         used.extend(web)
                         yield sse({"type": "sources", "items": web})
         except HTTPException as e:
@@ -207,37 +190,30 @@ async def chat(req: ChatRequest, session: str | None = Cookie(None)):
         except httpx.HTTPError as e:
             yield sse({"type": "error", "message": f"Cannot reach model server: {e}"})
         if req.chat_id and (query or answer):
-            try:
-                if query:
-                    rag.save_turn(u["id"], req.chat_id, "user", query)
-                if answer:
-                    rag.save_turn(
-                        u["id"], req.chat_id, "assistant", "".join(answer),
-                        thinking="".join(think_parts) or None, sources=used,
-                    )
-            except Exception:
-                pass
+            if query:
+                chats.save_turn(u["id"], req.chat_id, "user", query)
+                chats.touch_title(req.chat_id, query)
+            if answer:
+                chats.save_turn(
+                    u["id"], req.chat_id, "assistant", "".join(answer),
+                    thinking="".join(think_parts) or None, sources=used,
+                    web=[g for g in web_groups if g["items"]],
+                )
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @app.get("/api/chats")
-async def chats(session: str | None = Cookie(None)):
+async def list_chats(session: str | None = Cookie(None)):
     u = require_user(session)
-    try:
-        return {"items": rag.chat_list(u["id"])}
-    except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
+    return {"items": chats.list_chats(u["id"])}
 
 
 @app.get("/api/chats/{chat_id}")
 async def chat_history(chat_id: str, session: str | None = Cookie(None)):
     u = require_user(session)
-    try:
-        return {"items": rag.chat_turns(u["id"], chat_id)}
-    except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
+    return {"items": chats.turns(u["id"], chat_id)}
 
 
 class ChatPatch(BaseModel):
@@ -250,60 +226,15 @@ async def chat_patch(chat_id: str, req: ChatPatch, session: str | None = Cookie(
     u = require_user(session)
     if req.title is None and req.pinned is None:
         raise HTTPException(400, "nothing to update")
-    try:
-        rag.chat_set_meta(u["id"], chat_id, req.title, req.pinned)
-    except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
+    chats.set_meta(u["id"], chat_id, req.title, req.pinned)
     return {"ok": True}
 
 
 @app.delete("/api/chats/{chat_id}")
 async def chat_delete(chat_id: str, session: str | None = Cookie(None)):
     u = require_user(session)
-    try:
-        rag.chat_delete(u["id"], chat_id)
-    except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
+    chats.delete(u["id"], chat_id)
     return {"ok": True}
-
-
-@app.get("/api/models")
-async def models():
-    items = []
-    try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            r = await c.get(
-                f"{settings.model_base_url}/models",
-                headers={"Authorization": f"Bearer {settings.model_api_key}"},
-            )
-            r.raise_for_status()
-            items = [m["id"] for m in r.json().get("data", []) if m.get("id")]
-    except Exception:
-        pass
-    if settings.model_name not in items:
-        items.insert(0, settings.model_name)
-    return {"items": items, "default": settings.model_name}
-
-
-@app.get("/api/documents")
-def documents():
-    try:
-        return {"items": rag.list_documents()}
-    except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
-
-
-@app.post("/api/documents")
-async def add_document(req: DocumentRequest):
-    if not req.text.strip():
-        raise HTTPException(400, "Empty document")
-    try:
-        n = await rag.add_document(req.source, req.text)
-    except httpx.HTTPError as e:
-        raise HTTPException(502, f"Embedding model unavailable: {e}")
-    except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
-    return {"source": req.source, "chunks": n}
 
 
 @app.post("/api/documents/upload")
@@ -331,32 +262,6 @@ async def upload_document(file: UploadFile):
     except Exception as e:
         raise HTTPException(503, f"ChromaDB unavailable: {e}")
     return {"source": file.filename, "chunks": n}
-
-
-@app.delete("/api/documents")
-def remove_document(source: str):
-    try:
-        rag.delete_document(source)
-    except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
-    return {"deleted": source}
-
-
-@app.get("/api/health")
-async def health():
-    status = {"model": False, "chroma": False}
-    try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            r = await c.get(f"{settings.model_base_url}/models")
-            status["model"] = r.status_code < 400
-    except Exception:
-        pass
-    try:
-        rag.client().heartbeat()
-        status["chroma"] = True
-    except Exception:
-        pass
-    return status
 
 
 @app.post("/api/auth/register")

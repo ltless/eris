@@ -12,7 +12,6 @@ exec llama-server \
   --host 0.0.0.0 \
   --ctx-size 8192 \
   --embeddings \
-  --embedding \
   --pooling mean \
   --n-gpu-layers 99 \
   --reasoning-format deepseek

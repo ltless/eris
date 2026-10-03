@@ -1,0 +1,272 @@
+/* Tool call + thinking rows. Instant state flips only.
+   Reuses style.css :root tokens. Danger red + hairlines are the only non-grey. */
+
+.tc {
+  max-width: 100%;
+  margin: 0 0 6px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* First row shares the 26px line with the .role chip (body has 2px text offset). */
+.msg .body > .tc:first-child {
+  margin-top: -2px;
+}
+
+.tc,
+.tc * {
+  box-sizing: border-box;
+}
+
+.tc svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Header — the always-visible toggle row */
+.tc-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  max-width: 100%;
+  min-height: 26px;
+  margin-left: -6px;
+  padding: 0 8px 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tc-head:hover {
+  color: var(--text);
+}
+
+.tc-head:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+.tc-label {
+  flex: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.tc-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--faint);
+}
+
+.tc-meta:not(:empty)::before {
+  content: "· ";
+}
+
+.tc-chev {
+  margin-left: auto;
+  flex: none;
+  color: var(--faint);
+}
+
+.tc[data-open="true"] .tc-chev {
+  transform: rotate(180deg);
+}
+
+/* State icons: outline only, swapped instantly */
+.tc-ico-err {
+  display: none;
+}
+
+.tc[data-state="error"] .tc-ico {
+  display: none;
+}
+
+.tc[data-state="error"] .tc-ico-err {
+  display: block;
+}
+
+.tc[data-state="error"] .tc-head {
+  color: var(--text);
+}
+
+/* Body — display swap only */
+.tc-body {
+  display: none;
+}
+
+.tc[data-open="true"] .tc-body {
+  display: block;
+}
+
+.tc-inner {
+  min-height: 0;
+}
+
+/* Line on the icon-center axis (x=7), text column on the label axis (x=22). */
+.tc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 4px 0 4px 7px;
+  padding: 2px 0 2px 14px;
+  border-left: 1px solid var(--border);
+}
+
+/* Query header */
+.tc-q {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.tc-q svg {
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+}
+
+.tc-q span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 5px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tc-link {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 -6px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.tc-link:hover {
+  background: var(--hover);
+}
+
+.tc-link:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+.tc-fav {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.tc-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.tc-domain {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tc-ext {
+  width: 13px !important;
+  height: 13px !important;
+  color: var(--faint);
+  opacity: 0;
+}
+
+.tc-link:hover .tc-ext,
+.tc-link:focus-visible .tc-ext {
+  opacity: 1;
+}
+
+/* Empty / error */
+.tc-empty,
+.tc-error {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tc-error {
+  color: #d33;
+}
+
+.tc-retry {
+  margin-top: 8px;
+  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.tc-retry:hover {
+  border-color: var(--text);
+}
+
+.tc-retry:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* Thinking text body */
+.tc-think {
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+@media (max-width: 480px) {
+  .tc-domain {
+    display: none;
+  }
+}

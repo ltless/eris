@@ -103,6 +103,51 @@ def check_native_stream():
     assert out[3] == ("tool_calls", [{"id": "c1", "function": {"name": "web_search", "arguments": {"query": "eris"}}}]), out
 
 
+def check_chats_sqlite():
+    import os
+    import tempfile
+    from app import chats
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    os.environ["CHAT_DB"] = path
+    chats._db = None
+
+    chats.save_turn(1, "c1", "user", "halo dunia")
+    chats.touch_title("c1", "halo dunia")
+    chats.save_turn(1, "c1", "assistant", "hai", thinking="t" * 9000,
+                    sources=[{"source": "a", "kind": "doc"}] * 10,
+                    web=[{"query": "q1", "items": [{"source": "http://u", "kind": "web"}]}])
+    chats.save_turn(2, "c2", "user", "lain")
+
+    items = chats.list_chats(1)
+    assert [c["id"] for c in items] == ["c1"], items
+    assert items[0]["title"] == "halo dunia"[:40]
+
+    turns = chats.turns(1, "c1")
+    assert len(turns) == 2 and turns[0]["role"] == "user"
+    assert len(turns[1]["thinking"]) == 8000
+    assert len(turns[1]["sources"]) == 8
+    assert turns[1]["web"][0]["query"] == "q1"
+    assert chats.turns(2, "c1") == []
+
+    chats.set_meta(1, "c1", title="baru", pinned=True)
+    assert chats.list_chats(1)[0] == {"id": "c1", "title": "baru", "pinned": True}
+    chats.save_turn(1, "c3", "user", "pin juga")
+    chats.set_meta(1, "c3", pinned=True)
+    ordered = chats.list_chats(1)
+    assert [c["id"] for c in ordered] == ["c3", "c1"], ordered
+
+    chats.delete(1, "c1")
+    assert chats.list_chats(1) == [{"id": "c3", "title": "New chat", "pinned": True}]
+
+    chats._db.close()
+    chats._db = None
+    del os.environ["CHAT_DB"]
+    os.unlink(path)
+
+
 def check_to_native():
     mm = [{"role": "user", "content": [{"type": "text", "text": "hello "}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}]
     out = api.to_native(mm)
