@@ -18,7 +18,10 @@ from .tools import calc, doc_search, fetch, search
 
 app = FastAPI(title="Eris")
 
-MEDIA_DIR = Path("static/uploads")
+# Anchor asset paths to the repo root so uvicorn works from any CWD.
+ROOT = Path(__file__).resolve().parent.parent
+STATIC_DIR = ROOT / "static"
+MEDIA_DIR = STATIC_DIR / "uploads"
 
 
 def db_user(user_id):
@@ -469,7 +472,7 @@ async def me(session: str | None = Cookie(None)):
 async def index(request: Request):
     if not auth.get_session(request.cookies.get("session")):
         return RedirectResponse("/auth.html", 303)
-    return FileResponse("static/index.html")
+    return FileResponse(STATIC_DIR / "index.html")
 
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

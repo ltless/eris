@@ -45,6 +45,59 @@ uvicorn app.api:app --reload --port 9000
 
 Open http://localhost:9000
 
+## Windows
+
+Requires Python 3.10+ (the code uses `X | Y` type syntax) and Docker Desktop
+if you want ChromaDB/SearXNG in containers.
+
+```powershell
+Copy-Item .env.example .env     # set MODEL_PATH=C:\path\to\model.gguf
+.\start.ps1
+```
+
+`start.ps1` is the twin of `start.sh`: it creates `.venv` (as
+`.venv\Scripts\python.exe`), installs deps, brings up docker services, starts
+`llama-server` when `MODEL_PATH` is set, then runs uvicorn. Ctrl-C stops what
+it started. If PowerShell blocks the script, allow it for this session:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+Model server on its own:
+
+```powershell
+.\run-model.ps1 C:\path\to\model.gguf
+```
+
+`llama-server` must be on `PATH` (a Windows build of llama.cpp). Set
+`LLAMA_BIN` to the full path of `llama-server.exe` if it is not.
+
+Manual setup:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+docker compose up -d
+.\run-model.ps1 C:\path\to\model.gguf
+.\.venv\Scripts\python.exe -m uvicorn app.api:app --reload --port 9000
+```
+
+If `docker compose up -d` fails with `ports are not available` on `8000`, some
+other process owns ChromaDB's host port. `CHROMA_PORT` in `.env` controls the
+mapping (`"${CHROMA_PORT:-8000}:8000"` in `docker-compose.yml`) and the app
+reads the same variable, so change it in one place:
+
+```powershell
+# .env
+CHROMA_PORT=8001
+```
+
+```powershell
+docker compose up -d
+docker compose ps
+```
+
 ## Notes
 
 - `/api/chat` accepts `{messages, use_rag}` and streams SSE:

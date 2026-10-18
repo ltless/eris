@@ -2,7 +2,9 @@ services:
   chromadb:
     image: chromadb/chroma:latest
     ports:
-      - "8000:8000"
+      # Host port is configurable so it can dodge a local conflict; the app
+      # reads the same CHROMA_PORT from .env.
+      - "${CHROMA_PORT:-8000}:8000"
     environment:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE

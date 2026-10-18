@@ -1,8 +1,10 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load the repo-root .env no matter which directory uvicorn starts from.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 class Settings:
