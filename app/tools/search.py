@@ -16,14 +16,19 @@ TOOL = {
             "Search the web in English. Always translate the query to English "
             "first, whatever language the user wrote in. Use it for current "
             "facts: news, prices, versions, releases, or anything that may "
-            "have changed recently."
+            "have changed recently. Keep the query short, three to six words, "
+            "like a person typing into a search box: the thing, then the "
+            "place. Leave out dates and the user's whole sentence; the "
+            "time_range argument covers recency. If one site holds the answer, "
+            "name it, such as BMKG for Indonesian weather or a vendor's own "
+            "site for a version number."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "English search query.",
+                    "description": "Short English search query, no date.",
                 },
                 "time_range": {
                     "type": "string",
@@ -69,6 +74,24 @@ def _age_days(published):
     except ValueError:
         return None
     return (datetime.now(d.tzinfo) - d).days
+
+
+DATE_RE = re.compile(
+    r"\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b"  # 2026-10-19, 2026.10.19
+    r"|\b\d{1,2}[/.]\d{1,2}[/.](?:19|20)\d{2}\b"  # 19/10/2026
+)
+
+
+def clean_query(query):
+    """Drop date-shaped tokens the model pasted into the query.
+
+    The engine treats them as a filter it cannot satisfy. The same Bali weather
+    query returned 5 travel listings with 2026-10-19 in it and 20 on-topic
+    results without, and recency is already the time_range argument's job. A
+    query that is nothing but a date is left alone rather than emptied.
+    """
+    trimmed = re.sub(r"\s+", " ", DATE_RE.sub(" ", query)).strip()
+    return trimmed or query
 
 
 def rank(query, results, fresh=False):
@@ -149,7 +172,7 @@ async def run(args):
             args = json.loads(args)
         except (json.JSONDecodeError, TypeError):
             args = {}
-    query = str(args.get("query", "")).strip()
+    query = clean_query(str(args.get("query", "")).strip())
     if not query:
         return []
     tr = time_range_for(args, query)

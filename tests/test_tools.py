@@ -46,6 +46,53 @@ def check_render():
     assert "Do NOT answer from memory" in search.render([])
 
 
+def check_query_cleaning():
+    # a date pasted into the query is what killed the engine's result set
+    assert search.clean_query("weather in Bali today 2026-10-19") == "weather in Bali today"
+    assert search.clean_query("harga emas  19/10/2026 ") == "harga emas"
+    assert search.clean_query("gold price 2026.10.19") == "gold price"
+    # plain queries come back untouched, dates that are already prose stay
+    assert search.clean_query("dependency injection python") == "dependency injection python"
+    assert search.clean_query("Bali weather today October 2026") == "Bali weather today October 2026"
+    assert search.clean_query("version 2.5.1 release") == "version 2.5.1 release"
+    # never clean a query down to nothing
+    assert search.clean_query("2026-10-19") == "2026-10-19"
+
+
+def check_run_sends_cleaned_query():
+    sent = {}
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": []}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None):
+            sent.update(params or {})
+            return FakeResp()
+
+    old = search.httpx.AsyncClient
+    search.httpx.AsyncClient = FakeClient
+    try:
+        asyncio.run(search.run({"query": "weather in Bali today 2026-10-19"}))
+    finally:
+        search.httpx.AsyncClient = old
+    assert sent["q"] == "weather in Bali today", sent
+    assert sent["time_range"] == "week", sent
+
+
 def check_run_accepts_dict():
     search.settings.searxng_url = "http://127.0.0.1:1"
     assert asyncio.run(search.run({"query": "x"})) == []
