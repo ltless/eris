@@ -81,6 +81,19 @@ def tool_result(call, content):
     return m
 
 
+def merge_tool_calls(calls, incoming):
+    """The server streams one tool call per line, each with its own id, so a
+    round can carry several. A repeated id replaces the earlier copy instead of
+    running the same call twice."""
+    for call in incoming:
+        for i, seen in enumerate(calls):
+            if call.get("id") and seen.get("id") == call["id"]:
+                calls[i] = call
+                break
+        else:
+            calls.append(call)
+
+
 TOOL_NAMES = {
     t["function"]["name"] for t in (search.TOOL, fetch.TOOL, calc.TOOL, doc_search.TOOL)
 }
@@ -203,21 +216,26 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         web_groups = []
         msgs = messages
         try:
-            for round_no in range(rounds):
+            # The budget counts tool rounds, not the whole turn. Once they are
+            # spent the model gets one more pass with no tools at all, so it
+            # answers from what the searches returned instead of searching until
+            # the loop runs out and the browser is left with only search rows.
+            for round_no in range(rounds + 1):
+                final = round_no == rounds
                 calls = []
-                tools = [search.TOOL, fetch.TOOL, calc.TOOL, doc_search.TOOL]
+                tools = None if final else [search.TOOL, fetch.TOOL, calc.TOOL, doc_search.TOOL]
                 async for kind, text in stream_completion(
                     msgs, model=model, thinking=thinking, tools=tools, ctx=ctx
                 ):
                     if kind == "tool_calls":
-                        calls = text
+                        merge_tool_calls(calls, text)
                         continue
                     if kind == "delta":
                         answer.append(text)
                     elif kind == "thinking":
                         think_parts[-1] += text
                     yield sse({"type": kind, "text": text})
-                if not calls:
+                if final or not calls:
                     break
                 valid = []
                 for call in calls:

@@ -527,6 +527,7 @@ async function send(text, regen = false) {
   };
   setStatus("Sending...");
   let raw = "";
+  let aborted = false;
   let thinkRounds = [];
   let thinkAll = "";
   let thinkCtl = null;
@@ -642,6 +643,7 @@ async function send(text, regen = false) {
     }
   } catch (e) {
     if (e.name === "AbortError") {
+      aborted = true;
       if (!raw && !thinkAll && !webCtl) setStatus("Stopped.");
     } else {
       const err = document.createElement("div");
@@ -656,8 +658,11 @@ async function send(text, regen = false) {
     els.input.focus();
     body.querySelector(".cursor")?.remove();
     body.querySelector(".status")?.remove();
-    if (!raw && !thinkAll && !webCtl && !body.querySelector(".err")) {
-      setStatus("No response.");
+    if (!aborted && !raw && !body.querySelector(".err")) {
+      // Thinking rows and search rows are not an answer, so they no longer
+      // suppress this. Silence after a run of tool calls is what the user reads
+      // as "it stopped".
+      setStatus(thinkAll || webCtl ? "No answer came back. Try again, or narrow the question." : "No response.");
     }
     finishThink();
     finishWeb();
