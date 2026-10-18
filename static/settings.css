@@ -3,7 +3,7 @@
 .settings {
   max-width: 720px;
   margin: 0 auto;
-  padding: 32px var(--space) 64px;
+  padding: var(--sp-6) var(--space) var(--sp-7);
   font-size: 14.5px;
   color: var(--text);
 }
@@ -15,8 +15,8 @@
 .s-head {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-5);
 }
 
 .s-head h1 {
@@ -40,8 +40,8 @@
 .s-card {
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 18px;
-  margin: 0 0 16px;
+  padding: var(--sp-4);
+  margin: 0 0 var(--sp-4);
 }
 
 .s-card h2 {
@@ -50,7 +50,7 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
-  margin: 0 0 14px;
+  margin: 0 0 var(--sp-4);
 }
 
 /* Profile header */
@@ -65,8 +65,10 @@
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 12px;
-  margin: -26px 10px 14px;
+  gap: var(--sp-3);
+  /* Pulls the avatar up over the cover. The 12px side inset clears the cover's
+     rounded corner. */
+  margin: calc(var(--sp-5) * -1) var(--sp-3) var(--sp-4);
   position: relative;
 }
 
@@ -85,12 +87,12 @@
 
 .s-acts {
   display: flex;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 .s-btn {
   height: 26px;
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
@@ -114,7 +116,7 @@
 .s-row,
 .s-grid {
   display: grid;
-  gap: 10px;
+  gap: var(--sp-3);
 }
 
 .s-row {
@@ -128,7 +130,7 @@
 
 .s-grid label {
   display: grid;
-  gap: 5px;
+  gap: var(--sp-1);
   font-size: 13px;
   color: var(--muted);
 }
@@ -145,7 +147,7 @@
   height: 34px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   font: inherit;
   font-size: 14px;
   color: var(--text);
@@ -161,7 +163,7 @@
 
 .s-go {
   height: 30px;
-  padding: 0 14px;
+  padding: 0 var(--sp-3);
   border: 0;
   border-radius: 6px;
   background: var(--accent);
@@ -184,7 +186,7 @@
 
 .s-danger {
   height: 30px;
-  padding: 0 14px;
+  padding: 0 var(--sp-3);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: none;
@@ -200,7 +202,7 @@
 }
 
 .s-note {
-  margin: 8px 0 0;
+  margin: var(--sp-2) 0 0;
   font-size: 12px;
   color: var(--muted);
 }

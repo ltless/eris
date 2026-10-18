@@ -1,7 +1,9 @@
 /* ==========================================================================
-   Eris Sidebar — Minimalist, Slim, Modern, Monochrome
-   Adheres to AGENTS.md: no motion, 1px hairline, ink #111113
-   Icon axis locked at 28px (pad 8px + slot 40px/2) across both modes.
+   Eris sidebar: slim, monochrome, 1px hairlines, ink #111113.
+   The icon axis is locked at 28px (pad 8 + half of the 40px slot) in both the
+   expanded and collapsed states, so rows never shift when the rail toggles.
+   Rhythm values come from the spacing scale in style.css.
+   Motion belongs to the rail and nowhere else in the product. See .side.anim.
    ========================================================================== */
 
 :root {
@@ -11,6 +13,12 @@
   --gut: 40px;
   --row: 34px;
   --side-radius: 6px;
+
+  /* Motion, used only by the rail toggle. */
+  --mo-rail: 260ms;  /* the rail changing size */
+  --mo-fade: 160ms;  /* labels leaving or arriving with it */
+  --mo-flip: 140ms;  /* the toggle icon swap */
+  --mo-ease: cubic-bezier(0.16, 1, 0.3, 1); /* decelerating, no bounce */
 }
 
 .layout {
@@ -33,6 +41,9 @@
   flex-shrink: 0;
   user-select: none;
   font-family: var(--font);
+  /* Anything wider than the rail, such as a label mid-fade or a row's action
+     buttons, is clipped here instead of painting over the chat column. */
+  overflow: hidden;
 }
 
 .side * {
@@ -75,25 +86,67 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: 6px;
+  padding-right: var(--sp-2);
 }
 
-/* Hide text labels when collapsed */
+/* Hide text labels when collapsed. A fade plus visibility, not display, so the
+   rail can animate them out. visibility keeps them out of hit testing and out
+   of the accessibility tree, which is what display: none was doing. */
 .side.collapsed .lbl,
 .side.collapsed .side-brand,
 .side.collapsed .side-title,
 .side.collapsed .side-empty {
-  display: none !important;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(-4px);
 }
 
-/* Narrow rows to icon slot width when collapsed */
-.side.collapsed .side-top,
-.side.collapsed .side-new,
-.side.collapsed .side-row,
-.side.collapsed .side-profile {
-  width: var(--gut);
-  margin-left: auto;
-  margin-right: auto;
+/* The chat rows leave with the labels. A rail this narrow is for the two
+   actions and the account, not for a list that cannot be read at 56px. The
+   list stays in the DOM, so expanding restores it with its scroll position. */
+.side.collapsed .side-history {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* Rows are hidden rather than narrowed, and nothing is resized on the state
+   flip: the rail's content box is 56 - 16 = 40px, exactly --gut, so whenever
+   rows are visible the icon lands on the same axis and nothing jumps. */
+
+/* The rail is the product's one authored motion: the width carries the change,
+   the labels leave faster than it arrives, and nothing else moves. .anim is
+   added a frame after init so a sidebar restored collapsed from storage does
+   not animate itself open on page load. */
+.side.anim {
+  transition: width var(--mo-rail) var(--mo-ease);
+}
+
+.side.anim .lbl,
+.side.anim .side-brand,
+.side.anim .side-title,
+.side.anim .side-empty,
+.side.anim .side-history {
+  transition: opacity var(--mo-fade) var(--mo-ease),
+    transform var(--mo-fade) var(--mo-ease), visibility var(--mo-fade);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side.anim,
+  .side.anim .lbl,
+  .side.anim .side-brand,
+  .side.anim .side-title,
+  .side.anim .side-empty,
+  .side.anim .side-history,
+  .side.anim .side-toggle .ic svg {
+    transition: none;
+  }
+
+  .side.collapsed .lbl,
+  .side.collapsed .side-brand,
+  .side.collapsed .side-title,
+  .side.collapsed .side-empty {
+    transform: none;
+  }
 }
 
 /* --- 1. Header (Toggle & Brand) --- */
@@ -102,7 +155,7 @@
   align-items: center;
   height: var(--row);
   width: 100%;
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-2);
 }
 
 .side-toggle {
@@ -124,10 +177,32 @@
   color: var(--faint);
 }
 
-.side-toggle .icon-collapse { display: block; }
-.side-toggle .icon-expand { display: none; }
-.side.collapsed .side-toggle .icon-collapse { display: none; }
-.side.collapsed .side-toggle .icon-expand { display: block; }
+/* Both toggle icons share one cell so the swap cross-fades rather than flipping
+   through display. */
+.side-toggle .ic {
+  display: inline-grid;
+  place-items: center;
+}
+
+.side-toggle .ic svg {
+  grid-area: 1 / 1;
+}
+
+.side-toggle .icon-expand {
+  opacity: 0;
+}
+
+.side.collapsed .side-toggle .icon-collapse {
+  opacity: 0;
+}
+
+.side.collapsed .side-toggle .icon-expand {
+  opacity: 1;
+}
+
+.side.anim .side-toggle .ic svg {
+  transition: opacity var(--mo-flip) var(--mo-ease);
+}
 
 .side-brand {
   margin: 0;
@@ -146,7 +221,7 @@
   align-items: center;
   width: 100%;
   height: var(--row);
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-2);
   border: none;
   border-radius: var(--side-radius);
   background: transparent;
@@ -172,8 +247,8 @@
 
 /* --- 3. Chat History --- */
 .side-title {
-  margin: 6px 0 4px;
-  padding: 4px 8px 4px 10px;
+  margin: var(--sp-2) 0 var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -188,7 +263,7 @@
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--sp-hair);
   min-height: 0;
 }
 
@@ -283,7 +358,7 @@
 }
 
 .side-empty {
-  padding: 8px 10px;
+  padding: var(--sp-2);
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
@@ -292,7 +367,7 @@
 /* --- 4. Footer & Profile --- */
 .side-foot {
   margin-top: auto;
-  padding-top: 8px;
+  padding-top: var(--sp-2);
 }
 
 .side-profile {
@@ -403,17 +478,15 @@
     width: min(80vw, 260px) !important;
   }
 
+  /* The drawer ignores the collapsed state: labels and the chat list stay
+     readable here. */
   .side.collapsed .lbl,
   .side.collapsed .side-brand,
   .side.collapsed .side-title,
-  .side.collapsed .side-empty {
-    display: block !important;
-  }
-
-  .side.collapsed .side-top,
-  .side.collapsed .side-new,
-  .side.collapsed .side-row,
-  .side.collapsed .side-profile {
-    width: 100% !important;
+  .side.collapsed .side-empty,
+  .side.collapsed .side-history {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
   }
 }

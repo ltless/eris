@@ -10,21 +10,21 @@
   max-width: 340px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 28px 24px 24px;
+  padding: var(--sp-5);
 }
 
 .auth-brand {
   font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  margin: 0 0 16px;
+  margin: 0 0 var(--sp-4);
   text-align: center;
 }
 
 .auth-tabs {
   display: flex;
-  gap: 4px;
-  margin-bottom: 16px;
+  gap: var(--sp-1);
+  margin-bottom: var(--sp-4);
 }
 
 .auth-tabs button {
@@ -48,7 +48,7 @@
 .auth form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .auth form[hidden] {
@@ -59,7 +59,7 @@
   height: 38px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0 12px;
+  padding: 0 var(--sp-3);
   font: inherit;
   font-size: 14px;
   color: var(--text);
@@ -85,5 +85,5 @@
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  margin-top: 4px;
+  margin-top: var(--sp-1);
 }

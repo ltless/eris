@@ -177,6 +177,10 @@ const ErisSidebar = (() => {
 
     applyCollapse();
     render();
+
+    // Enable the rail transition only after the first paint, so a sidebar
+    // restored in the collapsed state does not animate itself open on load.
+    requestAnimationFrame(() => requestAnimationFrame(() => side?.classList.add("anim")));
   }
 
   const api = {

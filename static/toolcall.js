@@ -84,7 +84,7 @@ const ErisToolCall = (() => {
     function addQuery(q) {
       const g = document.createElement("div");
       g.innerHTML =
-        '<div class="tc-q">' + I.search + '<span></span></div><ul class="tc-list"></ul>';
+        '<div class="tc-q">' + I.search + '<span></span></div><div class="tc-list" role="list"></div>';
       g.querySelector(".tc-q span").textContent = q;
       s.panel.appendChild(g);
       list = g.querySelector(".tc-list");
@@ -97,16 +97,18 @@ const ErisToolCall = (() => {
       for (const it of items) {
         const url = it.url || it.source || "";
         const domain = it.domain || domainOf(url);
-        const li = document.createElement("li");
-        li.innerHTML =
+        const row = document.createElement("div");
+        row.className = "tc-item";
+        row.setAttribute("role", "listitem");
+        row.innerHTML =
           '<a class="tc-link" target="_blank" rel="noopener noreferrer"><span class="tc-fav"></span><span class="tc-title"></span><span class="tc-domain"></span>' +
           I.ext +
           "</a>";
-        li.querySelector("a").href = safeUrl(url);
-        li.querySelector(".tc-fav").textContent = domain.charAt(0) || "?";
-        li.querySelector(".tc-title").textContent = it.title || domain;
-        li.querySelector(".tc-domain").textContent = domain;
-        list.appendChild(li);
+        row.querySelector("a").href = safeUrl(url);
+        row.querySelector(".tc-fav").textContent = domain.charAt(0) || "?";
+        row.querySelector(".tc-title").textContent = it.title || domain;
+        row.querySelector(".tc-domain").textContent = domain;
+        list.appendChild(row);
         total++;
       }
     }
@@ -116,10 +118,10 @@ const ErisToolCall = (() => {
       s.label.textContent = "Searched the web";
       s.meta.textContent = total ? plural(total) : "No results";
       if (!total && !s.panel.querySelector(".tc-empty")) {
-        const p = document.createElement("p");
-        p.className = "tc-empty";
-        p.textContent = "No results found.";
-        s.panel.appendChild(p);
+        const note = document.createElement("div");
+        note.className = "tc-empty";
+        note.textContent = "No results found.";
+        s.panel.appendChild(note);
       }
     }
 
@@ -128,7 +130,7 @@ const ErisToolCall = (() => {
       s.label.textContent = "Search failed";
       s.meta.textContent = message || "";
       const e = document.createElement("div");
-      e.innerHTML = '<p class="tc-error"></p>';
+      e.innerHTML = '<div class="tc-error"></div>';
       e.querySelector(".tc-error").textContent =
         message || "Something went wrong while searching.";
       if (opts.onRetry) {

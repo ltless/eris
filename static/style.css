@@ -10,7 +10,20 @@
   --accent-ink: #ffffff;
   --hover: #f4f4f5;
   --radius: 8px;
-  --space: 16px;
+
+  /* Spacing scale. Every margin, padding, and gap comes from this list, so a
+     value in one file can be compared with a value in another. The role noted
+     on each step is where it is used today, not a cap on where it may go. */
+  --sp-hair: 2px;   /* stacked rows that should read as one block */
+  --sp-1: 4px;      /* micro: inside a control */
+  --sp-2: 8px;      /* tight: siblings inside a group */
+  --sp-3: 12px;     /* base: group internals, prose rhythm */
+  --sp-4: 16px;     /* room: container padding, page gutter */
+  --sp-5: 24px;     /* section: between turns, between cards */
+  --sp-6: 32px;     /* page: region padding */
+  --sp-7: 48px;     /* page foot: last block to the end of the document */
+
+  --space: var(--sp-4); /* page gutter, kept for the callers already using it */
   --font: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -30,6 +43,14 @@ body {
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+}
+
+/* The chat app owns its own scroll regions: .layout is exactly one viewport
+   high, so clipping the body keeps mobile URL-bar resizing and the 100vw
+   horizontal overflow from turning into page scroll. Settings and auth pages
+   skip this class and keep normal document scrolling, which their content
+   needs. */
+body.app {
   overflow: hidden;
 }
 
@@ -48,7 +69,7 @@ body {
 .header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-3);
   padding: 0 var(--space);
   border-bottom: 1px solid var(--border);
   height: 52px;
@@ -60,7 +81,7 @@ body {
 .header-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   min-width: 0;
 }
 
@@ -81,10 +102,10 @@ body {
   overflow-y: scroll;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  padding: 28px var(--space) 36px;
+  padding: var(--sp-6) var(--space) var(--sp-6);
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: var(--sp-5);
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
@@ -111,7 +132,7 @@ body {
   margin: auto;
   text-align: center;
   max-width: 440px;
-  padding: 40px var(--space);
+  padding: var(--sp-6) var(--space);
   user-select: none;
 }
 
@@ -126,7 +147,7 @@ body {
 /* Message Item */
 .msg {
   display: flex;
-  gap: 14px;
+  gap: var(--sp-4);
   max-width: 820px;
   width: 100%;
   margin: 0 auto;
@@ -161,19 +182,20 @@ body {
 .msg.user .body {
   font-size: 15px;
   font-weight: 500;
-  padding-top: 1px;
   color: var(--text);
 }
 
+/* The role chip is 26px tall against 14.5px text, so both bodies take a small
+   top offset to sit on the chip's optical line. */
 .msg.assistant .body {
-  padding-top: 2px;
+  padding-top: var(--sp-hair);
 }
 
 .msg .imgs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
 }
 
 .msg .imgs img {
@@ -203,12 +225,12 @@ body {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 10px 14px;
+  padding: var(--sp-3) var(--sp-4);
 }
 
 .msg.user .imgs {
   justify-content: flex-end;
-  margin-bottom: 6px;
+  margin-bottom: var(--sp-2);
 }
 
 .avatar {
@@ -226,16 +248,20 @@ body {
 }
 
 /* Mode switch in header */
+/* The buttons sit inside the shared outline. An inset keeps their text off the
+   border; 4px padding plus 28px rows holds the control at 38px, near the 36px
+   tool buttons in the composer. */
 .seg {
   display: flex;
+  padding: var(--sp-1);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   margin-left: auto;
 }
 
 .seg button {
-  height: 30px;
-  padding: 0 12px;
+  height: 28px;
+  padding: 0 var(--sp-3);
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -252,7 +278,7 @@ body {
 }
 
 .msg .body p {
-  margin: 0 0 12px;
+  margin: 0 0 var(--sp-3);
 }
 
 .msg .body > :last-child {
@@ -266,7 +292,7 @@ body {
   color: var(--text);
   font-weight: 700;
   letter-spacing: -0.015em;
-  margin: 18px 0 8px;
+  margin: var(--sp-4) 0 var(--sp-2);
   line-height: 1.35;
 }
 
@@ -284,12 +310,12 @@ body {
 
 .msg .body ul,
 .msg .body ol {
-  margin: 0 0 12px;
-  padding-left: 20px;
+  margin: 0 0 var(--sp-3);
+  padding-left: 20px; /* list indent, measured from the text column */
 }
 
 .msg .body li {
-  margin-bottom: 4px;
+  margin-bottom: var(--sp-1);
 }
 
 .msg .body li:last-child {
@@ -301,12 +327,12 @@ body {
   background: var(--bg-soft);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: var(--sp-3) var(--sp-4);
   overflow-x: auto;
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.55;
-  margin: 12px 0;
+  margin: var(--sp-3) 0;
 }
 
 .msg .body pre::-webkit-scrollbar {
@@ -323,7 +349,7 @@ body {
   font-size: 0.88em;
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  padding: 1.5px 5px;
+  padding: 2px var(--sp-1);
   border-radius: 4px;
   color: var(--text);
 }
@@ -337,8 +363,8 @@ body {
 }
 
 .msg .body blockquote {
-  margin: 12px 0;
-  padding: 2px 0 2px 14px;
+  margin: var(--sp-3) 0;
+  padding: var(--sp-hair) 0 var(--sp-hair) var(--sp-4);
   border-left: 3px solid var(--text);
   color: var(--muted);
 }
@@ -352,14 +378,14 @@ body {
 .msg .body table {
   border-collapse: collapse;
   width: 100%;
-  margin: 14px 0;
+  margin: var(--sp-4) 0;
   font-size: 13.5px;
 }
 
 .msg .body th,
 .msg .body td {
   border: 1px solid var(--border);
-  padding: 8px 12px;
+  padding: var(--sp-2) var(--sp-3);
   text-align: left;
 }
 
@@ -371,24 +397,24 @@ body {
 .msg .body hr {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 16px 0;
+  margin: var(--sp-5) 0;
 }
 
 .cursor {
   display: inline-block;
   color: var(--text);
   font-weight: 700;
-  margin-left: 1px;
+  margin-left: var(--sp-hair);
   line-height: 1;
 }
 
 .status {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   font-size: 13px;
   color: var(--muted);
-  padding: 0 0 1px;
+  padding: 0 0 var(--sp-hair);
 }
 
 .status .dot {
@@ -405,13 +431,13 @@ body {
   background: #fff5f5;
   border: 1px solid #ffd6d6;
   border-radius: 6px;
-  padding: 8px 12px;
-  margin-top: 4px;
+  padding: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-1);
 }
 
 /* Composer */
 .composer {
-  padding: 8px var(--space) 18px;
+  padding: var(--sp-2) var(--space) var(--sp-4);
   background: var(--bg);
   flex-shrink: 0;
 }
@@ -419,9 +445,9 @@ body {
 .msg-sources {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-  padding-top: 10px;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
   border-top: 1px solid var(--border);
 }
 
@@ -431,11 +457,11 @@ body {
   color: var(--muted);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 2px 8px;
+  padding: 2px var(--sp-2);
   background: var(--bg-soft);
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -454,9 +480,9 @@ body {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 4px 0 10px;
-  margin: 0 0 6px;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0 var(--sp-2);
+  margin: 0 0 var(--sp-2);
   border-bottom: 1px solid var(--border);
 }
 
@@ -467,10 +493,10 @@ body {
 .atts .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   height: 32px;
   max-width: 220px;
-  padding: 0 4px 0 8px;
+  padding: 0 var(--sp-1) 0 var(--sp-2);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-soft);
@@ -527,8 +553,8 @@ body {
 
 .atts .chip.chip-img .chip-x {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  top: var(--sp-1);
+  right: var(--sp-1);
   width: 16px;
   height: 16px;
   border-radius: 50%;
@@ -585,7 +611,7 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 8px 16px 8px 16px;
+  padding: var(--sp-2) var(--sp-4);
 }
 
 .box:hover,
@@ -611,7 +637,7 @@ body {
   line-height: 1.55;
   max-height: 200px;
   min-height: 26px;
-  padding: 8px 0;
+  padding: var(--sp-2) 0;
 }
 
 .box textarea::placeholder {
@@ -623,10 +649,9 @@ body {
   display: flex;
   align-items: center;
   gap: 0;
-  padding: 0;
+  padding: var(--sp-2) 0 0;
+  margin-top: var(--sp-2);
   border-top: 1px solid var(--border);
-  padding-top: 6px;
-  margin-top: 6px;
 }
 
 .tools .tool {
@@ -639,9 +664,9 @@ body {
 .bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   max-width: 820px;
-  margin: 2px auto 0;
+  margin: var(--sp-1) auto 0;
   min-height: 0;
 }
 
@@ -657,7 +682,7 @@ body {
   display: none;
   font-size: 12px;
   color: var(--muted);
-  margin-right: 8px;
+  margin-right: var(--sp-2);
 }
 
 .count.show {
@@ -757,7 +782,7 @@ body {
 
 .hint {
   max-width: 820px;
-  margin: 8px auto 0;
+  margin: var(--sp-2) auto 0;
   font-size: 12px;
   color: var(--muted);
   text-align: center;
@@ -775,7 +800,7 @@ textarea:focus-visible {
 
 @media (max-width: 768px) {
   .composer {
-    padding: 8px 12px 14px;
+    padding: var(--sp-2) var(--sp-3) var(--sp-4);
   }
 
   .hint {
@@ -789,7 +814,7 @@ textarea:focus-visible {
   }
 
   #searchBtn {
-    padding: 0 10px;
+    padding: 0 var(--sp-3);
   }
 }
 
@@ -819,15 +844,15 @@ textarea:focus-visible {
 .msg-sources .chip-n {
   color: var(--faint);
   font-variant-numeric: tabular-nums;
-  margin-right: 2px;
+  margin-right: var(--sp-hair);
 }
 
 .cp {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: var(--sp-2);
+  right: var(--sp-2);
   height: 22px;
-  padding: 0 8px;
+  padding: 0 var(--sp-2);
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--bg);
@@ -851,10 +876,10 @@ textarea:focus-visible {
 .regen {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-1);
   height: 26px;
-  margin-top: 8px;
-  padding: 0 10px;
+  margin-top: var(--sp-2);
+  padding: 0 var(--sp-3);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: none;

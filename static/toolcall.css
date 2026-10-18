@@ -3,7 +3,7 @@
 
 .tc {
   max-width: 100%;
-  margin: 0 0 6px;
+  margin: 0 0 var(--sp-2);
   font-size: 13.5px;
   line-height: 1.5;
   color: var(--text);
@@ -11,7 +11,7 @@
 
 /* First row shares the 26px line with the .role chip (body has 2px text offset). */
 .msg .body > .tc:first-child {
-  margin-top: -2px;
+  margin-top: calc(var(--sp-hair) * -1);
 }
 
 .tc,
@@ -31,6 +31,9 @@
 }
 
 /* Header — the always-visible toggle row */
+/* Geometry here is axis-derived and stays off the spacing scale: icon center
+   sits at x=7 and the label at x=22, matching .tc-panel below, so the toggle,
+   the panel text, and the row title share one column. */
 .tc-head {
   display: flex;
   align-items: center;
@@ -39,7 +42,7 @@
   max-width: 100%;
   min-height: 26px;
   margin-left: -6px;
-  padding: 0 8px 0 6px;
+  padding: 0 var(--sp-2) 0 6px;
   border: 0;
   border-radius: 6px;
   background: none;
@@ -70,10 +73,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--faint);
-}
-
-.tc-meta:not(:empty)::before {
-  content: "· ";
 }
 
 .tc-chev {
@@ -116,13 +115,16 @@
   min-height: 0;
 }
 
-/* Line on the icon-center axis (x=7), text column on the label axis (x=22). */
+/* Line on the icon-center axis (x=7), text column on the label axis (x=22).
+   Spacing ladder inside the panel, tight to generous: 2px between result rows,
+   12px from a query header to its own rows, 24px from one search group to the
+   next, so a header never reads as part of the previous group. */
 .tc-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  margin: 4px 0 4px 7px;
-  padding: 2px 0 2px 14px;
+  gap: var(--sp-5);
+  margin: var(--sp-1) 0 var(--sp-1) 7px;
+  padding: var(--sp-hair) 0 var(--sp-hair) 14px;
   border-left: 1px solid var(--border);
 }
 
@@ -130,15 +132,19 @@
 .tc-q {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
 }
 
+/* 2.5px a side puts the 13px glyph in an 18px slot, the same slot the result
+   favicon occupies, so the query icon shares the favicon center and the query
+   text shares the result title column. Off the spacing scale on purpose. */
 .tc-q svg {
   width: 13px;
   height: 13px;
+  margin: 0 2.5px;
   color: var(--muted);
 }
 
@@ -147,21 +153,22 @@
   overflow-wrap: anywhere;
 }
 
+/* The markdown rules in style.css target .msg .body ul and .msg .body li, which
+   outrank these and were adding a 20px indent, a 4px row margin and a 12px tail
+   to the results. A query group is not prose, so it renders as divs. */
 .tc-list {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  margin: 5px 0 0;
-  padding: 0;
-  list-style: none;
+  gap: var(--sp-hair);
+  margin: var(--sp-3) 0 0;
 }
 
 .tc-link {
   display: flex;
   align-items: center;
-  gap: 9px;
-  margin: 0 -6px;
-  padding: 5px 6px;
+  gap: var(--sp-2);
+  margin: 0 calc(var(--sp-2) * -1);
+  padding: var(--sp-1) var(--sp-2);
   border-radius: 6px;
   color: var(--text);
   text-decoration: none;
@@ -231,8 +238,8 @@
 }
 
 .tc-retry {
-  margin-top: 8px;
-  padding: 4px 11px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: none;
@@ -255,7 +262,7 @@
 .tc-think {
   max-height: 220px;
   overflow-y: auto;
-  padding-right: 6px;
+  padding-right: var(--sp-2);
   color: var(--muted);
   font-size: 13px;
   line-height: 1.65;
