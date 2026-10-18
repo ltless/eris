@@ -5,14 +5,16 @@ and a local llama.cpp model server.
 
 ## Architecture
 
-- **Frontend**: static HTML + vanilla JS + CSS. `fetch` streaming (SSE over
-  POST). `marked.js` renders markdown, `DOMPurify` sanitizes, `highlight.js`
-  highlights code.
-- **Backend**: FastAPI + uvicorn. Proxies to an OpenAI-compatible model
-  endpoint via `httpx`, streams deltas back to the browser.
-- **Model**: llama.cpp `llama-server` (FILKAN backend) exposing
-  `/v1/chat/completions` and `/v1/embeddings`.
-- **Vector DB**: ChromaDB (Docker) for document retrieval.
+The browser side is static HTML, vanilla JS and CSS: `fetch` streams SSE over
+POST, `marked.js` renders markdown, `DOMPurify` sanitizes it, and
+`highlight.js` handles syntax highlighting.
+
+The backend is FastAPI on uvicorn. It talks to an OpenAI-compatible model
+endpoint over `httpx` and streams deltas back to the browser. Model serving is
+llama.cpp's `llama-server` (FILKAN backend), which exposes
+`/v1/chat/completions` and `/v1/embeddings`.
+
+ChromaDB runs in Docker and handles document retrieval.
 
 ```
 browser ──SSE──▶ FastAPI ──httpx──▶ llama-server (/v1)
