@@ -1,4 +1,8 @@
-"""ponytail: single-file sqlite auth. ceiling: multi-instance/multi-user scale -> real DB + JWT."""
+"""Single-file sqlite auth: users, password hashes, and session tokens.
+
+Fine for one box and one operator. Sharing it across instances would need a real
+database and signed tokens instead of a sessions table.
+"""
 
 import hashlib
 import hmac
@@ -125,7 +129,12 @@ def set_name(user_id, name):
 
 
 def set_media(user_id, kind, url):
-    db().execute(f"UPDATE users SET {kind}=? WHERE id=?", (url, user_id))
+    # The column name cannot be bound as a parameter, so it is pinned to a
+    # literal set here rather than trusted from the caller.
+    column = {"avatar": "avatar", "cover": "cover"}.get(kind)
+    if not column:
+        raise ValueError(f"unknown media kind: {kind}")
+    db().execute(f"UPDATE users SET {column}=? WHERE id=?", (url, user_id))
     db().commit()
 
 

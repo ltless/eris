@@ -42,18 +42,31 @@ def db():
 
 
 def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=None):
-    if not text.strip():
+    if not chat_id or not text.strip():
+        return
+    # chat_id comes from the client, so a turn may only land in a chat the
+    # caller owns. A missing row means this is the first turn of a new chat.
+    owner = db().execute("SELECT user_id FROM chats WHERE id=?", (chat_id,)).fetchone()
+    if owner and owner["user_id"] != user_id:
         return
     now = int(time.time() * 1000)
     meta = json.dumps(sources[:MAX_SOURCES]) if sources else None
     if isinstance(thinking, list):
-        thinking = json.dumps([t[:MAX_THINKING] for t in thinking if t.strip()])
+        # Truncating the serialized JSON would leave it unparseable, so trim by
+        # whole rounds and capped text until the encoding itself fits.
+        kept = [part for part in thinking if part.strip()]
+        while kept and len(json.dumps(kept)) > MAX_THINKING:
+            over = len(json.dumps(kept)) - MAX_THINKING
+            kept[-1] = kept[-1][: max(len(kept[-1]) - over, 0)]
+            if not kept[-1]:
+                kept.pop()
+        thinking = json.dumps(kept) if kept else None
     elif thinking:
         thinking = thinking[:MAX_THINKING]
     webj = json.dumps(web) if web else None
     db().execute(
         "INSERT INTO turns(chat_id,role,content,thinking,sources,web,ts) VALUES(?,?,?,?,?,?,?)",
-        (chat_id, role, text, thinking[:MAX_THINKING] if thinking else None, meta, webj, now),
+        (chat_id, role, text, thinking or None, meta, webj, now),
     )
     db().execute(
         "INSERT INTO chats(id,user_id,ts) VALUES(?,?,?) "
@@ -81,18 +94,27 @@ def list_chats(user_id, limit=50):
 
 
 def turns(user_id, chat_id, limit=100):
+    # Newest window, then flipped back to reading order: a long chat has to
+    # open on its latest exchange, not its first one.
     rows = db().execute(
         "SELECT role,content,thinking,sources,web FROM turns "
         "WHERE chat_id=(SELECT id FROM chats WHERE id=? AND user_id=?) "
-        "ORDER BY rowid LIMIT ?",
+        "ORDER BY rowid DESC LIMIT ?",
         (chat_id, user_id, limit),
-    ).fetchall()
+    ).fetchall()[::-1]
     out = []
     for r in rows:
         t = {"role": r["role"], "content": r["content"]}
         if r["thinking"]:
             raw = r["thinking"]
-            t["thinking"] = json.loads(raw) if raw.startswith("[") else raw
+            if raw.startswith("["):
+                # Model text can start with "[" and still not be our JSON list.
+                try:
+                    t["thinking"] = json.loads(raw)
+                except ValueError:
+                    t["thinking"] = raw
+            else:
+                t["thinking"] = raw
         if r["sources"]:
             t["sources"] = json.loads(r["sources"])
         if r["web"]:
@@ -126,6 +148,13 @@ def set_meta(user_id, chat_id, title=None, pinned=None):
 
 
 def delete(user_id, chat_id):
-    db().execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat_id, user_id))
+    # Check ownership first: turns are keyed by chat_id alone, so deleting them
+    # after a no-op chat delete would wipe another user's messages.
+    row = db().execute(
+        "SELECT id FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)
+    ).fetchone()
+    if not row:
+        return
     db().execute("DELETE FROM turns WHERE chat_id=?", (chat_id,))
+    db().execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat_id, user_id))
     db().commit()

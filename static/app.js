@@ -543,6 +543,8 @@ async function send(text, regen = false) {
       thinkCtl.done();
       thinkRounds.push(thinkRound);
     } else {
+      // done() clears the label timer; a detached node would keep ticking.
+      thinkCtl.done();
       thinkCtl.el.remove();
     }
     thinkCtl = null;

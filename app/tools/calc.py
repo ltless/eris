@@ -6,7 +6,8 @@ attributes, calls, or strings, so eval() has nothing to reach. Nested **
 """
 
 import ast
-import json
+
+from . import as_args
 
 _BIN = {ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow}
 _ALLOWED = (
@@ -62,11 +63,7 @@ def evaluate(expression):
 
 
 async def run(args):
-    if not isinstance(args, dict):
-        try:
-            args = json.loads(args)
-        except (json.JSONDecodeError, TypeError):
-            args = {}
+    args = as_args(args)
     expr = str(args.get("expression", "") or "").strip()
     if not expr:
         return "calc: no expression given."

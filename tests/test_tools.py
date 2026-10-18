@@ -29,8 +29,12 @@ def check_bad_arguments():
 
 
 def check_unreachable():
+    prev = search.settings.searxng_url
     search.settings.searxng_url = "http://127.0.0.1:1"
-    assert asyncio.run(search.run(json.dumps({"query": "x"}))) == []
+    try:
+        assert asyncio.run(search.run(json.dumps({"query": "x"}))) == []
+    finally:
+        search.settings.searxng_url = prev
 
 
 def check_time_range():
@@ -94,9 +98,14 @@ def check_run_sends_cleaned_query():
 
 
 def check_run_accepts_dict():
+    prev = search.settings.searxng_url
     search.settings.searxng_url = "http://127.0.0.1:1"
-    assert asyncio.run(search.run({"query": "x"})) == []
-    assert asyncio.run(search.run("not json")) == []
+    try:
+        assert asyncio.run(search.run({"query": "x"})) == []
+        assert asyncio.run(search.run("not json")) == []
+        assert asyncio.run(search.run(["x"])) == []
+    finally:
+        search.settings.searxng_url = prev
 
 
 def check_rank():
@@ -192,6 +201,7 @@ def check_ssrf_guard():
         "http://169.254.169.254/latest/meta-data/",
         "http://172.16.3.2/x",
         "http://[::1]/x",
+        "http://[::ffff:127.0.0.1]/x",
         "ftp://8.8.8.8/x",
         "http:///",
     ):
@@ -304,13 +314,18 @@ def check_native_stream():
             assert kw["json"]["messages"] == [{"role": "user", "content": "hi"}]
             return FakeStream()
 
+    prev_client, prev_base = api.httpx.AsyncClient, api.settings.model_base_url
     api.httpx.AsyncClient = FakeClient
     api.settings.model_base_url = "http://fake/v1"
 
     async def run():
         return [item async for item in api.stream_completion([{"role": "user", "content": "hi"}])]
 
-    out = asyncio.run(run())
+    try:
+        out = asyncio.run(run())
+    finally:
+        api.httpx.AsyncClient = prev_client
+        api.settings.model_base_url = prev_base
     assert out[:3] == [("thinking", "hmm"), ("delta", "hal"), ("delta", "o")], out
     assert out[3] == ("tool_calls", [{"id": "c1", "function": {"name": "web_search", "arguments": {"query": "eris"}}}]), out
 
@@ -362,6 +377,74 @@ def check_chats_sqlite():
     chats._db = None
     del os.environ["CHAT_DB"]
     os.unlink(path)
+
+
+def check_chats_ownership():
+    import os
+    import tempfile
+    from app import chats
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    os.environ["CHAT_DB"] = path
+    chats._db = None
+
+    chats.save_turn(1, "mine", "user", "q")
+    chats.save_turn(2, "theirs", "user", "q2")
+
+    # a turn may not be written into a chat somebody else owns
+    chats.save_turn(1, "theirs", "user", "injected")
+    assert [t["content"] for t in chats.turns(2, "theirs")] == ["q2"]
+
+    # deleting a foreign chat must leave its turns alone
+    chats.delete(1, "theirs")
+    assert [t["content"] for t in chats.turns(2, "theirs")] == ["q2"]
+    assert [c["id"] for c in chats.list_chats(2)] == ["theirs"]
+
+    # thinking text that merely starts with "[" is not a JSON list
+    chats.save_turn(1, "mine", "assistant", "a", thinking="[not json at all")
+    assert chats.turns(1, "mine")[-1]["thinking"] == "[not json at all"
+
+    # a long multi-round thinking list stays valid JSON and keeps its shape
+    chats.save_turn(1, "mine", "assistant", "b", thinking=["x" * 3000] * 6)
+    stored = chats.turns(1, "mine")[-1]["thinking"]
+    assert isinstance(stored, list) and stored, stored
+    assert sum(len(p) for p in stored) <= chats.MAX_THINKING
+
+    chats._db.close()
+    chats._db = None
+    del os.environ["CHAT_DB"]
+    os.unlink(path)
+
+
+def check_turns_window():
+    """A long chat opens on its newest turns, still in reading order."""
+    import os
+    import tempfile
+    from app import chats
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    os.environ["CHAT_DB"] = path
+    chats._db = None
+
+    for i in range(5):
+        chats.save_turn(1, "c", "user", f"m{i}")
+    window = chats.turns(1, "c", limit=3)
+    assert [t["content"] for t in window] == ["m2", "m3", "m4"], window
+
+    chats._db.close()
+    chats._db = None
+    del os.environ["CHAT_DB"]
+    os.unlink(path)
+
+
+def check_rank_keeps_input():
+    hits = [{"title": "t", "url": "https://a.com/x?utm_source=z", "snippet": ""}]
+    search.rank("t", hits)
+    assert hits[0]["url"] == "https://a.com/x?utm_source=z", hits
 
 
 def check_to_native():

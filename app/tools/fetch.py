@@ -12,7 +12,6 @@ this ever faces a hostile network.
 import asyncio
 import io
 import ipaddress
-import json
 import re
 import socket
 from urllib.parse import urlsplit
@@ -22,6 +21,7 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
 from ..config import settings
+from . import as_args
 
 TIMEOUT = 12
 MIN_READABLE = 200
@@ -108,6 +108,7 @@ async def fetch_page(client, url, max_chars):
         if "pdf" in ctype:
             try:
                 text = "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(raw)).pages)
+                text = re.sub(r"\s+", " ", text).strip()[:max_chars]
             except Exception:
                 return None
         else:
@@ -153,11 +154,7 @@ TOOL = {
 
 async def run(args):
     """Handler for the fetch_url tool. Returns text for the model, never raises."""
-    if not isinstance(args, dict):
-        try:
-            args = json.loads(args)
-        except (json.JSONDecodeError, TypeError):
-            args = {}
+    args = as_args(args)
     url = str(args.get("url", "") or "").strip()
     if not url:
         return "No URL given."

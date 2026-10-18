@@ -6,9 +6,8 @@ same multi-round contract as web_search. Silent: results ride the existing
 sources chips, so the UI invents no extra row.
 """
 
-import json
-
 from .. import rag
+from . import as_args
 
 TOOL = {
     "type": "function",
@@ -43,11 +42,7 @@ def render(results, start=0):
 
 
 async def run(user_id, args):
-    if not isinstance(args, dict):
-        try:
-            args = json.loads(args)
-        except (json.JSONDecodeError, TypeError):
-            args = {}
+    args = as_args(args)
     query = str(args.get("query", "") or "").strip()
     if not query:
         return []

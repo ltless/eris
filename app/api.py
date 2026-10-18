@@ -134,7 +134,7 @@ async def stream_completion(messages, model=None, thinking=False, tools=None, ct
     if tools:
         payload["tools"] = tools
     headers = {"Authorization": f"Bearer {settings.model_api_key}"}
-    url = settings.model_base_url.replace("/v1", "") + "/api/chat"
+    url = settings.model_base_url.removesuffix("/v1") + "/api/chat"
     async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
         async with c.stream("POST", url, json=payload, headers=headers) as r:
             if r.status_code >= 400:
@@ -291,10 +291,9 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
             yield "data: [DONE]\n\n"
         finally:
             # Persist even if the client hit Stop mid-stream: the turn happened
-            # (Odysseus's registry survives refresh; ours must too). No yields
-            # allowed here — GeneratorExit lands on the paused yield.
-            if req.chat_id and (query or answer):
-                if query:
+            # and should still be there after a refresh. No yields allowed here.
+            if req.chat_id:
+                if query and not req.regenerate:
                     chats.save_turn(u["id"], req.chat_id, "user", query)
                     chats.touch_title(req.chat_id, query)
                 if answer:
@@ -336,9 +335,14 @@ async def chat_delete(chat_id: str, u: dict = Depends(require_user)):
     return {"ok": True}
 
 
+MAX_DOC_BYTES = 25_000_000
+
+
 @app.post("/api/documents/upload")
 async def upload_document(file: UploadFile, u: dict = Depends(require_user)):
     raw = await file.read()
+    if len(raw) > MAX_DOC_BYTES:
+        raise HTTPException(413, "document too large (max 25MB)")
     name = (file.filename or "").lower()
     if name.endswith(".pdf") or file.content_type == "application/pdf":
         try:
@@ -355,12 +359,12 @@ async def upload_document(file: UploadFile, u: dict = Depends(require_user)):
     if not text.strip():
         raise HTTPException(400, "Empty document")
     try:
-        n = await rag.add_document(u["id"], file.filename, text)
+        n = await rag.add_document(u["id"], file.filename or "upload", text)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"Embedding model unavailable: {e}")
     except Exception as e:
         raise HTTPException(503, f"ChromaDB unavailable: {e}")
-    return {"source": file.filename, "chunks": n}
+    return {"source": file.filename or "upload", "chunks": n}
 
 
 @app.post("/api/auth/register")

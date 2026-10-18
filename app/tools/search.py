@@ -1,4 +1,3 @@
-import json
 import re
 from datetime import date, datetime
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunsplit
@@ -6,7 +5,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunsplit
 import httpx
 
 from ..config import settings
-from . import fetch
+from . import as_args, fetch
 
 TOOL = {
     "type": "function",
@@ -107,8 +106,8 @@ def rank(query, results, fresh=False):
         key = _clean_url(r.get("url") or "")
         if key and key not in seen:
             seen.add(key)
-            r["url"] = key
-            uniq.append(r)
+            # Copy: callers keep their own hit dicts untouched.
+            uniq.append({**r, "url": key})
     scored = []
     for i, r in enumerate(uniq):
         title = (r.get("title") or "").lower()
@@ -167,11 +166,7 @@ def time_range_for(args, query):
 
 
 async def run(args):
-    if not isinstance(args, dict):
-        try:
-            args = json.loads(args)
-        except (json.JSONDecodeError, TypeError):
-            args = {}
+    args = as_args(args)
     query = clean_query(str(args.get("query", "")).strip())
     if not query:
         return []
