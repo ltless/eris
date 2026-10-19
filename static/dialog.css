@@ -1,0 +1,246 @@
+/* The dialog shell: scrim, centred sheet, and the rail-plus-panel layout.
+   Library and Settings both wear it, so it lives here once and each surface
+   keeps only its own content styles. Loaded by the chat page, which owns both
+   dialogs; there is no route behind either of them.
+
+   Markup contract, so `dialog.js` never has to know a class name twice:
+     .dlg-modal[data-hash]        the fixed layer, `hidden` when closed
+       .dlg-scrim[data-close]     dismiss on click
+       .dlg-sheet[role=dialog][aria-modal][tabindex=-1]
+         .dlg-head                title + close
+           .dlg-close[data-close]
+         .dlg-layout
+           .dlg-nav[data-nav]     buttons carrying `data-sec`
+           .dlg-panel#sec-<name>  one per section
+
+   Tokens come from style.css, so dark themes follow for free. */
+
+.dlg-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-5);
+}
+
+.dlg-modal[hidden] {
+  display: none;
+}
+
+.dlg-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+/* The sheet is the dialog surface: opaque, hairline-bordered, and capped so a
+   long panel scrolls inside it rather than growing past the viewport. */
+.dlg-sheet {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 100%);
+  max-height: min(84vh, 760px);
+  padding: var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
+  font-size: 14.5px;
+  color: var(--text);
+}
+
+.dlg-sheet:focus {
+  outline: none;
+}
+
+.dlg-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-5);
+}
+
+.dlg-head h2 {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+/* Closes the dialog. Icon-only, so the accessible name carries the words and
+   it costs no horizontal space next to the title. */
+.dlg-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.dlg-close svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dlg-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.dlg-close:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* ---- Layout: rail + panel. The panel is the scroll container. ---- */
+
+.dlg-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: var(--sp-5);
+  flex: 1;
+  min-height: 0;
+}
+
+.dlg-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-hair);
+}
+
+.dlg-nav button {
+  height: 36px;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.dlg-nav button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.dlg-nav button.on {
+  background: var(--hover);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.dlg-nav button:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+.dlg-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-5);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.dlg-panel[hidden] {
+  display: none;
+}
+
+.dlg-panel h3 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--sp-4);
+}
+
+/* Browser surfaces inside either dialog carry the same palette as the page. */
+.dlg-modal ::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ---- Narrow: the sheet takes the screen and the rail becomes a chip row ---- */
+
+@media (max-width: 720px) {
+  .dlg-modal {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  .dlg-sheet {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    padding: var(--sp-5) var(--space) var(--sp-6);
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .dlg-layout {
+    grid-template-columns: 1fr;
+    gap: var(--sp-4);
+  }
+
+  .dlg-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: var(--sp-1);
+    scrollbar-width: none;
+  }
+
+  .dlg-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dlg-nav button {
+    flex: none;
+  }
+
+  .dlg-panel {
+    padding: var(--sp-4);
+  }
+}
+
+/* Touch: 44px. */
+@media (pointer: coarse) {
+  .dlg-nav button,
+  .dlg-close {
+    height: 44px;
+  }
+
+  .dlg-close {
+    width: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dlg-nav button,
+  .dlg-close {
+    transition: none;
+  }
+}

@@ -18,6 +18,33 @@ const els = {
 
 marked.setOptions({ breaks: true, gfm: true });
 
+// Sticky "jump to latest" button. While streaming we only auto-scroll when the
+// reader is already at the bottom, so scrolling up to re-read older turns is
+// not yanked back on every delta.
+const scrollBtn = document.createElement("button");
+scrollBtn.type = "button";
+scrollBtn.className = "jump-btn";
+scrollBtn.setAttribute("aria-label", "Scroll to latest");
+scrollBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>';
+scrollBtn.hidden = true;
+scrollBtn.addEventListener("click", () => {
+  els.messages.scrollTop = els.messages.scrollHeight;
+});
+els.messages.append(scrollBtn);
+
+const nearBottom = () =>
+  els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight < 80;
+
+function syncScrollBtn() {
+  scrollBtn.hidden = nearBottom();
+}
+
+function autoScroll() {
+  if (nearBottom()) els.messages.scrollTop = els.messages.scrollHeight;
+}
+
+els.messages.addEventListener("scroll", syncScrollBtn, { passive: true });
+
 const FILE_ICON =
   '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
@@ -37,6 +64,8 @@ let atts = [];
 let attSeq = 0;
 let useRag = true;
 let userName = "";
+let userAvatar = "";
+let modelAvatar = "";
 let chatMode = "agentic";
 
 const current = () => sessions.find((s) => s.id === activeId);
@@ -82,8 +111,44 @@ function addRegen(body, s) {
 }
 
 function showEmpty() {
-  els.messages.innerHTML =
-    '<div class="empty" id="empty"><p>Ask anything. Attach files or images. Markdown supported.</p></div>';
+  resetMessages(
+    '<div class="empty" id="empty"><p>Ask anything. Attach files or images. Markdown supported.</p></div>'
+  );
+}
+
+// innerHTML wipes destroy the sticky scroll button; every message-area reset
+// goes through here so it stays attached and its visibility state stays fresh.
+function resetMessages(html = "") {
+  els.messages.innerHTML = html;
+  els.messages.append(scrollBtn);
+  syncScrollBtn();
+}
+
+// Every avatar in the app draws from the same two globals: the photo when the
+// account has one, initials otherwise. Background images need the sizing that
+// .avatar and .side-avatar declare, so the photo is set here, not in the markup.
+function paintAvatar(el) {
+  if (!el) return;
+  if (userAvatar) {
+    el.style.backgroundImage = `url("${userAvatar}")`;
+    el.textContent = "";
+    return;
+  }
+  el.style.backgroundImage = "";
+  el.textContent = (userName || "ME").slice(0, 2).toUpperCase();
+}
+
+// The assistant's chip carries the model picture when the account has one, and
+// the "AI" label when it does not. Same rule as the user avatar above.
+function paintRole(el) {
+  if (!el) return;
+  if (modelAvatar) {
+    el.style.backgroundImage = `url("${modelAvatar}")`;
+    el.textContent = "";
+    return;
+  }
+  el.style.backgroundImage = "";
+  el.textContent = "AI";
 }
 
 function addMessage(role, text, images) {
@@ -114,14 +179,16 @@ function addMessage(role, text, images) {
     body.append(t);
     const av = document.createElement("div");
     av.className = "avatar";
-    av.textContent = (userName || "ME").slice(0, 2).toUpperCase();
+    paintAvatar(av);
     wrap.append(av, body);
   } else {
     body.innerHTML = render(text);
+    paintRole(roleEl);
     wrap.append(roleEl, body);
   }
-  els.messages.append(wrap);
+  els.messages.insertBefore(wrap, scrollBtn);
   els.messages.scrollTop = els.messages.scrollHeight;
+  syncScrollBtn();
   return body;
 }
 
@@ -392,7 +459,7 @@ function blankChat() {
   els.chatTitle.textContent = "New chat";
   atts = [];
   renderAtts();
-  els.messages.innerHTML = "";
+  resetMessages();
   showEmpty();
   els.input.value = "";
   syncInput();
@@ -407,7 +474,7 @@ function loadSession(id) {
   els.chatTitle.textContent = s.title;
   atts = [];
   renderAtts();
-  els.messages.innerHTML = "";
+  resetMessages();
   const paint = () => {
     if (!s.messages.length) {
       showEmpty();
@@ -514,7 +581,8 @@ async function send(text, regen = false) {
     }
   } else if (s.messages.at(-1)?.role === "assistant") {
     s.messages.pop();
-    els.messages.lastElementChild?.remove();
+    // Last DOM child is the sticky scroll button, not the message.
+    [...els.messages.querySelectorAll(".msg")].pop()?.remove();
   }
 
   const body = addMessage("assistant", "");
@@ -621,7 +689,7 @@ async function send(text, regen = false) {
           thinkAll += evt.text;
           thinkRound += evt.text;
           thinkCtl.append(evt.text);
-          els.messages.scrollTop = els.messages.scrollHeight;
+          autoScroll();
         } else if (evt.type === "delta") {
           raw += evt.text;
           let ans = body.querySelector(".ans");
@@ -634,7 +702,7 @@ async function send(text, regen = false) {
             body.append(ans);
           }
           ans.innerHTML = render(raw) + '<span class="cursor">&#9613;</span>';
-          els.messages.scrollTop = els.messages.scrollHeight;
+          autoScroll();
         } else if (evt.type === "error") {
           const err = document.createElement("div");
           err.className = "err";
@@ -840,24 +908,35 @@ ErisSidebar.init({
   },
 });
 
-fetch("/api/auth/me").then((r) => {
-  if (!r.ok) location.href = "/auth.html";
-  return r.json().catch(() => ({}));
-}).then((u) => {
-  if (!u || !u.name) return;
-  userName = u.name;
-  const nm = document.getElementById("sideName");
-  const av = document.getElementById("sideAvatar");
-  if (nm) nm.textContent = u.name;
-  if (av) {
-    if (u.avatar) av.style.backgroundImage = `url("${u.avatar}")`;
-    else av.textContent = u.name.slice(0, 2).toUpperCase();
-  }
-});
+function refreshAccount() {
+  fetch("/api/auth/me").then((r) => {
+    if (!r.ok) {
+      location.href = "/auth.html";
+      return null;
+    }
+    return r.json().catch(() => ({}));
+  }).then((u) => {
+    if (!u || !u.name) return;
+    userName = u.name;
+    userAvatar = u.avatar || "";
+    modelAvatar = (u.prefs || {}).model_avatar || "";
+    const nm = document.getElementById("sideName");
+    if (nm) nm.textContent = u.name;
+    paintAvatar(document.getElementById("sideAvatar"));
+    // Messages can render before this resolves, so repaint what is already there.
+    els.messages.querySelectorAll(".avatar").forEach(paintAvatar);
+    els.messages.querySelectorAll(".msg.assistant .role").forEach(paintRole);
+  }).catch(() => {
+    // A background repaint: a network blip must not raise, the next save fires
+    // this again.
+  });
+}
 
-document.getElementById("sideProfile")?.addEventListener("click", () => {
-  location.href = "/settings.html";
-});
+refreshAccount();
+
+/* The settings dialog writes to the account this page is showing. Nothing
+   navigates any more, so it asks for a repaint once a change lands. */
+window.addEventListener("eris:settings-saved", refreshAccount);
 
 loadSettings();
 syncComposer();

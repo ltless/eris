@@ -9,15 +9,16 @@ The browser side is static HTML, vanilla JS and CSS: `fetch` streams SSE over
 POST, `marked.js` renders markdown, `DOMPurify` sanitizes it, and
 `highlight.js` handles syntax highlighting.
 
-The backend is FastAPI on uvicorn. It talks to an OpenAI-compatible model
-endpoint over `httpx` and streams deltas back to the browser. Model serving is
-llama.cpp's `llama-server` (FILKAN backend), which exposes
-`/v1/chat/completions` and `/v1/embeddings`.
+The backend is FastAPI on uvicorn. It talks to a local model server over
+`httpx` and streams deltas back to the browser. Model serving is llama.cpp's
+`llama-server` (FILKAN backend) or Ollama; chat streams from the native
+`/api/chat` NDJSON endpoint, embeddings come from the OpenAI-compatible
+`/v1/embeddings`.
 
 ChromaDB runs in Docker and handles document retrieval.
 
 ```
-browser ──SSE──▶ FastAPI ──httpx──▶ llama-server (/v1)
+browser ──SSE──▶ FastAPI ──httpx──▶ model server (/api/chat, /v1/embeddings)
                      └──▶ ChromaDB (embeddings + retrieval)
 ```
 
@@ -104,8 +105,27 @@ docker compose ps
 
 - `/api/chat` accepts `{messages, use_rag}` and streams SSE:
   `{"type":"sources"|"delta"|"error", ...}` then `[DONE]`.
+- Chat calls `MODEL_BASE_URL` minus the `/v1` suffix, on the native `/api/chat`
+  route: NDJSON with a `message` object per line. Only the `/v1` route set is
+  OpenAI-shaped, and only embeddings use it.
 - RAG uses `MODEL_BASE_URL/v1/embeddings`; the llama-server must be started
   with `--embeddings`.
 - Documents are chunked (~800 chars, 100 overlap) and stored with a `source`
-  metadata field; retrieval returns top-`RAG_TOP_K` chunks.
+  metadata field, a `doc_id`, and each chunk's ordinal `n`; retrieval returns
+  top-`RAG_TOP_K` chunks.
+- Settings and the Library are dialogs over the chat page, both opened from a
+  sidebar row (or `/#settings`, `/#library`), not routes of their own. The shell —
+  scrim, sheet, section rail, focus handling — is `static/dialog.css` and
+  `static/dialog.js`; `static/settings.html` and `static/library.html` are
+  redirects into the matching hash. Esc cancels a pending delete, then closes.
+- The Library lists the indexed documents, opens one document's first 50 chunks,
+  deletes a document with its chunks, and takes an upload. `POST
+  /api/documents/upload` indexes a file, `GET /api/documents` lists them,
+  `GET /api/documents/{doc_id}` returns one document, `DELETE
+  /api/documents/{doc_id}` removes it. Uploading a filename that is already
+  indexed replaces that document: the new copy is indexed first, then the
+  previous copy's chunks and row are retired (including pre-migration chunks
+  with the same `source`), and the response reports `replaced`.
+- Smoke the document path against a running server:
+  `.venv\Scripts\python.exe tests/smoke_library.py --email you@example.com --password ...`
 - Health dots in the sidebar poll `/api/health`.

@@ -116,9 +116,8 @@
 }
 
 /* Line on the icon-center axis (x=7), text column on the label axis (x=22).
-   Spacing ladder inside the panel, tight to generous: 2px between result rows,
-   12px from a query header to its own rows, 24px from one search group to the
-   next, so a header never reads as part of the previous group. */
+   Spacing ladder inside the panel: 2px between result rows, 24px from one
+   search group to the next. A query header has no gap to its own rows. */
 .tc-panel {
   display: flex;
   flex-direction: column;
@@ -129,12 +128,18 @@
 }
 
 /* Query header */
+.tc-group {
+  display: flex;
+  flex-direction: column;
+}
+
 .tc-q {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.2;
   color: var(--text);
 }
 
@@ -160,7 +165,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--sp-hair);
-  margin: var(--sp-3) 0 0;
 }
 
 .tc-link {

@@ -8,6 +8,7 @@
   --faint: #a1a1aa;
   --accent: #111113;
   --accent-ink: #ffffff;
+  --danger: #c92a2a;
   --hover: #f4f4f5;
   --radius: 8px;
 
@@ -26,6 +27,23 @@
   --space: var(--sp-4); /* page gutter, kept for the callers already using it */
   --font: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Dark theme. A head snippet resolves Light / Dark / System (stored in
+   localStorage under eris-theme) and sets data-theme on <html> before paint,
+   so this token swap covers every page with no flash. */
+[data-theme="dark"] {
+  --bg: #141417;
+  --bg-soft: #1b1b20;
+  --bg-elev: #1b1b20;
+  --border: #2c2c33;
+  --text: #ececed;
+  --muted: #9d9da6;
+  --faint: #85858e;
+  --accent: #ececed;
+  --accent-ink: #141417;
+  --danger: #ff6b6b;
+  --hover: #232329;
 }
 
 * {
@@ -127,6 +145,45 @@ body.app {
   background: var(--muted);
 }
 
+/* Floating "jump to latest" — shown when the reader is scrolled up. */
+.jump-btn {
+  position: sticky;
+  bottom: var(--sp-2);
+  align-self: flex-end;
+  z-index: 5;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--muted);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+
+.jump-btn:hover {
+  color: var(--text);
+  border-color: var(--text);
+}
+
+.jump-btn:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.jump-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* Empty State */
 .empty {
   margin: auto;
@@ -159,13 +216,15 @@ body.app {
   flex: none;
   width: 26px;
   height: 26px;
-  border-radius: 6px;
+  /* Circle, matching the user avatar, because this chip can now hold the model
+     picture. The cover sizing is what makes the photo fit the circle. */
+  border-radius: 50%;
   display: grid;
   place-items: center;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: -0.01em;
-  background: var(--bg-soft);
+  background: var(--bg-soft) center / cover no-repeat;
   color: var(--text);
   border: 1px solid var(--border);
 }
@@ -238,7 +297,9 @@ body.app {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: var(--bg-soft);
+  /* Same reason as .side-avatar: the photo is an inline background-image, so the
+     fit has to be declared in CSS. */
+  background: var(--bg-soft) center / cover no-repeat;
   border: 1px solid var(--border);
   display: grid;
   place-items: center;

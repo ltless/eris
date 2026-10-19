@@ -5,5 +5,7 @@ __pycache__/
 users.db
 static/uploads/
 chats.db
+library.db
 models/
 AGENTS.md
+.superpowers/

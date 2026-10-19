@@ -1,94 +1,357 @@
-/* Settings page. Monochrome, hairlines only, zero animation. */
+/* Settings panel content. The shell — scrim, sheet, rail, panel box, close —
+   is dialog.css; this file is what goes inside the panels. Scoped to
+   .set-modal, the root of the settings dialog, so the chat page's own controls
+   are never restyled. Monochrome hairlines, tokens from style.css, dark themes
+   included. */
 
-.settings {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: var(--sp-6) var(--space) var(--sp-7);
-  font-size: 14.5px;
-  color: var(--text);
-}
+/* The rail, the panel box, and the close control come from dialog.css. */
 
-.settings[hidden] {
-  display: none;
-}
+/* ---- Profile header: cover and avatar are the pickers ---- */
 
-.s-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-3);
-  margin-bottom: var(--sp-5);
-}
-
-.s-head h1 {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  margin: 0;
-}
-
-.s-back {
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 13px;
-}
-
-.s-back:hover,
-.s-back:focus-visible {
-  color: var(--text);
-}
-
-.s-card {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: var(--sp-4);
-  margin: 0 0 var(--sp-4);
-}
-
-.s-card h2 {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  margin: 0 0 var(--sp-4);
-}
-
-/* Profile header */
-.s-cover {
-  height: 120px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg-soft) center/cover no-repeat;
-}
-
-.s-prof {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  /* Pulls the avatar up over the cover. The 12px side inset clears the cover's
-     rounded corner. */
-  margin: calc(var(--sp-5) * -1) var(--sp-3) var(--sp-4);
+.s-ident {
   position: relative;
+  margin-bottom: var(--sp-4);
+}
+
+.s-cover,
+.s-av {
+  position: relative;
+  padding: 0;
+  background: var(--bg-soft) center/cover no-repeat;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.s-cover {
+  display: block;
+  width: 100%;
+  height: clamp(96px, 22vw, 120px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
 }
 
 .s-av {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: var(--bg-soft) center/cover no-repeat;
-  border: 2px solid var(--bg);
-  color: var(--text);
-  font-size: 15px;
-  font-weight: 600;
   display: grid;
   place-items: center;
+  width: 56px;
+  height: 56px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 600;
 }
 
-.s-acts {
+/* Only the profile avatar has a cover to sit on; the model picture is a row. */
+.s-ident .s-av {
+  margin: calc(var(--sp-5) * -1) 0 0 var(--sp-4);
+}
+
+/* ---- Model picture ---- */
+
+.s-ai {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.s-ai-text {
+  display: grid;
+  gap: var(--sp-1);
+  flex: 1;
+  min-width: 0;
+}
+
+.s-ai-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.s-ai-text .s-note {
+  margin: 0;
+}
+
+/* No cover behind it, so the ring is a visible edge instead of a cut-out. */
+.s-ai .s-av {
+  border-color: var(--border);
+}
+
+/* The picker hint. Hover and focus reveal it; a pointer without hover keeps it
+   visible, so touch never has to guess that the pictures are pressable. */
+.s-pick {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.s-pick::before {
+  content: "";
+  grid-area: 1 / 1;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+.s-pick svg {
+  grid-area: 1 / 1;
+  width: 18px;
+  height: 18px;
+}
+
+.s-av .s-pick::before {
+  width: 24px;
+  height: 24px;
+}
+
+.s-av .s-pick svg {
+  width: 14px;
+  height: 14px;
+}
+
+.s-cover:hover .s-pick,
+.s-cover:focus-visible .s-pick,
+.s-cover:active .s-pick,
+.s-av:hover .s-pick,
+.s-av:focus-visible .s-pick,
+.s-av:active .s-pick {
+  opacity: 1;
+}
+
+.s-cover:focus-visible,
+.s-av:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* ---- Forms ---- */
+
+.s-field,
+.s-grid {
+  display: grid;
+  gap: var(--sp-4);
+}
+
+.s-field {
+  gap: var(--sp-1);
+}
+
+.s-field label {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.s-inline {
   display: flex;
   gap: var(--sp-2);
 }
+
+.s-inline input {
+  flex: 1;
+  min-width: 0;
+}
+
+.s-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.s-grid > label {
+  display: grid;
+  gap: var(--sp-1);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.set-modal input,
+.set-modal select,
+.set-modal textarea {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 var(--sp-3);
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  width: 100%;
+}
+
+.set-modal input,
+.set-modal select {
+  height: 34px;
+}
+
+.set-modal textarea {
+  padding: var(--sp-2) var(--sp-3);
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 96px;
+}
+
+.set-modal input:hover,
+.set-modal select:hover,
+.set-modal textarea:hover {
+  border-color: var(--faint);
+}
+
+.set-modal input:focus,
+.set-modal select:focus,
+.set-modal textarea:focus {
+  outline: none;
+  border-color: var(--text);
+}
+
+.set-modal input::placeholder,
+.set-modal textarea::placeholder {
+  color: var(--faint);
+}
+
+.set-modal input[type="radio"],
+.set-modal input[type="checkbox"] {
+  width: auto;
+}
+
+/* ---- Switch ---- */
+
+.s-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 13.5px;
+  color: var(--text);
+  cursor: pointer;
+  justify-self: start;
+  align-self: end;
+}
+
+.s-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.s-switch .s-track {
+  width: 36px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-soft);
+  position: relative;
+  transition: background 150ms ease, border-color 150ms ease;
+  flex: none;
+}
+
+.s-switch .s-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 150ms ease, background 150ms ease;
+}
+
+.s-switch input:checked + .s-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.s-switch input:checked + .s-track::after {
+  transform: translateX(16px);
+  background: var(--accent-ink);
+}
+
+.s-switch input:focus-visible + .s-track {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* ---- Segmented control (theme) ---- */
+
+.s-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.s-seg label {
+  cursor: pointer;
+}
+
+.s-seg input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.s-seg span {
+  display: block;
+  height: 32px;
+  padding: 0 var(--sp-4);
+  line-height: 32px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  border-left: 1px solid var(--border);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.s-seg label:first-child span {
+  border-left: 0;
+}
+
+.s-seg label:hover span {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.s-seg input:checked + span {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.s-seg input:focus-visible + span {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
+/* ---- System prompt block ---- */
+
+.s-prompt {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.s-prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.s-prompt code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* ---- Buttons ---- */
 
 .s-btn {
   height: 26px;
@@ -101,6 +364,7 @@
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
 }
 
 .s-btn:hover {
@@ -112,58 +376,9 @@
   outline-offset: 2px;
 }
 
-/* Forms */
-.s-row,
-.s-grid {
-  display: grid;
-  gap: var(--sp-3);
-}
-
-.s-row {
-  grid-template-columns: 1fr auto;
-  align-items: end;
-}
-
-.s-row label {
-  display: block;
-}
-
-.s-grid label {
-  display: grid;
-  gap: var(--sp-1);
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.s-grid label.s-check {
-  grid-template-columns: auto 1fr;
-  align-items: center;
-  color: var(--text);
-  font-size: 13.5px;
-}
-
-.settings input,
-.settings select {
-  height: 34px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0 var(--sp-3);
-  font: inherit;
-  font-size: 14px;
-  color: var(--text);
-  background: var(--bg);
-  width: 100%;
-}
-
-.settings input:focus,
-.settings select:focus {
-  outline: none;
-  border-color: var(--text);
-}
-
 .s-go {
-  height: 30px;
-  padding: 0 var(--sp-3);
+  height: 32px;
+  padding: 0 var(--sp-4);
   border: 0;
   border-radius: 6px;
   background: var(--accent);
@@ -173,10 +388,11 @@
   font-weight: 600;
   cursor: pointer;
   justify-self: start;
+  transition: opacity 120ms ease;
 }
 
 .s-go:hover {
-  background: var(--text);
+  opacity: 0.85;
 }
 
 .s-go:focus-visible {
@@ -184,22 +400,34 @@
   outline-offset: 2px;
 }
 
+.s-danger-row {
+  margin-top: var(--sp-4);
+}
+
 .s-danger {
-  height: 30px;
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
+  height: 32px;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--danger);
   border-radius: 6px;
   background: none;
-  color: #d33;
+  color: var(--danger);
   font: inherit;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  transition: background 120ms ease;
 }
 
 .s-danger:hover {
-  border-color: #d33;
+  background: var(--hover);
 }
+
+.s-danger:focus-visible {
+  outline: 2px solid var(--danger);
+  outline-offset: 2px;
+}
+
+/* ---- Notes and messages ---- */
 
 .s-note {
   margin: var(--sp-2) 0 0;
@@ -207,14 +435,62 @@
   color: var(--muted);
 }
 
+/* The load-failure note shown inside a panel. */
+.s-note.s-fatal {
+  color: var(--danger);
+  margin-top: 0;
+}
+
 .s-msg {
+  margin-top: var(--sp-2);
   font-size: 12.5px;
 }
 
 .s-msg.err {
-  color: #d33;
+  color: var(--danger);
 }
 
 .s-msg.ok {
   color: var(--muted);
+}
+
+/* ---- Mobile: the grid drops to one column; the rail itself is dialog.css ---- */
+
+@media (max-width: 720px) {
+  .s-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Touch: 44px targets, and the picker hint stays visible because there is no
+   hover to reveal it. */
+@media (pointer: coarse) {
+  .s-go,
+  .s-danger {
+    height: 44px;
+  }
+
+  .s-btn {
+    height: 36px;
+  }
+
+  .s-seg span {
+    height: 44px;
+    line-height: 44px;
+  }
+}
+
+@media (hover: none) {
+  .s-pick {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-seg span,
+  .s-switch .s-track,
+  .s-switch .s-track::after,
+  .s-pick {
+    transition: none;
+  }
 }

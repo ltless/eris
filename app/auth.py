@@ -131,6 +131,23 @@ def set_name(user_id, name):
 def set_media(user_id, kind, url):
     # The column name cannot be bound as a parameter, so it is pinned to a
     # literal set here rather than trusted from the caller.
+    if kind == "model":
+        # The model picture belongs to the account's preferences, next to the
+        # model choice and the prompt, so it lives in the prefs blob. A None url
+        # clears the key instead of storing a null.
+        row = db().execute("SELECT prefs FROM users WHERE id=?", (user_id,)).fetchone()
+        prefs = {}
+        if row and row["prefs"]:
+            try:
+                prefs = json.loads(row["prefs"])
+            except ValueError:
+                pass
+        if url:
+            prefs["model_avatar"] = url
+        else:
+            prefs.pop("model_avatar", None)
+        set_prefs(user_id, prefs)
+        return
     column = {"avatar": "avatar", "cover": "cover"}.get(kind)
     if not column:
         raise ValueError(f"unknown media kind: {kind}")

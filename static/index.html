@@ -5,14 +5,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Eris</title>
+  <script src="/theme.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
     rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" id="hljs-theme" />
   <link rel="stylesheet" href="/style.css" />
   <link rel="stylesheet" href="/sidebar.css" />
   <link rel="stylesheet" href="/toolcall.css" />
+  <link rel="stylesheet" href="/dialog.css" />
+  <link rel="stylesheet" href="/library.css" />
+  <link rel="stylesheet" href="/settings.css" />
 </head>
 
 <body class="app">
@@ -43,13 +47,27 @@
         <span class="lbl">New chat</span>
       </button>
 
+      <button class="side-row" id="sideLibrary" title="Library" aria-haspopup="dialog"
+        aria-controls="libModal" aria-expanded="false">
+        <span class="ic"><svg viewBox="0 0 24 24">
+            <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H9v16H5.5A1.5 1.5 0 0 1 4 18.5z" />
+            <path d="M9 4h4.5A1.5 1.5 0 0 1 15 5.5v13a1.5 1.5 0 0 1-1.5 1.5H9z" />
+            <path d="M16.5 8.5h3.5M16.5 12h3.5M16.5 15.5h3.5" />
+          </svg></span>
+        <span class="lbl">Library</span>
+      </button>
+
       <div class="side-title"><span>History</span></div>
       <nav class="side-history" id="sideHistory"></nav>
 
       <div class="side-foot">
-        <button class="side-profile" id="sideProfile" title="Settings">
+        <button class="side-profile" id="sideProfile" title="Settings" aria-haspopup="dialog"
+          aria-controls="setModal" aria-expanded="false">
           <span class="ic"><span class="side-avatar" id="sideAvatar">ME</span></span>
           <span class="lbl" id="sideName">My account</span>
+          <!-- The visible label is the account's name, so Settings is carried
+               out of sight: an accessible name has to contain that text. -->
+          <span class="side-sr">Settings</span>
         </button>
       </div>
     </aside>
@@ -124,11 +142,201 @@
     </main>
   </div>
 
+  <!-- The Library is a dialog over the chat, not a page: the sidebar row opens
+       it, Esc and the scrim close it, and #library in the URL keeps it
+       addressable. Sections live in the rail; Documents is the first. -->
+  <div class="dlg-modal" id="libModal" data-hash="library" hidden>
+    <div class="dlg-scrim" data-close></div>
+    <div class="dlg-sheet" id="libSheet" role="dialog" aria-modal="true" aria-labelledby="libTitle"
+      tabindex="-1">
+      <header class="dlg-head">
+        <h2 id="libTitle">Library</h2>
+        <button type="button" class="dlg-close" data-close aria-label="Close library" title="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+          </svg>
+        </button>
+      </header>
+
+      <div class="dlg-layout">
+        <nav class="dlg-nav" data-nav aria-label="Library sections">
+          <button type="button" data-sec="documents" class="on" aria-current="true">Documents</button>
+        </nav>
+
+        <section class="dlg-panel" id="sec-documents" aria-labelledby="docTitle">
+          <h3 id="docTitle">Documents</h3>
+
+          <div class="lib-bar">
+            <button type="button" class="lib-go" id="docIndex">Index a file</button>
+            <input class="lib-filter" id="docFilter" type="search" placeholder="Filter by name"
+              aria-label="Filter documents by name" autocomplete="off" />
+            <p class="lib-count" id="docCount"></p>
+          </div>
+
+          <div class="lib-msg" id="docMsg" role="status" hidden></div>
+
+          <ul class="lib-list" id="docList" aria-label="Indexed documents"></ul>
+          <p class="lib-empty" id="docEmpty" hidden>No documents indexed yet.</p>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="docInput" hidden />
+
+  <!-- Settings is the second dialog on this page, and it wears the same shell:
+       scrim, sheet, rail, panel. Same openers and same Escape. -->
+  <div class="dlg-modal set-modal" id="setModal" data-hash="settings" hidden>
+    <div class="dlg-scrim" data-close></div>
+    <div class="dlg-sheet" id="setSheet" role="dialog" aria-modal="true" aria-labelledby="setTitle"
+      tabindex="-1">
+      <header class="dlg-head">
+        <h2 id="setTitle">Settings</h2>
+        <button type="button" class="dlg-close" data-close aria-label="Close settings" title="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+          </svg>
+        </button>
+      </header>
+
+      <div class="dlg-layout">
+        <nav class="dlg-nav" data-nav aria-label="Settings sections">
+          <button type="button" data-sec="profile" class="on" aria-current="true">Profile</button>
+          <button type="button" data-sec="security">Security</button>
+          <button type="button" data-sec="model">Model</button>
+          <button type="button" data-sec="appearance">Appearance</button>
+          <button type="button" data-sec="account">Account</button>
+        </nav>
+
+        <section class="dlg-panel" id="sec-profile" aria-labelledby="setProfileTitle">
+          <h3 id="setProfileTitle">Profile</h3>
+          <div class="s-ident">
+            <button type="button" class="s-cover" id="cover" aria-label="Change cover picture">
+              <span class="s-pick" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="6.5" width="18" height="12.5" rx="2.5" />
+                  <path d="M9 6.5l1.2-2h3.6l1.2 2" />
+                  <circle cx="12" cy="12.8" r="3.2" />
+                </svg>
+              </span>
+            </button>
+            <button type="button" class="s-av" id="avatar" aria-label="Change profile picture">
+              <span class="s-face" id="avatarFace">ME</span>
+              <span class="s-pick" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="6.5" width="18" height="12.5" rx="2.5" />
+                  <path d="M9 6.5l1.2-2h3.6l1.2 2" />
+                  <circle cx="12" cy="12.8" r="3.2" />
+                </svg>
+              </span>
+            </button>
+          </div>
+          <form id="fName" class="s-field">
+            <label for="inpName">Name</label>
+            <div class="s-inline">
+              <input id="inpName" type="text" maxlength="40" autocomplete="name" />
+              <button type="submit" class="s-go">Save</button>
+            </div>
+          </form>
+          <div class="s-msg" id="nameMsg" hidden></div>
+          <p class="s-note" id="emailRow"></p>
+        </section>
+
+        <section class="dlg-panel" id="sec-security" aria-labelledby="setSecurityTitle" hidden>
+          <h3 id="setSecurityTitle">Security</h3>
+          <form id="fPw" class="s-grid">
+            <label>Current password<input id="pwOld" type="password" autocomplete="current-password" required /></label>
+            <label>New password<input id="pwNew" type="password" autocomplete="new-password" minlength="6" required /></label>
+            <label>Confirm new password<input id="pwNew2" type="password" autocomplete="new-password" required /></label>
+            <button type="submit" class="s-go">Change password</button>
+          </form>
+          <div class="s-msg" id="pwMsg" hidden></div>
+          <p class="s-note">Changing the password signs out all other sessions. This one stays signed in.</p>
+        </section>
+
+        <section class="dlg-panel" id="sec-model" aria-labelledby="setModelTitle" hidden>
+          <h3 id="setModelTitle">Model</h3>
+          <div class="s-ai">
+            <button type="button" class="s-av" id="modelAvatar" aria-label="Change model picture">
+              <span class="s-face" id="modelFace">AI</span>
+              <span class="s-pick" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="6.5" width="18" height="12.5" rx="2.5" />
+                  <path d="M9 6.5l1.2-2h3.6l1.2 2" />
+                  <circle cx="12" cy="12.8" r="3.2" />
+                </svg>
+              </span>
+            </button>
+            <div class="s-ai-text">
+              <span class="s-ai-label">Model picture</span>
+              <span class="s-note">Shown beside the AI replies in chat.</span>
+            </div>
+            <button type="button" class="s-btn" id="clearModel" hidden>Remove picture</button>
+          </div>
+          <form id="fModel" class="s-grid">
+            <label>Model
+              <select id="selModel"></select>
+            </label>
+            <label>Context window (tokens)
+              <input id="inpCtx" type="number" min="2048" max="262144" step="1024" placeholder="Server default" />
+            </label>
+            <label class="s-switch">
+              <input id="chkThink" type="checkbox" />
+              <span class="s-track" aria-hidden="true"></span>
+              <span>Enable thinking</span>
+            </label>
+
+            <div class="s-prompt">
+              <div class="s-prompt-head">
+                <span>System prompt</span>
+                <button type="button" class="s-btn" id="resetPrompt">Reset to default</button>
+              </div>
+              <textarea id="taPrompt" rows="5" maxlength="4000"
+                placeholder="Leave empty to use the server default prompt."></textarea>
+              <p class="s-note">Prepended context for every chat. Empty means the server default from <code>.env</code>.</p>
+            </div>
+
+            <button type="submit" class="s-go">Save model settings</button>
+          </form>
+          <div class="s-msg" id="modelMsg" hidden></div>
+        </section>
+
+        <section class="dlg-panel" id="sec-appearance" aria-labelledby="setAppearanceTitle" hidden>
+          <h3 id="setAppearanceTitle">Appearance</h3>
+          <div class="s-seg" role="radiogroup" aria-label="Theme">
+            <label><input type="radio" name="theme" value="light" /><span>Light</span></label>
+            <label><input type="radio" name="theme" value="dark" /><span>Dark</span></label>
+            <label><input type="radio" name="theme" value="system" checked /><span>System</span></label>
+          </div>
+          <p class="s-note">System follows your OS setting and applies to every page, including chat.</p>
+        </section>
+
+        <section class="dlg-panel" id="sec-account" aria-labelledby="setAccountTitle" hidden>
+          <h3 id="setAccountTitle">Account</h3>
+          <p class="s-note" id="acctEmail"></p>
+          <div class="s-danger-row">
+            <button type="button" class="s-danger" id="logout">Log out</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="fileImg" accept="image/*" hidden />
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.9/purify.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="/toolcall.js"></script>
   <script src="/sidebar.js"></script>
+  <!-- Modules, not classic scripts: the names below ($, els, paint, load) are
+       shared with app.js, and a module's own scope keeps them out of the global
+       object the other page scripts declare into. -->
+  <script src="/library.js" type="module"></script>
+  <script src="/settings.js" type="module"></script>
   <script src="/app.js"></script>
 </body>
 

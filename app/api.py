@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pypdf import PdfReader
 from pydantic import BaseModel
 
-from . import auth, chats, rag
+from . import auth, chats, library, rag
 from .config import settings
 from .tools import calc, doc_search, fetch, search
 
@@ -47,6 +47,7 @@ class PrefsRequest(BaseModel):
     model: str | None = None
     thinking: bool | None = None
     ctx: int | None = None
+    system_prompt: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -122,6 +123,69 @@ def to_native(messages):
     return out
 
 
+def chat_url():
+    """The model talks on the native /api/chat path.
+
+    MODEL_BASE_URL keeps the OpenAI-style /v1 suffix because embeddings use
+    /v1/embeddings; chat itself is the native NDJSON stream that the parser
+    below expects, so the suffix is dropped for this one call.
+    """
+    base = settings.model_base_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return base + "/api/chat"
+
+
+def normalize_call(call):
+    """Native streams send tool arguments as an object, OpenAI-style servers
+    send a JSON string. Runners downstream expect the object."""
+    fn = call.get("function") or {}
+    args = fn.get("arguments")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {}
+        call = {**call, "function": {**fn, "arguments": args}}
+    return call
+
+
+def parse_chunk(line):
+    """One streamed line -> list of (kind, value) events.
+
+    The native stream is bare JSON with a `message` object, one per line.
+    An OpenAI-compatible server answers instead with SSE frames like
+    `data: {"choices": [{"delta": {...}}]}`, where thinking arrives as
+    `reasoning_content` instead of `thinking`. Blank lines, keep-alives,
+    `[DONE]` and partial JSON are skipped rather than raising, so a stray
+    frame can never end the turn with an empty answer.
+    """
+    line = line.strip()
+    if not line:
+        return []
+    if line.startswith("data:"):
+        line = line[len("data:") :].strip()
+        if line == "[DONE]":
+            return []
+    try:
+        chunk = json.loads(line)
+    except json.JSONDecodeError:
+        return []
+    msg = chunk.get("message")
+    if msg is None:
+        choices = chunk.get("choices") or []
+        msg = (choices[0].get("delta") or {}) if choices else {}
+    events = []
+    if msg.get("content"):
+        events.append(("delta", msg["content"]))
+    think = msg.get("thinking") or msg.get("reasoning_content")
+    if think:
+        events.append(("thinking", think))
+    if msg.get("tool_calls"):
+        events.append(("tool_calls", [normalize_call(c) for c in msg["tool_calls"]]))
+    return events
+
+
 async def stream_completion(messages, model=None, thinking=False, tools=None, ctx=None):
     payload = {
         "model": model or settings.model_name,
@@ -134,25 +198,15 @@ async def stream_completion(messages, model=None, thinking=False, tools=None, ct
     if tools:
         payload["tools"] = tools
     headers = {"Authorization": f"Bearer {settings.model_api_key}"}
-    url = settings.model_base_url.removesuffix("/v1") + "/api/chat"
+    url = chat_url()
     async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
         async with c.stream("POST", url, json=payload, headers=headers) as r:
             if r.status_code >= 400:
                 body = (await r.aread()).decode(errors="replace")
                 raise HTTPException(r.status_code, f"Model server error: {body}")
             async for line in r.aiter_lines():
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line).get("message") or {}
-                except json.JSONDecodeError:
-                    continue
-                if msg.get("content"):
-                    yield ("delta", msg["content"])
-                if msg.get("thinking"):
-                    yield ("thinking", msg["thinking"])
-                if msg.get("tool_calls"):
-                    yield ("tool_calls", msg["tool_calls"])
+                for event in parse_chunk(line):
+                    yield event
 
 
 @app.post("/api/chat")
@@ -180,8 +234,9 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
             )
         break
     sources = []
+    base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
     sys_prompt = (
-        f"{settings.system_prompt}\n\nToday is {date.today().isoformat()}. "
+        f"{base_prompt}\n\nToday is {date.today().isoformat()}. "
         "For anything current or recent, answer only from the search "
         "results you receive, never from training memory."
     )
@@ -336,6 +391,16 @@ async def chat_delete(chat_id: str, u: dict = Depends(require_user)):
 
 
 MAX_DOC_BYTES = 25_000_000
+# Inspect ships a document's first chunks, never all of them.
+INSPECT_CHUNKS = 50
+
+
+def vector_error(e):
+    """One mapping for both services: the embedder is an HTTP call, Chroma is
+    another host. Anything else that breaks here is the vector store."""
+    if isinstance(e, httpx.HTTPError):
+        return HTTPException(502, f"Embedding model unavailable: {e}")
+    return HTTPException(503, f"ChromaDB unavailable: {e}")
 
 
 @app.post("/api/documents/upload")
@@ -343,7 +408,8 @@ async def upload_document(file: UploadFile, u: dict = Depends(require_user)):
     raw = await file.read()
     if len(raw) > MAX_DOC_BYTES:
         raise HTTPException(413, "document too large (max 25MB)")
-    name = (file.filename or "").lower()
+    label = file.filename or "upload"
+    name = label.lower()
     if name.endswith(".pdf") or file.content_type == "application/pdf":
         try:
             text = "\n".join(
@@ -358,13 +424,61 @@ async def upload_document(file: UploadFile, u: dict = Depends(require_user)):
             text = raw.decode("latin-1")
     if not text.strip():
         raise HTTPException(400, "Empty document")
+    doc_id = secrets.token_hex(16)
     try:
-        n = await rag.add_document(u["id"], file.filename or "upload", text)
-    except httpx.HTTPError as e:
-        raise HTTPException(502, f"Embedding model unavailable: {e}")
+        n = await rag.add_document(u["id"], label, text, doc_id=doc_id)
     except Exception as e:
-        raise HTTPException(503, f"ChromaDB unavailable: {e}")
-    return {"source": file.filename or "upload", "chunks": n}
+        raise vector_error(e)
+    # The row is written only after the chunks are stored, so a failed index
+    # cannot leave a row pointing at chunks that were never written.
+    try:
+        library.add(u["id"], doc_id, label, len(raw), n)
+    except Exception:
+        rag.discard(u["id"], doc_id)
+        raise HTTPException(500, "Could not record the upload")
+    try:
+        # Same filename means the same document, re-indexed. This runs after the
+        # new copy is fully in place, so an upload never deletes what it cannot
+        # replace.
+        replaced = rag.retire_previous(u["id"], label, keep=doc_id)
+    except Exception as e:
+        rag.discard(u["id"], doc_id)
+        raise vector_error(e)
+    return {"id": doc_id, "name": label, "chunks": n, "replaced": replaced}
+
+
+@app.get("/api/documents")
+async def list_documents(u: dict = Depends(require_user)):
+    try:
+        return {"items": rag.list_documents(u["id"])}
+    except Exception as e:
+        raise vector_error(e)
+
+
+@app.get("/api/documents/{doc_id}")
+async def document_detail(doc_id: str, u: dict = Depends(require_user)):
+    try:
+        row = rag.find_document(u["id"], doc_id)
+        if not row:
+            raise HTTPException(404, "unknown document")
+        passages = rag.document_chunks(u["id"], doc_id, INSPECT_CHUNKS)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise vector_error(e)
+    return {**row, "passages": passages}
+
+
+@app.delete("/api/documents/{doc_id}")
+async def delete_document(doc_id: str, u: dict = Depends(require_user)):
+    try:
+        if not rag.delete_document(u["id"], doc_id):
+            raise HTTPException(404, "unknown document")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise vector_error(e)
+    return {"ok": True}
 
 
 @app.post("/api/auth/register")
@@ -432,14 +546,32 @@ async def update_prefs(req: PrefsRequest, u: dict = Depends(require_user)):
         prefs["thinking"] = bool(req.thinking)
     if req.ctx is not None:
         prefs["ctx"] = max(0, min(int(req.ctx), 262144))
+    if req.system_prompt is not None:
+        # Empty string clears the override; chat falls back to the env prompt.
+        prompt = req.system_prompt.strip()
+        if prompt:
+            prefs["system_prompt"] = prompt[:4000]
+        else:
+            prefs.pop("system_prompt", None)
     auth.set_prefs(u["id"], prefs)
     return {"ok": True, "prefs": prefs}
 
 
+MEDIA_KINDS = ("avatar", "cover", "model")
+
+
+def media_url(u: dict, kind: str) -> str | None:
+    """Current URL for one picture slot: a users column for avatar and cover, a
+    prefs key for the model picture."""
+    if kind in ("avatar", "cover"):
+        return u.get(kind)
+    return (u.get("prefs") or {}).get("model_avatar")
+
+
 @app.post("/api/auth/media")
 async def upload_media(file: UploadFile, kind: str = "avatar", u: dict = Depends(require_user)):
-    if kind not in ("avatar", "cover"):
-        raise HTTPException(400, "kind must be avatar or cover")
+    if kind not in MEDIA_KINDS:
+        raise HTTPException(400, "kind must be avatar, cover, or model")
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(400, "image required")
     raw = await file.read()
@@ -449,11 +581,22 @@ async def upload_media(file: UploadFile, kind: str = "avatar", u: dict = Depends
     name = f"{u['id']}-{kind}-{secrets.token_hex(4)}.{ext}"
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     (MEDIA_DIR / name).write_bytes(raw)
-    old_url = u[kind]
+    old_url = media_url(u, kind)
     auth.set_media(u["id"], kind, f"/uploads/{name}")
     if old_url and old_url.startswith("/uploads/"):
         (MEDIA_DIR / old_url.split("/")[-1]).unlink(missing_ok=True)
     return {"url": f"/uploads/{name}"}
+
+
+@app.delete("/api/auth/media")
+async def delete_media(kind: str = "avatar", u: dict = Depends(require_user)):
+    if kind not in MEDIA_KINDS:
+        raise HTTPException(400, "kind must be avatar, cover, or model")
+    old_url = media_url(u, kind)
+    auth.set_media(u["id"], kind, None)
+    if old_url and old_url.startswith("/uploads/"):
+        (MEDIA_DIR / old_url.split("/")[-1]).unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.post("/api/auth/logout")

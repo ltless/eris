@@ -11,7 +11,7 @@
   --rail: 56px;
   --pad: 8px;
   --gut: 40px;
-  --row: 34px;
+  --row: 30px;
   --side-radius: 6px;
 
   /* Motion, used only by the rail toggle. */
@@ -221,7 +221,7 @@
   align-items: center;
   width: 100%;
   height: var(--row);
-  margin-bottom: var(--sp-2);
+  margin-bottom: var(--sp-1);
   border: none;
   border-radius: var(--side-radius);
   background: transparent;
@@ -247,7 +247,7 @@
 
 /* --- 3. Chat History --- */
 .side-title {
-  margin: var(--sp-2) 0 var(--sp-1);
+  margin: var(--sp-1) 0 0;
   padding: var(--sp-1) var(--sp-2);
   font-size: 11px;
   font-weight: 600;
@@ -294,6 +294,8 @@
   text-align: left;
   font: inherit;
 }
+
+/* The Library entry is a dialog opener, styled as a plain row. */
 
 .side-row .lbl {
   color: var(--muted);
@@ -371,6 +373,7 @@
 }
 
 .side-profile {
+  position: relative;
   display: flex;
   align-items: center;
   width: 100%;
@@ -390,11 +393,27 @@
   color: var(--faint);
 }
 
+/* Visible to assistive technology only. It sits inside the account row so the
+   row's accessible name reads "My account Settings". */
+.side-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .side-avatar {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: var(--bg-soft);
+  /* The avatar URL arrives as an inline background-image, so the sizing has to
+     live here or the photo paints at natural size in the top-left corner. */
+  background: var(--bg-soft) center / cover no-repeat;
   color: var(--text);
   font-size: 11px;
   font-weight: 600;

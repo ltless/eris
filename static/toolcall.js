@@ -83,6 +83,7 @@ const ErisToolCall = (() => {
 
     function addQuery(q) {
       const g = document.createElement("div");
+      g.className = "tc-group";
       g.innerHTML =
         '<div class="tc-q">' + I.search + '<span></span></div><div class="tc-list" role="list"></div>';
       g.querySelector(".tc-q span").textContent = q;
