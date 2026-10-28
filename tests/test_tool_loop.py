@@ -122,7 +122,7 @@ class Harness:
         for name in ("AUTH_DB", "CHAT_DB"):
             os.environ.pop(name, None)
 
-    def ask(self, mode="agentic", message="weather in Bali today"):
+    def ask(self, message="weather in Bali today"):
         with TestClient(api.app) as c:
             c.post(
                 "/api/auth/register",
@@ -130,7 +130,7 @@ class Harness:
             )
             r = c.post(
                 "/api/chat",
-                json={"messages": [{"role": "user", "content": message}], "use_rag": False, "mode": mode},
+                json={"messages": [{"role": "user", "content": message}]},
             )
             assert r.status_code == 200, r.text
             return sse_events(r)
@@ -160,19 +160,6 @@ def check_answer_request_has_no_tools():
         assert len(stub.payloads) == settings.max_tool_rounds + 1, len(stub.payloads)
         assert "tools" in stub.payloads[0], "first call should offer tools"
         assert not stub.payloads[-1].get("tools"), "last call should not offer tools"
-    finally:
-        h.close()
-
-
-def check_deep_mode_budget():
-    stub = StubModel()
-    h = Harness(stub)
-    try:
-        events = h.ask(mode="deep")
-        rounds = {e["r"] for e in events if e.get("type") == "tool"}
-        text = "".join(e.get("text", "") for e in events if e.get("type") == "delta")
-        assert len(rounds) == settings.deep_tool_rounds, sorted(rounds)
-        assert text.strip(), "deep mode ended without an answer"
     finally:
         h.close()
 

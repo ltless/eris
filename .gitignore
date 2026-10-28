@@ -5,7 +5,13 @@ __pycache__/
 users.db
 static/uploads/
 chats.db
-library.db
+tokens.db
+database/
+*.db-shm
+*.db-wal
 models/
 AGENTS.md
 .superpowers/
+.impeccable/
+presets.db
+.codebase-memory/

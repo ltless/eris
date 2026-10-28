@@ -39,7 +39,7 @@
   border: 2px solid var(--bg);
   border-radius: 50%;
   overflow: hidden;
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
@@ -65,7 +65,7 @@
 }
 
 .s-ai-label {
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -86,7 +86,7 @@
   display: grid;
   place-items: center;
   opacity: 0;
-  transition: opacity 140ms ease;
+  transition: opacity var(--mo-base) var(--mo-ease);
 }
 
 .s-pick::before {
@@ -144,7 +144,7 @@
 
 .s-field label {
   display: block;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -165,7 +165,7 @@
 .s-grid > label {
   display: grid;
   gap: var(--sp-1);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
@@ -173,10 +173,10 @@
 .set-modal select,
 .set-modal textarea {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0 var(--sp-3);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-md);
   color: var(--text);
   background: var(--bg);
   width: 100%;
@@ -184,7 +184,7 @@
 
 .set-modal input,
 .set-modal select {
-  height: 34px;
+  height: var(--ctl);
 }
 
 .set-modal textarea {
@@ -200,10 +200,13 @@
   border-color: var(--faint);
 }
 
-.set-modal input:focus,
-.set-modal select:focus,
-.set-modal textarea:focus {
-  outline: none;
+/* The ring is the same one every control wears. Turning `outline` off here
+   would leave keyboard users with only a border-colour change to go on. */
+.set-modal input:focus-visible,
+.set-modal select:focus-visible,
+.set-modal textarea:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
   border-color: var(--text);
 }
 
@@ -223,7 +226,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  font-size: 13.5px;
+  font-size: var(--fs-sm);
   color: var(--text);
   cursor: pointer;
   justify-self: start;
@@ -241,10 +244,10 @@
   width: 36px;
   height: 20px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-pill);
   background: var(--bg-soft);
   position: relative;
-  transition: background 150ms ease, border-color 150ms ease;
+  transition: background var(--mo-base) var(--mo-ease), border-color var(--mo-base) var(--mo-ease);
   flex: none;
 }
 
@@ -257,7 +260,7 @@
   height: 14px;
   border-radius: 50%;
   background: var(--muted);
-  transition: transform 150ms ease, background 150ms ease;
+  transition: transform var(--mo-base) var(--mo-ease), background var(--mo-base) var(--mo-ease);
 }
 
 .s-switch input:checked + .s-track {
@@ -280,7 +283,7 @@
 .s-seg {
   display: inline-flex;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   overflow: hidden;
 }
 
@@ -297,14 +300,14 @@
 
 .s-seg span {
   display: block;
-  height: 32px;
+  height: var(--ctl-seg);
   padding: 0 var(--sp-4);
-  line-height: 32px;
-  font-size: 13px;
+  line-height: var(--ctl-seg);
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--muted);
   border-left: 1px solid var(--border);
-  transition: background 120ms ease, color 120ms ease;
+  transition: background var(--mo-fast) var(--mo-ease), color var(--mo-fast) var(--mo-ease);
 }
 
 .s-seg label:first-child span {
@@ -338,33 +341,33 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   color: var(--muted);
 }
 
 .s-prompt code {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-2xs);
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  padding: 0 var(--sp-1);
 }
 
 /* ---- Buttons ---- */
 
 .s-btn {
-  height: 26px;
+  height: var(--ctl-sm);
   padding: 0 var(--sp-3);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   font-weight: 500;
   cursor: pointer;
-  transition: border-color 120ms ease, background 120ms ease;
+  transition: border-color var(--mo-fast) var(--mo-ease), background var(--mo-fast) var(--mo-ease);
 }
 
 .s-btn:hover {
@@ -377,18 +380,18 @@
 }
 
 .s-go {
-  height: 32px;
+  height: var(--ctl);
   padding: 0 var(--sp-4);
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--accent-ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
   justify-self: start;
-  transition: opacity 120ms ease;
+  transition: opacity var(--mo-fast) var(--mo-ease);
 }
 
 .s-go:hover {
@@ -405,17 +408,17 @@
 }
 
 .s-danger {
-  height: 32px;
+  height: var(--ctl);
   padding: 0 var(--sp-4);
   border: 1px solid var(--danger);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--danger);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms ease;
+  transition: background var(--mo-fast) var(--mo-ease);
 }
 
 .s-danger:hover {
@@ -431,7 +434,7 @@
 
 .s-note {
   margin: var(--sp-2) 0 0;
-  font-size: 12px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 
@@ -443,7 +446,7 @@
 
 .s-msg {
   margin-top: var(--sp-2);
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
 }
 
 .s-msg.err {
@@ -454,9 +457,42 @@
   color: var(--muted);
 }
 
+/* ---- API tokens ---- */
+
+/* The one showing of a token's plaintext. It is set apart from the form that
+   created it, because it is not another thing to fill in — it is the single
+   moment the value exists on this side, and it cannot be recalled. */
+.token-new {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--text);
+  border-radius: var(--radius);
+}
+
+.token-new[hidden] {
+  display: none;
+}
+
+/* The value is read-only and monospaced: it is a credential to be copied
+   exactly, not prose to be read. */
+.token-new input {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+/* The token rows sit under a form here, so the list gets the same break the
+   panels put above theirs. */
+#tokenList {
+  margin-top: var(--sp-4);
+}
+
+#tokenEmpty {
+  padding: var(--sp-4);
+}
+
 /* ---- Mobile: the grid drops to one column; the rail itself is dialog.css ---- */
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .s-grid {
     grid-template-columns: 1fr;
   }
@@ -467,16 +503,16 @@
 @media (pointer: coarse) {
   .s-go,
   .s-danger {
-    height: 44px;
+    height: var(--ctl-hit);
   }
 
   .s-btn {
-    height: 36px;
+    height: var(--ctl);
   }
 
   .s-seg span {
-    height: 44px;
-    line-height: 44px;
+    height: var(--ctl-hit);
+    line-height: var(--ctl-hit);
   }
 }
 

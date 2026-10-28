@@ -1,9 +1,4 @@
-"""Exact arithmetic so the model stops guessing prices and totals.
-
-AST whitelist only: numbers + + - * / // % ** and parentheses. No names,
-attributes, calls, or strings, so eval() has nothing to reach. Nested **
-(a**b**c) is rejected at parse time — that's the only way this gets slow.
-"""
+"""Exact arithmetic so the model stops guessing prices and totals."""
 
 import ast
 

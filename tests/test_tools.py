@@ -9,7 +9,7 @@ sys.path.insert(0, ".")
 from datetime import datetime, timedelta, timezone
 
 from app import api
-from app.tools import calc, doc_search, fetch, search
+from app.tools import calc, fetch, search
 
 TOOL = search.TOOL
 
@@ -155,8 +155,6 @@ def check_fetch_tool_shape():
 def check_numbering():
     out = search.render([{"title": "A", "url": "http://a", "snippet": "s"}], start=4)
     assert "[5] A" in out, out
-    docs = doc_search.render([{"source": "f.txt", "text": "isi"}], start=4)
-    assert "[5] (f.txt)" in docs, docs
 
 
 def check_drop_last_assistant():
@@ -250,26 +248,10 @@ def check_calc():
     assert "no expression" in asyncio.run(calc.run({}))
 
 
-def check_doc_search_shape():
-    fn = doc_search.TOOL["function"]
-    assert fn["name"] == "doc_search"
-    assert fn["parameters"]["required"] == ["query"]
-    assert "do not invent" in doc_search.render([])
-    out = doc_search.render([{"source": "a.txt", "text": "halo"}])
-    assert "[1] (a.txt)" in out
-
-    from app import api as api_mod
-    assert api_mod.TOOL_NAMES == {"web_search", "fetch_url", "calc", "doc_search"}
-
-
-def check_rag_per_user():
-    import inspect
-
-    from app import rag
-
-    assert not hasattr(rag, "chat_collection")
-    assert "user_id" in inspect.signature(rag.add_document).parameters
-    assert "user_id" in inspect.signature(rag.retrieve).parameters
+def check_registry_chat_tools():
+    from app.tools.registry import registry
+    chat_tools = {t.name for t in registry.all() if "chat" in t.tags}
+    assert chat_tools == {"web_search", "fetch_url", "calc"}
 
 
 def check_native_stream():
@@ -344,7 +326,7 @@ def check_chats_sqlite():
     chats.save_turn(1, "c1", "user", "halo dunia")
     chats.touch_title("c1", "halo dunia")
     chats.save_turn(1, "c1", "assistant", "hai", thinking="t" * 9000,
-                    sources=[{"source": "a", "kind": "doc"}] * 10,
+                    sources=[{"source": "a", "kind": "web"}] * 10,
                     web=[{"query": "q1", "items": [{"source": "http://u", "kind": "web"}]}])
     chats.save_turn(2, "c2", "user", "lain")
 

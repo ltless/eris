@@ -2,19 +2,19 @@
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: var(--space);
+  padding: var(--sp-4);
 }
 
 .auth-card {
   width: 100%;
   max-width: 340px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: var(--sp-5);
 }
 
 .auth-brand {
-  font-size: 19px;
+  font-size: var(--fs-2xl);
   font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0 0 var(--sp-4);
@@ -29,13 +29,13 @@
 
 .auth-tabs button {
   flex: 1;
-  height: 34px;
+  height: var(--ctl-seg);
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
 }
@@ -56,34 +56,50 @@
 }
 
 .auth input {
-  height: 38px;
+  height: var(--ctl);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius);
   padding: 0 var(--sp-3);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-md);
   color: var(--text);
   background: var(--bg);
 }
 
-.auth input:focus {
-  outline: none;
+.auth input:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
   border-color: var(--text);
 }
 
+/* The shared `.err` block already carries the top margin it wants; on a form
+   whose own gaps are --sp-2 that would double up. */
 .auth .err {
   margin-top: 0;
 }
 
 .auth-go {
-  height: 38px;
+  height: var(--ctl);
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius);
   background: var(--accent);
   color: var(--accent-ink);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
   cursor: pointer;
   margin-top: var(--sp-1);
+}
+
+.auth-go:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .auth-tabs button,
+  .auth input,
+  .auth-go {
+    height: var(--ctl-hit);
+  }
 }

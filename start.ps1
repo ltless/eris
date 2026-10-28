@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 # Windows launcher for Eris. Twin of start.sh.
-# Creates the venv, starts ChromaDB + SearXNG (docker), the llama.cpp model
-# server (if MODEL_PATH is set), then uvicorn. Ctrl-C stops what it started.
+# Creates the venv, starts SearXNG (docker), the llama.cpp model server (if
+# MODEL_PATH is set), then uvicorn. Ctrl-C stops what it started.
 
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
@@ -92,19 +92,19 @@ try {
     }
     & $venvPython -m pip install -q -r requirements.txt
 
-    # 2. ChromaDB + SearXNG
+    # 2. SearXNG
     if ($Docker) {
         # Docker Desktop may be installed but not started.
         & $Docker info --format '{{.ServerVersion}}' 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host '> starting docker services (chromadb, searxng)'
+            Write-Host '> starting docker services (searxng)'
             & $Docker compose up -d
             $startedDocker = $true
         } else {
             Write-Host '! Docker engine not running - start Docker Desktop, then re-run'
         }
     } else {
-        Write-Host '! docker not found, skipping ChromaDB'
+        Write-Host '! docker not found, skipping SearXNG'
     }
 
     # 3. llama.cpp model server
@@ -116,8 +116,6 @@ try {
                 '--host', '0.0.0.0',
                 '--port', '8080',
                 '--ctx-size', '8192',
-                '--embeddings',
-                '--pooling', 'mean',
                 '--n-gpu-layers', '99',
                 '--reasoning-format', 'deepseek'
             )

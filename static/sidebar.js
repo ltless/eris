@@ -99,21 +99,28 @@ const ErisSidebar = (() => {
 
       const lbl = document.createElement("span");
       lbl.className = "lbl";
-      lbl.textContent = (c.pinned ? "▪ " : "") + title;
+      lbl.textContent = title;
 
-      b.append(svgIcon(CHAT_ICON), lbl);
-      if (opts.onPin) b.append(actionBtn(c.pinned ? "Unpin" : "Pin", PIN_ICON, () => opts.onPin(c.id, !c.pinned)));
+      // A pinned row swaps the chat glyph for the pin in the same cell. Both are
+      // 18px marks on the same axis, so the state reads without moving the title
+      // by a pixel, which is what the "▪ " prefix inside the label used to do.
+      b.append(svgIcon(c.pinned ? PIN_ICON : CHAT_ICON), lbl);
+
+      const acts = document.createElement("span");
+      acts.className = "row-acts";
+      if (opts.onPin) acts.append(actionBtn(c.pinned ? "Unpin" : "Pin", PIN_ICON, () => opts.onPin(c.id, !c.pinned)));
       if (opts.onRename) {
         const rn = actionBtn("Rename", '<svg viewBox="0 0 24 24"><path d="M4 20h4L20 8l-4-4L4 16z"/><path d="M13 7l4 4"/></svg>', () => {
-          const cur = lbl.textContent.replace(/^▪ /, "");
+          const cur = lbl.textContent;
           const v = prompt("Rename chat:", cur);
           if (v !== null) opts.onRename(c.id, v);
         });
-        b.append(rn);
+        acts.append(rn);
       }
-      if (opts.onDelete) b.append(actionBtn("Delete", '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>', () => {
+      if (opts.onDelete) acts.append(actionBtn("Delete", '<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>', () => {
         if (confirm(`Delete "${title}"?`)) opts.onDelete(c.id);
       }));
+      if (acts.childElementCount) b.append(acts);
       const go = () => {
         activeId = c.id;
         render();

@@ -1,11 +1,12 @@
 """Runnable checks: python tests/test_dialogs.py
 
-The Library and Settings surfaces are dialogs over the chat page, not routes:
-one shared shell in dialog.css and dialog.js, two roots in index.html, two
-sidebar openers, and two shims where the old pages used to be. These checks read
-the shipped files; there is no browser here, so nothing about layout is asserted.
+Settings is a dialog over the chat page, not a route: one shared shell in
+dialog.css and dialog.js, one root in index.html, one sidebar opener, and a shim
+where the old page used to be. These checks read the shipped files; there is no
+browser here, so nothing about layout is asserted.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -17,53 +18,83 @@ def read(name):
     return (STATIC / name).read_text(encoding="utf-8")
 
 
-def check_both_dialogs_are_in_the_chat_page():
-    """One shell, two roots, both loaded by the chat page."""
+def check_the_dialog_is_in_the_chat_page():
+    """One shell, one root, loaded by the chat page.
+
+    The root list is derived from the markup rather than written down here: a
+    new dialog is expected to arrive, and a test that has to be edited for each
+    one stops being a check and becomes a chore.
+    """
     chat = read("index.html")
     assert "/dialog.css" in chat, "the chat page does not load the dialog shell"
-    assert "/library.js\" type=\"module\"" in chat, "library.js is not a module"
-    assert "/settings.js\" type=\"module\"" in chat, "settings.js is not a module"
+    assert '/settings.js" type="module"' in chat, "settings.js is not a module"
 
-    for root, hashed in (("libModal", "library"), ("setModal", "settings")):
+    roots = re.findall(r'id="(\w+Modal)" data-hash="(\w+)"', chat)
+    assert roots, f"no dialog roots found: {roots}"
+    for root, hashed in roots:
         assert f'id="{root}"' in chat, f"no {root} in the chat page"
-    assert chat.count('role="dialog"') == 2, "each dialog needs its own role"
-    assert chat.count('aria-modal="true"') == 2, "each dialog needs aria-modal"
-    assert 'data-hash="library"' in chat and 'data-hash="settings"' in chat, "a dialog has no hash"
-    assert chat.count("data-nav") == 2, "each dialog needs a section rail"
-    assert chat.count("data-close") == 4, "each dialog needs a scrim and a close button"
+        assert f'data-hash="{hashed}"' in chat, f"the {hashed} dialog has no hash"
+    # Every root needs its own role, modality, and two dismissers.
+    assert chat.count('role="dialog"') == len(roots), "each dialog needs its own role"
+    assert chat.count('aria-modal="true"') == len(roots), "each dialog needs aria-modal"
+    assert chat.count("data-close") == len(roots) * 2, "each dialog needs a scrim and a close"
+
+    # A surface with several sections wears a rail that names each panel it
+    # switches between, and every named panel has to be on the page.
+    rails = re.findall(r'<nav class="dlg-nav" data-nav[^>]*>(.*?)</nav>', chat, re.S)
+    assert rails, "no section rail"
+    for rail in rails:
+        sections = re.findall(r'data-sec="(\w+)"', rail)
+        assert sections, "a rail with no sections"
+        for sec in sections:
+            assert f'id="sec-{sec}"' in chat, f"the rail names a missing panel: {sec}"
 
 
-def check_the_sidebar_openers_are_dialog_buttons():
-    """Neither entry navigates any more."""
+def check_the_opener_is_a_button():
+    """No entry navigates any more."""
     chat = read("index.html")
-    for opener, controls in (("sideLibrary", "libModal"), ("sideProfile", "setModal")):
+    openers = re.findall(r'id="(side\w+)"[^>]*aria-controls="(\w+Modal)"', chat)
+    assert openers, f"the sidebar opener was not found: {openers}"
+    roots = dict(re.findall(r'id="(\w+Modal)" data-hash="(\w+)"', chat))
+    for opener, controls in openers:
         assert f'id="{opener}"' in chat, f"no {opener} in the sidebar"
-        assert f'aria-controls="{controls}"' in chat, f"{opener} does not name its dialog"
-        assert f'aria-haspopup="dialog"' in chat, "an opener does not announce a dialog"
+        assert controls in roots, f"{opener} opens a dialog that is not on the page: {controls}"
+        assert 'aria-haspopup="dialog"' in chat, "an opener does not announce a dialog"
     assert "location.href = \"/settings.html\"" not in read("app.js"), "app.js still navigates to Settings"
-    assert "location.href = \"/library.html\"" not in read("app.js"), "app.js still navigates to the Library"
+
+
+def check_the_visible_panel_is_not_hidden():
+    """The dialog opens onto content, not onto nothing.
+
+    `select()` is what unhides a panel; a panel that ships `hidden` with no rail
+    to call select would open the dialog empty.
+    """
+    chat = read("index.html")
+    for sheet in re.findall(r'<div class="dlg-sheet[^"]*" id="(\w+Sheet)"', chat):
+        block = chat.split(f'id="{sheet}"', 1)[1]
+        panel = re.search(r'<section class="dlg-panel" id="sec-\w+"[^>]*>', block)
+        assert panel, f"{sheet} has no panel"
+        assert "hidden" not in panel.group(0), f"{sheet} opens onto a hidden panel"
 
 
 def check_the_shell_lives_in_one_file():
-    """dialog.css owns the shell; the surfaces own only their content."""
+    """dialog.css owns the shell; the surface owns only its content."""
     shell = read("dialog.css")
     for cls in (".dlg-modal", ".dlg-scrim", ".dlg-sheet", ".dlg-head", ".dlg-close",
                 ".dlg-layout", ".dlg-nav", ".dlg-panel"):
         assert cls in shell, f"dialog.css is missing {cls}"
-    for name in ("library.css", "settings.css"):
-        surface = read(name)
-        assert ".dlg-modal" not in surface, f"{name} redefines the shell"
-        assert ".dlg-nav button" not in surface, f"{name} restyles the rail"
-        assert ".dlg-back" not in surface, f"{name} still styles a back control"
+    surface = read("settings.css")
+    assert ".dlg-modal" not in surface, "settings.css redefines the shell"
+    assert ".dlg-nav button" not in surface, "settings.css restyles the rail"
+    assert ".dlg-back" not in surface, "settings.css still styles a back control"
 
 
-def check_the_old_pages_only_redirect():
-    """The two routes still resolve, and land in the matching dialog."""
-    for name, target in (("library.html", "/#library"), ("settings.html", "/#settings")):
-        page = read(name)
-        assert target in page, f"{name} does not point at {target}"
-        assert 'id="sec-' not in page, f"{name} still renders its own panels"
-        assert "<script src=" not in page, f"{name} still loads an app script"
+def check_the_old_page_only_redirects():
+    """The route still resolves, and lands in the dialog."""
+    page = read("settings.html")
+    assert "/#settings" in page, "settings.html does not point at /#settings"
+    assert 'id="sec-' not in page, "settings.html still renders its own panels"
+    assert "<script src=" not in page, "settings.html still loads an app script"
 
 
 def check_settings_keeps_its_form_styling():

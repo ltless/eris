@@ -1,0 +1,286 @@
+/* Model and effort controls in the composer toolbar, plus the two panels they
+   open. Every value comes from the palette in style.css; the dark theme is
+   carried by the token swap alone, so nothing here is themed twice. */
+
+.pick-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: var(--ctl-icon);
+  max-width: 200px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.pick-btn:hover,
+.pick-btn[aria-expanded="true"] {
+  color: var(--text);
+}
+
+/* The top effort step is the one state either control shows, and it is shown
+   in ink rather than in a hue: the palette has no accent to spend. Only the
+   colour changes, so the trigger never changes width as the step moves. */
+.pick-btn[data-max] {
+  color: var(--text);
+}
+
+.pick-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pick-caret {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform var(--mo-base) var(--mo-ease);
+}
+
+.pick-btn[aria-expanded="true"] .pick-caret {
+  transform: rotate(180deg);
+}
+
+/* Both panels hang over the field, aligned to their trigger by script. */
+.pick-menu {
+  position: absolute;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 20;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.pick-menu[hidden] {
+  display: none;
+}
+
+/* --- the model menu --- */
+
+#modelMenu {
+  width: 200px;
+  max-height: 280px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.pick-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: var(--ctl-sm);
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pick-row[aria-selected="true"] {
+  color: var(--text);
+}
+
+.pick-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pick-row-check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transition: opacity var(--mo-fast) var(--mo-ease);
+}
+
+.pick-row-check[data-on] {
+  opacity: 1;
+}
+
+.pick-row-check svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* One element slides behind the rows, so the highlight travels between them
+   instead of appearing and disappearing. */
+.pick-glow {
+  position: absolute;
+  left: var(--sp-1);
+  right: var(--sp-1);
+  z-index: -1;
+  border-radius: var(--radius-sm);
+  background: var(--hover);
+  opacity: 0;
+  transition: top var(--mo-fast) var(--mo-ease), height var(--mo-fast) var(--mo-ease);
+}
+
+/* --- the effort slider --- */
+
+/* The panel is a small sheet of its own: the rail spans the full width with
+   the thumb's radius of margin at each end, and the two words that name the
+   rail's ends sit under the ends they name. */
+.pick-effort {
+  width: 208px;
+  padding: var(--sp-3);
+}
+
+.pick-effort-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+/* The head carries a name and a value, and the value is the one that answers,
+   so it takes the ink and the name stays muted behind it. */
+.pick-effort-title {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.pick-effort-level {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Track is the pointer's target: a touch row that does nothing but hold the
+   rail at its centre. */
+.pick-effort-track {
+  position: relative;
+  display: block;
+  height: 20px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* The rail is the thumb's travel. It is inset by the thumb's radius at each
+   end, so a percentage along it puts the thumb's edge flush with the track at
+   either extreme, and the fill, the ticks and the thumb share one coordinate. */
+.pick-effort-rail {
+  --pick-x: 50%;
+  --pick-fill: 50%;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 5px;
+  right: 5px;
+}
+
+.pick-effort-fill {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: var(--pick-fill);
+  height: 2px;
+  margin-top: -1px;
+  border-radius: var(--radius-pill);
+  background: var(--faint);
+  transition: background var(--mo-fast) var(--mo-ease);
+}
+
+/* A step is a tick on the track rather than a stop the thumb sits on: it takes
+   the panel's own background so the fill reads as passing behind it, and the
+   ring is what the eye actually sees. */
+.pick-effort-dot {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  margin: -1px 0 0 -1px;
+  border-radius: 50%;
+  background: var(--bg-elev);
+  box-shadow: 0 0 0 1px var(--faint);
+}
+
+.pick-effort-thumb {
+  position: absolute;
+  top: 50%;
+  left: var(--pick-x);
+  width: 11px;
+  height: 11px;
+  margin: -5.5px 0 0 -5.5px;
+  border-radius: 50%;
+  background: var(--text);
+  transition: transform var(--mo-fast) var(--mo-ease);
+}
+
+/* The rail is dragged, so its grip grows while it is held: 11px is smaller
+   than a finger is asked to hit. The press sets data-grab rather than relying
+   on :active, which the pointerdown cancels so the rail never takes the ring. */
+.pick-effort-track[data-grab] .pick-effort-thumb {
+  transform: scale(1.25);
+}
+
+.pick-effort-track:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* The ends' words sit under the rail's ends, which are inset by the thumb's
+   radius, so the words take the same inset rather than the panel's edge. */
+.pick-effort-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--sp-1);
+  padding: 0 5px;
+  font-size: var(--fs-2xs);
+  color: var(--faint);
+}
+
+/* The top step is the one the control calls out, and it says so through the
+   ink it is already using: the fill completes, the grip grows a ring. */
+.pick-effort[data-max] .pick-effort-fill {
+  background: var(--text);
+}
+
+.pick-effort[data-max] .pick-effort-thumb {
+  box-shadow: 0 0 0 3px var(--bg-elev), 0 0 0 4px var(--text);
+}
+
+@media (pointer: coarse) {
+  .pick-effort-track {
+    height: var(--ctl-hit);
+  }
+}
+
+@media (max-width: 768px) {
+  .pick-btn {
+    max-width: 120px;
+    padding: 0 var(--sp-1);
+  }
+}

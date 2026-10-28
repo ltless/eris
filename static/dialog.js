@@ -1,6 +1,6 @@
 /* The dialog shell: open, close, focus, section rail, and the URL hash.
-   Library and Settings both use it, so neither has to reimplement Escape, the
-   focus trap, or focus restoration.
+   Settings uses it, so it does not have to reimplement Escape, the focus trap,
+   or focus restoration.
 
    The markup contract is in dialog.css. Everything the caller owns is passed
    in: the root, its opener, and two hooks — `onEscape` for a surface that has

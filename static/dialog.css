@@ -1,7 +1,7 @@
 /* The dialog shell: scrim, centred sheet, and the rail-plus-panel layout.
-   Library and Settings both wear it, so it lives here once and each surface
-   keeps only its own content styles. Loaded by the chat page, which owns both
-   dialogs; there is no route behind either of them.
+   Settings wears it, so it lives here once and the surface keeps only its own
+   content styles. Loaded by the chat page, which owns the dialog; there is no
+   route behind it.
 
    Markup contract, so `dialog.js` never has to know a class name twice:
      .dlg-modal[data-hash]        the fixed layer, `hidden` when closed
@@ -46,15 +46,28 @@
   max-height: min(84vh, 760px);
   padding: var(--sp-6);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-lg);
   background: var(--bg);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
-  font-size: 14.5px;
+  font-size: var(--fs-md);
   color: var(--text);
 }
 
 .dlg-sheet:focus {
   outline: none;
+}
+
+/* A surface with no rail at all: one section does not need a column holding a
+   single item, nor a tab row repeating the word the panel already says. The
+   layout collapses to the panel alone. */
+.dlg-sheet--solo .dlg-layout {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.dlg-sheet--solo .dlg-panel {
+  border: 0;
+  padding: 0;
 }
 
 .dlg-head {
@@ -65,7 +78,7 @@
 }
 
 .dlg-head h2 {
-  font-size: 17px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0;
@@ -78,15 +91,15 @@
   place-items: center;
   flex: none;
   margin-left: auto;
-  width: 28px;
-  height: 28px;
+  width: var(--ctl-sm);
+  height: var(--ctl-sm);
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--muted);
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  transition: background var(--mo-fast) var(--mo-ease), color var(--mo-fast) var(--mo-ease);
 }
 
 .dlg-close svg {
@@ -114,6 +127,10 @@
 .dlg-layout {
   display: grid;
   grid-template-columns: 180px minmax(0, 1fr);
+  /* One row that takes the height the sheet gave the layout, so the panel is
+     the thing that scrolls. Left auto, the row would size to the panel's
+     content and the sheet would grow past its own max-height instead. */
+  grid-template-rows: minmax(0, 1fr);
   gap: var(--sp-5);
   flex: 1;
   min-height: 0;
@@ -126,18 +143,18 @@
 }
 
 .dlg-nav button {
-  height: 36px;
+  height: var(--ctl);
   padding: 0 var(--sp-3);
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--muted);
   font: inherit;
-  font-size: 13.5px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  transition: background var(--mo-fast) var(--mo-ease), color var(--mo-fast) var(--mo-ease);
 }
 
 .dlg-nav button:hover {
@@ -171,7 +188,7 @@
 }
 
 .dlg-panel h3 {
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   letter-spacing: -0.01em;
   margin: 0 0 var(--sp-4);
@@ -183,9 +200,11 @@
   color: var(--accent-ink);
 }
 
-/* ---- Narrow: the sheet takes the screen and the rail becomes a chip row ---- */
+/* ---- Narrow: the sheet takes the screen and the rail becomes a chip row ----
+   The breakpoint matches the sidebar drawer and the composer in style.css, so
+   there is no band where the sheet is fullscreen but the rail is still open. */
 
-@media (max-width: 720px) {
+@media (max-width: 768px) {
   .dlg-modal {
     padding: 0;
     place-items: stretch;
@@ -195,7 +214,7 @@
     width: 100%;
     height: 100%;
     max-height: none;
-    padding: var(--sp-5) var(--space) var(--sp-6);
+    padding: var(--sp-5) var(--sp-4) var(--sp-6);
     border: 0;
     border-radius: 0;
     box-shadow: none;
@@ -203,6 +222,9 @@
 
   .dlg-layout {
     grid-template-columns: 1fr;
+    /* The rail is a chip row here, so it is the first row and takes its own
+       height; the panel is the second and fills the rest. */
+    grid-template-rows: auto minmax(0, 1fr);
     gap: var(--sp-4);
   }
 
@@ -226,15 +248,15 @@
   }
 }
 
-/* Touch: 44px. */
+/* Touch: the same 44px target every other surface uses. */
 @media (pointer: coarse) {
   .dlg-nav button,
   .dlg-close {
-    height: 44px;
+    height: var(--ctl-hit);
   }
 
   .dlg-close {
-    width: 44px;
+    width: var(--ctl-hit);
   }
 }
 

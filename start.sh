@@ -21,13 +21,13 @@ trap cleanup EXIT INT TERM
 PY=.venv/bin/python
 .venv/bin/pip install -q -r requirements.txt
 
-# 2. ChromaDB + SearXNG
+# 2. SearXNG
 if command -v docker >/dev/null; then
-  echo "> starting docker services (chromadb, searxng)"
+  echo "> starting docker services (searxng)"
   docker compose up -d
   started_docker=1
 else
-  echo "! docker not found, skipping ChromaDB"
+  echo "! docker not found, skipping SearXNG"
 fi
 
 # 3. llama.cpp model server
@@ -35,7 +35,7 @@ if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
   if command -v "$LLAMA_BIN" >/dev/null; then
     echo "> starting $LLAMA_BIN ($MODEL_PATH)"
     "$LLAMA_BIN" --model "$MODEL_PATH" --host 0.0.0.0 --port 8080 \
-      --ctx-size 8192 --embeddings --pooling mean \
+      --ctx-size 8192 \
       --n-gpu-layers 99 \
       --reasoning-format deepseek &
     llama_pid=$!

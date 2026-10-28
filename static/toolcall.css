@@ -4,7 +4,7 @@
 .tc {
   max-width: 100%;
   margin: 0 0 var(--sp-2);
-  font-size: 13.5px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--text);
 }
@@ -44,7 +44,7 @@
   margin-left: -6px;
   padding: 0 var(--sp-2) 0 6px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--muted);
   font: inherit;
@@ -137,7 +137,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   line-height: 1.2;
   color: var(--text);
@@ -173,7 +173,7 @@
   gap: var(--sp-2);
   margin: 0 calc(var(--sp-2) * -1);
   padding: var(--sp-1) var(--sp-2);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   text-decoration: none;
 }
@@ -194,10 +194,10 @@
   display: grid;
   place-items: center;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: var(--bg-soft);
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -208,13 +208,13 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .tc-domain {
   flex: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .tc-ext {
@@ -234,22 +234,22 @@
 .tc-error {
   margin: 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-sm);
 }
 
 .tc-error {
-  color: #d33;
+  color: var(--danger);
 }
 
 .tc-retry {
   margin-top: var(--sp-2);
   padding: var(--sp-1) var(--sp-3);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: none;
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-xs);
   cursor: pointer;
 }
 
@@ -268,7 +268,7 @@
   overflow-y: auto;
   padding-right: var(--sp-2);
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -276,6 +276,8 @@
   scrollbar-color: var(--border) transparent;
 }
 
+/* The one narrow step: at phone width the domain is the first thing to go,
+   because the title already carries the link's identity. */
 @media (max-width: 480px) {
   .tc-domain {
     display: none;

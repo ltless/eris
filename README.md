@@ -1,7 +1,8 @@
 # Eris
 
-Minimal chat UI (Claude/ChatGPT-like) with streaming, RAG over ChromaDB,
-and a local llama.cpp model server.
+Minimal chat UI (Claude/ChatGPT-like) with streaming, a local llama.cpp model
+server, and a tool loop that searches the web and cites what it actually
+retrieved.
 
 ## Architecture
 
@@ -12,26 +13,28 @@ POST, `marked.js` renders markdown, `DOMPurify` sanitizes it, and
 The backend is FastAPI on uvicorn. It talks to a local model server over
 `httpx` and streams deltas back to the browser. Model serving is llama.cpp's
 `llama-server` (FILKAN backend) or Ollama; chat streams from the native
-`/api/chat` NDJSON endpoint, embeddings come from the OpenAI-compatible
-`/v1/embeddings`.
+`/api/chat` NDJSON endpoint.
 
-ChromaDB runs in Docker and handles document retrieval.
+SearXNG runs in Docker and serves web search.
 
 ```
-browser ──SSE──▶ FastAPI ──httpx──▶ model server (/api/chat, /v1/embeddings)
-                     └──▶ ChromaDB (embeddings + retrieval)
+browser ──SSE──▶ FastAPI ──httpx──▶ model server (/api/chat)
+                     │                  └──▶ SearXNG (web search)
+                     └──▶ app/runtime/   one execution loop for chat and search
 ```
+
+Every turn runs through the same loop and the same tool registry.
 
 ## Setup
 
-One command (creates venv, starts ChromaDB + llama-server + app):
+One command (creates venv, starts SearXNG + llama-server + app):
 
 ```bash
 cp .env.example .env          # set MODEL_PATH=/path/to/model.gguf
 ./start.sh
 ```
 
-`start.sh` auto-starts whichever pieces it can: Docker ChromaDB, `llama-server`
+`start.sh` auto-starts whichever pieces it can: Docker SearXNG, `llama-server`
 (if `MODEL_PATH` is set and the binary exists), then uvicorn. Ctrl-C stops all.
 If `MODEL_PATH` is empty it assumes a model server is already up at
 `MODEL_BASE_URL`.
@@ -51,7 +54,7 @@ Open http://localhost:9000
 ## Windows
 
 Requires Python 3.10+ (the code uses `X | Y` type syntax) and Docker Desktop
-if you want ChromaDB/SearXNG in containers.
+if you want SearXNG in a container.
 
 ```powershell
 Copy-Item .env.example .env     # set MODEL_PATH=C:\path\to\model.gguf
@@ -86,46 +89,34 @@ docker compose up -d
 .\.venv\Scripts\python.exe -m uvicorn app.api:app --reload --port 9000
 ```
 
-If `docker compose up -d` fails with `ports are not available` on `8000`, some
-other process owns ChromaDB's host port. `CHROMA_PORT` in `.env` controls the
-mapping (`"${CHROMA_PORT:-8000}:8000"` in `docker-compose.yml`) and the app
-reads the same variable, so change it in one place:
-
-```powershell
-# .env
-CHROMA_PORT=8001
-```
-
-```powershell
-docker compose up -d
-docker compose ps
-```
-
 ## Notes
 
-- `/api/chat` accepts `{messages, use_rag}` and streams SSE:
+- `/api/chat` accepts `{messages}` and streams SSE:
   `{"type":"sources"|"delta"|"error", ...}` then `[DONE]`.
 - Chat calls `MODEL_BASE_URL` minus the `/v1` suffix, on the native `/api/chat`
-  route: NDJSON with a `message` object per line. Only the `/v1` route set is
-  OpenAI-shaped, and only embeddings use it.
-- RAG uses `MODEL_BASE_URL/v1/embeddings`; the llama-server must be started
-  with `--embeddings`.
-- Documents are chunked (~800 chars, 100 overlap) and stored with a `source`
-  metadata field, a `doc_id`, and each chunk's ordinal `n`; retrieval returns
-  top-`RAG_TOP_K` chunks.
-- Settings and the Library are dialogs over the chat page, both opened from a
-  sidebar row (or `/#settings`, `/#library`), not routes of their own. The shell —
-  scrim, sheet, section rail, focus handling — is `static/dialog.css` and
-  `static/dialog.js`; `static/settings.html` and `static/library.html` are
-  redirects into the matching hash. Esc cancels a pending delete, then closes.
-- The Library lists the indexed documents, opens one document's first 50 chunks,
-  deletes a document with its chunks, and takes an upload. `POST
-  /api/documents/upload` indexes a file, `GET /api/documents` lists them,
-  `GET /api/documents/{doc_id}` returns one document, `DELETE
-  /api/documents/{doc_id}` removes it. Uploading a filename that is already
-  indexed replaces that document: the new copy is indexed first, then the
-  previous copy's chunks and row are retired (including pre-migration chunks
-  with the same `source`), and the response reports `replaced`.
-- Smoke the document path against a running server:
-  `.venv\Scripts\python.exe tests/smoke_library.py --email you@example.com --password ...`
-- Health dots in the sidebar poll `/api/health`.
+  route: NDJSON with a `message` object per line.
+- Settings is a dialog over the chat page, opened from a sidebar row (or
+  `/#settings`), not a route of its own. The shell — scrim, sheet, section rail,
+  focus handling — is `static/dialog.css` and `static/dialog.js`. The old
+  `static/settings.html` is a redirect into the hash. Esc cancels a pending
+  step, then closes.
+- Health dots in the sidebar poll `/api/health`, which reports the model server
+  and SearXNG.
+- Tests: `.venv\Scripts\python.exe tests/run_all.py` runs every suite and
+  prints one total. None of them need Docker or a model.
+- A tool that changes something needs an approval bound to that exact call,
+  and a run that hits one stops there rather than answering around it.
+- API tokens (`TOKENS_DB`) let a script, an editor, or an MCP client act as the
+  account without a cookie. Only the hash is stored; the plaintext is returned
+  once and has no read-back route. A token is **read scope**: `require_user`
+  accepts it, and `require_session` — which everything that changes the account
+  stands behind — does not, so a leaked token cannot be escalated into a
+  takeover. `GET`/`POST /api/tokens` list and mint, `DELETE /api/tokens/{id}`
+  revokes. The Settings dialog's API tokens panel is where they are managed.
+- `/mcp` speaks Model Context Protocol over Streamable HTTP as a bearer-token
+  endpoint: `initialize` (which issues `Mcp-Session-Id`), `tools/list`, and
+  `tools/call` over the tools already registered, with `notifications/*` answered
+  `202` and `GET` answered `405` because this server never pushes. Tool execution
+  failures come back as `isError: true`; a malformed call or an unknown tool is a
+  JSON-RPC error. A tool that needs an approval refuses, because a token cannot
+  give one.

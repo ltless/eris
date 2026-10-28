@@ -3,22 +3,30 @@
    The icon axis is locked at 28px (pad 8 + half of the 40px slot) in both the
    expanded and collapsed states, so rows never shift when the rail toggles.
    Rhythm values come from the spacing scale in style.css.
+
+   Two vertical rules hold the column together. Row labels, the section title,
+   and the empty state all start at --gut, so the sidebar reads as one text
+   column with an icon gutter beside it rather than three indents. And the
+   groups are spaced by role: --sp-hair between rows inside a group, --sp-4
+   between groups. Every row is --row tall.
+
    Motion belongs to the rail and nowhere else in the product. See .side.anim.
    ========================================================================== */
 
 :root {
   --sw: 240px;
   --rail: 56px;
-  --pad: 8px;
-  --gut: 40px;
+  --pad: var(--sp-2);
+  --gut: 40px;      /* icon column; every label starts here */
   --row: 30px;
-  --side-radius: 6px;
+  --side-radius: var(--radius-sm);
 
-  /* Motion, used only by the rail toggle. */
+  /* Motion, used only by the rail toggle. These three describe one gesture —
+     the rail changing size — so they stay together here rather than joining the
+     body-motion durations in style.css. The curve is the shared one. */
   --mo-rail: 260ms;  /* the rail changing size */
   --mo-fade: 160ms;  /* labels leaving or arriving with it */
   --mo-flip: 140ms;  /* the toggle icon swap */
-  --mo-ease: cubic-bezier(0.16, 1, 0.3, 1); /* decelerating, no bounce */
 }
 
 .layout {
@@ -80,12 +88,14 @@
 .lbl {
   min-width: 0;
   flex: 1;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
-  color: var(--text);
+  line-height: var(--row);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* The row's right inset, on the element that actually ends the label, so
+     the text stops at the same x as a badge or an action button. */
   padding-right: var(--sp-2);
 }
 
@@ -99,6 +109,14 @@
   opacity: 0;
   visibility: hidden;
   transform: translateX(-4px);
+}
+
+/* The label is flex-shrinkable to zero width, so its trailing pad is the only
+   thing left of it when the rail is 40px wide. It is clipped past the content
+   box rather than pushing the icon, which keeps the axis fixed. */
+.side.collapsed .lbl {
+  padding-right: 0;
+  flex: 0 1 0;
 }
 
 /* The chat rows leave with the labels. A rail this narrow is for the two
@@ -149,13 +167,57 @@
   }
 }
 
+/* --- Rows ---
+   Every row in the sidebar is one shape: a 30px line, a 40px icon cell, then
+   the label column. New chat, the destinations, the chat list, and the account
+   all inherit this block, so a change to the row rhythm is made once.
+
+   Rows carry no padding of their own. Collapsed, the rail's content box is
+   exactly --gut, so a padded row would push the icon off the axis the expanded
+   state uses. The inset sits on the last thing in the row instead: the label's
+   trailing pad, the badge's margin, or the action strip. */
+.side-new,
+.side-row,
+.side-profile {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: var(--row);
+  padding: 0;
+  border: none;
+  border-radius: var(--side-radius);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+
+/* One hover language for the whole sidebar, matching the dialog rail: a fill
+   behind the row and the ink at full strength. The old rule dimmed hovered
+   rows to --faint, so pointing at a row made it quieter. */
+.side-new:hover,
+.side-row:hover,
+.side-profile:hover {
+  background: var(--hover);
+}
+
+.side button:focus-visible,
+.side [role="button"]:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
 /* --- 1. Header (Toggle & Brand) --- */
 .side-top {
   display: flex;
   align-items: center;
   height: var(--row);
   width: 100%;
-  margin-bottom: var(--sp-2);
+  /* 16px, like the step before History: the sidebar's rhythm is one value
+     between groups and 2px inside a group. */
+  margin-bottom: var(--sp-4);
 }
 
 .side-toggle {
@@ -173,8 +235,8 @@
 }
 
 .side-toggle:hover {
-  background: transparent;
-  color: var(--faint);
+  background: var(--hover);
+  color: var(--text);
 }
 
 /* Both toggle icons share one cell so the swap cross-fades rather than flipping
@@ -206,7 +268,7 @@
 
 .side-brand {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-lg);
   font-weight: 700;
   letter-spacing: -0.015em;
   color: var(--text);
@@ -215,42 +277,49 @@
   text-overflow: ellipsis;
 }
 
-/* --- 2. Action: New Chat --- */
-.side-new {
+/* --- 2. Actions: New chat, then the destinations --- */
+/* Ink by role: the actions and the account are the operator's own entries, so
+   they rest at --text; the chat list is content and rests at --muted, coming up
+   to --text on hover and when it is the open chat. */
+
+/* The three destinations are one group, so their rhythm is a gap on the group
+   rather than a margin on each row: 2px inside it, 16px where it ends. */
+.side-acts {
   display: flex;
-  align-items: center;
-  width: 100%;
-  height: var(--row);
-  margin-bottom: var(--sp-1);
-  border: none;
-  border-radius: var(--side-radius);
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  text-align: left;
+  flex-direction: column;
+  gap: var(--sp-hair);
 }
 
-.side-new .ic {
+.side-new,
+.side-profile {
+  color: var(--text);
+}
+
+.side-new .ic,
+.side-profile .ic {
   color: var(--muted);
 }
 
-.side-new:hover {
-  background: transparent;
+.side-new:hover .ic,
+.side-profile:hover .ic {
   color: var(--text);
 }
 
-.side-new:hover .ic {
-  color: var(--faint);
+.side-new .lbl,
+.side-profile .lbl {
+  color: var(--text);
 }
 
 /* --- 3. Chat History --- */
+
+/* The section label starts at the label column, not at zero, so "History"
+   sits over the names it introduces rather than hanging off to their left. */
 .side-title {
-  margin: var(--sp-1) 0 0;
-  padding: var(--sp-1) var(--sp-2);
-  font-size: 11px;
+  margin: var(--sp-4) 0 var(--sp-1);
+  padding: 0 0 0 var(--gut);
+  font-size: var(--fs-2xs);
   font-weight: 600;
+  line-height: 16px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--muted);
@@ -265,6 +334,11 @@
   flex-direction: column;
   gap: var(--sp-hair);
   min-height: 0;
+  /* Keeps the last row off the footer's hairline. The pad scrolls with the
+     content, so a full list does not end flush against the divider. */
+  padding-bottom: var(--sp-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .side-history::-webkit-scrollbar {
@@ -273,79 +347,125 @@
 
 .side-history::-webkit-scrollbar-thumb {
   background: var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .side-history::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
 }
 
-.side-row {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: var(--row);
-  border-radius: var(--side-radius);
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 0;
-  text-align: left;
-  font: inherit;
-}
-
-/* The Library entry is a dialog opener, styled as a plain row. */
-
 .side-row .lbl {
   color: var(--muted);
 }
 
-.side-row:hover {
-  background: transparent;
-  color: var(--faint);
+.side-row:hover .lbl,
+.side-row:hover .ic,
+.side-row:focus-visible .lbl,
+.side-row:focus-visible .ic {
+  color: var(--text);
 }
 
-.side-row:hover .ic,
-.side-row:hover .lbl {
-  color: var(--faint);
+/* Pinned rows are pinned, not open: they take full ink and nothing else, so the
+   current chat is still told apart by its fill and weight. The mark itself is
+   the row's icon, which is why pinning swaps the glyph rather than prefixing
+   the title: the title never moves. */
+.side-row.pinned .ic,
+.side-row.pinned .lbl {
+  color: var(--text);
 }
 
 .side-row.active {
-  background: transparent;
-  color: var(--text);
+  background: var(--hover);
 }
 
 .side-row.active .ic,
 .side-row.active .lbl {
   color: var(--text);
+}
+
+.side-row.active .lbl {
   font-weight: 600;
 }
 
-.side-row .row-x {
-  display: none;
+/* A count of things waiting on the operator. Sits at the end of the row so it
+   reads as a status on the entry rather than part of its name, and it is
+   hidden when there is nothing to say. */
+.side-badge {
   flex: none;
-  width: 22px;
-  height: 22px;
+  margin-left: auto;
+  /* The row has no right padding, so the badge carries the trailing inset. */
+  margin-right: var(--sp-2);
+  min-width: 18px;
+  padding: 0 var(--sp-1);
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  color: var(--bg);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.side-badge[hidden] {
+  display: none;
+}
+
+/* Collapsed, the rail is icon-only: a badge floating beside an icon with no
+   label reads as a stray dot, so it goes with the text. */
+.side.collapsed .side-badge {
+  display: none;
+}
+
+/* Row actions ride over the end of the row instead of being removed from flow.
+   Toggling display used to shrink the label on hover, so a long title
+   re-truncated the moment the pointer arrived. The strip wears the row's own
+   hover fill, so the buttons never sit on top of legible text.
+
+   It also opens when focus enters the row. The strip is kept in the tab order
+   with pointer-events rather than visibility: hidden, so a keyboard user can
+   tab from a chat into its Pin, Rename, and Delete, and the strip becomes
+   visible the moment focus lands in it. */
+.row-acts {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  column-gap: var(--sp-hair);
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border-radius: 0 var(--side-radius) var(--side-radius) 0;
+  background: var(--hover);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.side-row:hover .row-acts,
+.side-row:focus-within .row-acts {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.row-acts .row-x {
+  display: inline-flex;
+  flex: none;
+  width: var(--ctl-row);
+  height: var(--ctl-row);
   align-items: center;
   justify-content: center;
   padding: 0;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--muted);
   cursor: pointer;
 }
 
-.side-row:hover .row-x {
-  display: inline-flex;
-}
-
-.side-row .row-x:hover {
+.row-acts .row-x:hover {
   color: var(--text);
 }
 
-.side-row .row-x svg {
+.row-acts .row-x svg {
   width: 13px;
   height: 13px;
   stroke: currentColor;
@@ -355,42 +475,31 @@
   stroke-linejoin: round;
 }
 
-.side-row.pinned .lbl {
-  color: var(--text);
-}
-
+/* The empty state is a label that has nothing to name, so it takes the label
+   column and the rows' --fs-sm, and it indents nothing else. */
 .side-empty {
-  padding: var(--sp-2);
-  font-size: 12px;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--gut);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 18px;
   color: var(--muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* --- 4. Footer & Profile --- */
+/* The account is the last thing in the column and the only one pinned to the
+   bottom. A hairline above it is the sidebar's only divider, and it is what
+   keeps the profile from reading as one more chat row. */
 .side-foot {
   margin-top: auto;
   padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
 }
 
 .side-profile {
-  position: relative;
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: var(--row);
-  border-radius: var(--side-radius);
-  background: transparent;
-  border: none;
   color: var(--text);
-  cursor: pointer;
-  padding: 0;
-  text-align: left;
-  font: inherit;
-}
-
-.side-profile:hover {
-  background: transparent;
-  color: var(--faint);
 }
 
 /* Visible to assistive technology only. It sits inside the account row so the
@@ -415,23 +524,18 @@
      live here or the photo paints at natural size in the top-left corner. */
   background: var(--bg-soft) center / cover no-repeat;
   color: var(--text);
-  font-size: 11px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.side button:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: -2px;
-}
-
 /* --- Mobile Drawer (≤ 768px) --- */
 .menu-btn {
   display: none;
-  width: 34px;
-  height: 34px;
+  width: var(--ctl-icon);
+  height: var(--ctl-icon);
   flex: none;
   border: none;
   border-radius: var(--side-radius);
@@ -444,8 +548,8 @@
 }
 
 .menu-btn:hover {
-  background: transparent;
-  color: var(--faint);
+  background: var(--hover);
+  color: var(--text);
 }
 
 .menu-btn svg {
@@ -498,7 +602,7 @@
   }
 
   /* The drawer ignores the collapsed state: labels and the chat list stay
-     readable here. */
+     readable here, so the rail-only clipping of the label is undone too. */
   .side.collapsed .lbl,
   .side.collapsed .side-brand,
   .side.collapsed .side-title,
@@ -507,5 +611,10 @@
     opacity: 1;
     visibility: visible;
     transform: none;
+  }
+
+  .side.collapsed .lbl {
+    flex: 1;
+    padding-right: var(--sp-2);
   }
 }

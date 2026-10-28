@@ -13,14 +13,16 @@ _db = None
 
 
 def db_path():
-    return Path(os.getenv("CHAT_DB", "chats.db"))
+    return Path(os.getenv("CHAT_DB", "database/chats.db"))
 
 
 def db():
     global _db
     if _db is None:
-        fresh = not db_path().exists()
-        _db = sqlite3.connect(db_path(), check_same_thread=False)
+        path = db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fresh = not path.exists()
+        _db = sqlite3.connect(path, check_same_thread=False)
         _db.row_factory = sqlite3.Row
         if fresh:
             _db.executescript(

@@ -41,7 +41,5 @@ if (-not $LlamaExe) {
     --port $Port `
     --host 0.0.0.0 `
     --ctx-size 8192 `
-    --embeddings `
-    --pooling mean `
     --n-gpu-layers 99 `
     --reasoning-format deepseek

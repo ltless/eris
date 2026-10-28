@@ -9,11 +9,7 @@ const els = {
   attach: document.getElementById("attach"),
   fileInput: document.getElementById("fileInput"),
   box: document.getElementById("box"),
-  mic: document.getElementById("mic"),
   count: document.getElementById("count"),
-  searchBtn: document.getElementById("searchBtn"),
-  modeAgentic: document.getElementById("modeAgentic"),
-  modeDeep: document.getElementById("modeDeep"),
 };
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -45,14 +41,10 @@ function autoScroll() {
 
 els.messages.addEventListener("scroll", syncScrollBtn, { passive: true });
 
-const FILE_ICON =
-  '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
 const IMG_ICON =
   '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 16l5-5 4 4 3-3 6 6" /><circle cx="9" cy="9" r="1.4" /></svg>';
 
-const DOC_RE =
-  /\.(pdf|txt|md|markdown|csv|tsv|jsonl?|xml|ya?ml|toml|ini|cfg|conf|log|rst|tex|srt|vtt|py|js|jsx|ts|tsx|html?|css|scss|sql|sh|bash|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb|php|vue|svelte|env)$/i;
 const MAX_ATTS = 8;
 const MAX = 4000;
 
@@ -62,11 +54,9 @@ let controller = null;
 let sending = false;
 let atts = [];
 let attSeq = 0;
-let useRag = true;
 let userName = "";
 let userAvatar = "";
 let modelAvatar = "";
-let chatMode = "agentic";
 
 const current = () => sessions.find((s) => s.id === activeId);
 
@@ -77,21 +67,6 @@ function render(text) {
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-
-function renderDocChips(container, items) {
-  const docs = (items || []).filter((x) => x.kind === "doc");
-  if (!docs.length) return;
-  const el = document.createElement("div");
-  el.className = "msg-sources";
-  el.innerHTML = docs
-    .map((x) => {
-      const n = x.n ? `<span class="chip-n">${x.n}</span>` : "";
-      return `<span class="chip" title="${escapeHtml(x.source)}">${n}${escapeHtml(x.source)}</span>`;
-    })
-    .join("");
-  container.append(el);
-}
-
 
 function addRegen(body, s) {
   if (body.querySelector(".regen")) return;
@@ -266,8 +241,6 @@ function linkCitations(body, items) {
 
 function classify(file) {
   if (file.type && file.type.startsWith("image/")) return "image";
-  if (file.type === "application/pdf" || file.type.startsWith("text/")) return "doc";
-  if (DOC_RE.test(file.name || "")) return "doc";
   return null;
 }
 
@@ -306,7 +279,7 @@ async function addFiles(fileList) {
   for (const f of [...fileList]) {
     if (atts.length >= MAX_ATTS) break;
     const kind = classify(f);
-    const a = { id: ++attSeq, name: f.name || "file", kind: kind || "doc", file: f, status: "ok" };
+    const a = { id: ++attSeq, name: f.name || "file", kind, file: f, status: "ok" };
     if (!kind) {
       a.status = "err";
       a.msg = "unsupported type";
@@ -314,24 +287,19 @@ async function addFiles(fileList) {
       renderAtts();
       continue;
     }
-    if (kind === "image") {
-      a.status = "busy";
-      a.msg = "reading…";
-      atts.push(a);
-      renderAtts();
-      try {
-        a.dataUrl = await shrinkToDataURL(f);
-        a.status = "ok";
-        a.msg = "";
-      } catch {
-        a.status = "err";
-        a.msg = "read failed";
-      }
-      renderAtts();
-    } else {
-      atts.push(a);
-      renderAtts();
+    a.status = "busy";
+    a.msg = "reading...";
+    atts.push(a);
+    renderAtts();
+    try {
+      a.dataUrl = await shrinkToDataURL(f);
+      a.status = "ok";
+      a.msg = "";
+    } catch {
+      a.status = "err";
+      a.msg = "read failed";
     }
+    renderAtts();
   }
 }
 
@@ -352,7 +320,7 @@ function renderAtts() {
       chip.append(im);
     } else {
       const box = document.createElement("span");
-      box.innerHTML = a.kind === "image" ? IMG_ICON : FILE_ICON;
+      box.innerHTML = IMG_ICON;
       chip.append(box.firstChild);
       const nm = document.createElement("span");
       nm.className = "chip-name";
@@ -366,7 +334,7 @@ function renderAtts() {
       } else if (a.status === "busy") {
         const note = document.createElement("span");
         note.className = "chip-note";
-        note.textContent = a.kind === "image" ? "reading..." : "indexing...";
+        note.textContent = "reading...";
         chip.append(note);
       }
     }
@@ -401,54 +369,6 @@ function syncInput() {
   els.input.style.height = Math.min(els.input.scrollHeight, 200) + "px";
   refresh();
 }
-
-async function uploadDocs() {
-  const docs = atts.filter((a) => a.kind === "doc" && a.status === "ok");
-  if (!docs.length) return;
-  docs.forEach((a) => (a.status = "busy"));
-  renderAtts();
-  await Promise.all(
-    docs.map(async (a) => {
-      try {
-        const fd = new FormData();
-        fd.append("file", a.file, a.name);
-        const r = await fetch("/api/documents/upload", { method: "POST", body: fd });
-        if (r.status === 401) location.href = "/auth.html";
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(typeof j.detail === "string" ? j.detail : `HTTP ${r.status}`);
-        a.status = "done";
-      } catch (e) {
-        a.status = "err";
-        a.msg = String(e.message || e).slice(0, 120);
-      }
-    })
-  );
-  atts = atts.filter((a) => a.status !== "done");
-  renderAtts();
-}
-
-function syncComposer() {
-  els.searchBtn.setAttribute("aria-pressed", String(useRag));
-}
-
-function setRag(v) {
-  useRag = v;
-  syncComposer();
-  saveSettings();
-}
-
-function loadSettings() {
-  try {
-    useRag = localStorage.getItem("eris-rag") !== "0";
-  } catch {}
-}
-
-function saveSettings() {
-  try {
-    localStorage.setItem("eris-rag", useRag ? "1" : "0");
-  } catch {}
-}
-
 
 
 /* ---------- sessions ---------- */
@@ -513,7 +433,6 @@ function loadSession(id) {
           }
         }
         if (m.role === "assistant") {
-          renderDocChips(body, m.sources);
           highlight(body);
           linkCitations(body, m.sources);
           if (m === s.messages.at(-1) && m.content) addRegen(body, s);
@@ -563,7 +482,6 @@ async function send(text, regen = false) {
 
   if (!regen) {
     images = atts.filter((a) => a.kind === "image" && a.status === "ok").map((a) => a.dataUrl);
-    await uploadDocs();
     atts = [];
     renderAtts();
   }
@@ -633,8 +551,6 @@ async function send(text, regen = false) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        use_rag: useRag,
-        mode: chatMode,
         chat_id: s.id,
         regenerate: regen,
         messages: toPayload(s),
@@ -703,6 +619,14 @@ async function send(text, regen = false) {
           }
           ans.innerHTML = render(raw) + '<span class="cursor">&#9613;</span>';
           autoScroll();
+        } else if (evt.type === "approval") {
+          finishThink();
+          finishWeb();
+          body.querySelector(".status")?.remove();
+          const msg = document.createElement("div");
+          msg.className = "err";
+          msg.textContent = `Approval needed: ${evt.tool} — ${evt.message || "this tool requires approval to run"}`;
+          body.append(msg);
         } else if (evt.type === "error") {
           const err = document.createElement("div");
           err.className = "err";
@@ -736,7 +660,6 @@ async function send(text, regen = false) {
     }
     finishThink();
     finishWeb();
-    renderDocChips(body, sources);
     highlight(body);
     linkCitations(body, sources);
     if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkRounds.length ? thinkRounds : undefined, ...(sources.length ? { sources } : {}), ...(webGroups.filter((g) => g.items.length).length ? { web: webGroups.filter((g) => g.items.length) } : {}) });
@@ -805,66 +728,22 @@ els.box.addEventListener("drop", (e) => {
   if (files?.length) addFiles(files);
 });
 
-els.searchBtn.addEventListener("click", () => {
-  setRag(!useRag);
-  els.input.focus();
+/* The model picker sits in the composer and writes the same preference the
+   settings dialog does, so /api/chat keeps resolving the model from the
+   account rather than from each request. */
+ErisPicker.init({
+  onModel: (model) => {
+    fetch("/api/prefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+    }).catch(() => {});
+  },
 });
 
-function setMode(m) {
-  chatMode = m;
-  els.modeAgentic.classList.toggle("on", m === "agentic");
-  els.modeDeep.classList.toggle("on", m === "deep");
-  try {
-    localStorage.setItem("eris-mode", m);
-  } catch {}
-}
-
-els.modeAgentic.addEventListener("click", () => setMode("agentic"));
-els.modeDeep.addEventListener("click", () => setMode("deep"));
-
-try {
-  if (localStorage.getItem("eris-mode") === "deep") {
-    setMode("deep");
-  }
-} catch {}
-
-
-/* ---------- voice input ---------- */
-
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (!SR) {
-  els.mic.hidden = true;
-} else {
-  const rec = new SR();
-  rec.interimResults = false;
-  rec.continuous = false;
-  let listening = false;
-  const endListen = () => {
-    listening = false;
-    els.mic.setAttribute("aria-pressed", "false");
-  };
-  rec.onresult = (e) => {
-    const t = e.results[0][0].transcript;
-    els.input.value = els.input.value.trim()
-      ? els.input.value.replace(/\s+$/, "") + " " + t
-      : t;
-    syncInput();
-    els.input.focus();
-  };
-  rec.onend = endListen;
-  rec.onerror = endListen;
-  els.mic.addEventListener("click", () => {
-    if (listening) {
-      rec.stop();
-      return;
-    }
-    try {
-      rec.start();
-      listening = true;
-      els.mic.setAttribute("aria-pressed", "true");
-    } catch {}
-  });
-}
+fetch("/api/models").then((r) => r.json()).then((j) => {
+  ErisPicker.setModels(j.items, j.default, j.labels);
+}).catch(() => {});
 
 
 ErisSidebar.init({
@@ -935,11 +814,16 @@ function refreshAccount() {
 refreshAccount();
 
 /* The settings dialog writes to the account this page is showing. Nothing
-   navigates any more, so it asks for a repaint once a change lands. */
-window.addEventListener("eris:settings-saved", refreshAccount);
+   navigates any more, so it asks for a repaint once a change lands. The model
+   it saves is the one the composer's picker shows. */
+window.addEventListener("eris:settings-saved", () => {
+  refreshAccount();
+  fetch("/api/models")
+    .then((r) => r.json())
+    .then((j) => ErisPicker.setModels(j.items, j.default, j.labels))
+    .catch(() => {});
+});
 
-loadSettings();
-syncComposer();
 fetch("/api/chats").then((r) => r.json()).then((j) => {
   sessions = (j.items || []).map((c) => ({ id: c.id, title: c.title, pinned: !!c.pinned, messages: [], remote: true }));
   ErisSidebar.setChats(sessions);

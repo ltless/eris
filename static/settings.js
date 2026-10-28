@@ -32,6 +32,14 @@ const els = {
   taPrompt: $("taPrompt"),
   resetPrompt: $("resetPrompt"),
   modelMsg: $("modelMsg"),
+  tokenName: $("inpToken"),
+  tokenMsg: $("tokenMsg"),
+  tokenNew: $("tokenNew"),
+  tokenValue: $("tokenValue"),
+  tokenCopy: $("tokenCopy"),
+  mcpWhere: $("mcpWhere"),
+  tokenList: $("tokenList"),
+  tokenEmpty: $("tokenEmpty"),
 };
 
 let mediaKind = "avatar";
@@ -110,6 +118,72 @@ function bindTheme() {
 }
 
 /* ---------- forms ---------- */
+
+/* ---------- API tokens ---------- */
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function when(seconds) {
+  if (!seconds) return "never used";
+  return "last used " + new Date(seconds * 1000).toLocaleDateString();
+}
+
+/* A token row is a name, when it was made and last used, and one action. The
+   value is not here: it was shown once, when it was created. */
+function tokenRow(t) {
+  const li = document.createElement("li");
+  li.className = "lib-row";
+  li.dataset.id = t.id;
+
+  const who = document.createElement("div");
+  who.className = "lib-id";
+  const name = document.createElement("p");
+  name.className = "lib-name";
+  name.textContent = t.name;
+  const meta = document.createElement("p");
+  meta.className = "lib-meta";
+  meta.textContent = `${t.prefix}… · ${when(t.used)}`;
+  who.append(name, meta);
+
+  const acts = document.createElement("div");
+  acts.className = "lib-acts";
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "lib-btn lib-danger";
+  b.textContent = "Revoke";
+  b.addEventListener("click", () => revokeToken(t));
+  acts.append(b);
+
+  const head = document.createElement("div");
+  head.className = "lib-line";
+  head.append(who, acts);
+  li.append(head);
+  return li;
+}
+
+function paintTokens(items) {
+  els.tokenList.replaceChildren(...items.map(tokenRow));
+  els.tokenEmpty.hidden = items.length > 0;
+  els.tokenEmpty.textContent = "No tokens yet.";
+}
+
+async function loadTokens() {
+  const j = await jget("/api/tokens");
+  paintTokens(j.items || []);
+  els.mcpWhere.textContent = `MCP clients connect to ${location.origin}/mcp with a token as a bearer credential.`;
+}
+
+async function revokeToken(t) {
+  els.tokenMsg.hidden = true;
+  try {
+    const r = await fetch(`/api/tokens/${encodeURIComponent(t.id)}`, { method: "DELETE" });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+    await loadTokens();
+    msg(els.tokenMsg, `Revoked ${t.name}.`, true);
+  } catch (err) {
+    msg(els.tokenMsg, err.message);
+  }
+}
 
 function bind() {
   $("fName").addEventListener("submit", async (e) => {
@@ -219,6 +293,38 @@ function bind() {
     }
   });
 
+  $("fToken").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    els.tokenMsg.hidden = true;
+    els.tokenNew.hidden = true;
+    try {
+      const j = await jpost("/api/tokens", { name: els.tokenName.value });
+      els.tokenName.value = "";
+      // The one moment the plaintext exists on this side. It is put in a
+      // readonly field rather than a paragraph so it can be selected and copied
+      // without a copy button being the only way to get it.
+      els.tokenValue.value = j.token;
+      els.tokenNew.hidden = false;
+      els.tokenValue.select();
+      await loadTokens();
+      msg(els.tokenMsg, "Token created.", true);
+    } catch (err) {
+      msg(els.tokenMsg, err.message);
+    }
+  });
+
+  els.tokenCopy.addEventListener("click", async () => {
+    els.tokenValue.select();
+    try {
+      await navigator.clipboard.writeText(els.tokenValue.value);
+      msg(els.tokenMsg, "Copied.", true);
+    } catch (err) {
+      // A clipboard the browser refuses is not a failure of the token: the
+      // value is in the field and already selected.
+      msg(els.tokenMsg, "Press Ctrl+C to copy the selected token.", true);
+    }
+  });
+
   $("logout").addEventListener("click", async () => {
     await fetch("/api/auth/logout", { method: "POST" });
     location.href = "/auth.html";
@@ -232,10 +338,13 @@ async function init() {
   const j = await jget("/api/models");
   els.selModel.innerHTML = "";
   const items = (j && Array.isArray(j.items)) ? j.items : [];
+  const labels = (j && j.labels) || {};
   for (const id of items) {
     const opt = document.createElement("option");
+    // The value is the id, because that is what the endpoint takes back and
+    // what prefs store; only the face of the option is the readable name.
     opt.value = id;
-    opt.textContent = id;
+    opt.textContent = labels[id] || id;
     els.selModel.append(opt);
   }
   const prefModel = (u.prefs && u.prefs.model) || (j && j.default) || "";
@@ -245,6 +354,13 @@ async function init() {
   ready = true;
   // A note from an earlier failed open no longer applies.
   for (const stale of els.root.querySelectorAll(".s-fatal")) stale.remove();
+  // A token shown once is shown once: reopening the dialog must not leave the
+  // previous plaintext sitting in a field on screen.
+  els.tokenNew.hidden = true;
+  els.tokenMsg.hidden = true;
+  // The tokens are their own panel and their own fetch, so a failure here is
+  // reported in that panel rather than turning the whole dialog into an error.
+  await loadTokens().catch((err) => msg(els.tokenMsg, err.message));
 }
 
 /* The dialog is rendered before any of this is fetched, so a failure has to be

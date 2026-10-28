@@ -11,7 +11,5 @@ exec llama-server \
   --port "$PORT" \
   --host 0.0.0.0 \
   --ctx-size 8192 \
-  --embeddings \
-  --pooling mean \
   --n-gpu-layers 99 \
   --reasoning-format deepseek
