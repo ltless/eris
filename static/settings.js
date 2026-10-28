@@ -28,7 +28,6 @@ const els = {
   clearModel: $("clearModel"),
   selModel: $("selModel"),
   inpCtx: $("inpCtx"),
-  chkThink: $("chkThink"),
   taPrompt: $("taPrompt"),
   resetPrompt: $("resetPrompt"),
   modelMsg: $("modelMsg"),
@@ -280,7 +279,6 @@ function bind() {
     const ctx = parseInt(els.inpCtx.value, 10);
     const prefs = {
       model: els.selModel.value,
-      thinking: els.chkThink.checked,
       ctx: Number.isNaN(ctx) ? 0 : ctx,
       system_prompt: els.taPrompt.value,
     };
@@ -349,7 +347,6 @@ async function init() {
   }
   const prefModel = (u.prefs && u.prefs.model) || (j && j.default) || "";
   if (items.includes(prefModel)) els.selModel.value = prefModel;
-  els.chkThink.checked = !!(u.prefs && u.prefs.thinking);
   if (u.prefs && u.prefs.ctx) els.inpCtx.value = u.prefs.ctx;
   ready = true;
   // A note from an earlier failed open no longer applies.

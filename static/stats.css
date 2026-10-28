@@ -1,0 +1,224 @@
+/* The server readout in the composer: a ring that answers "how full is the
+   window" without being opened, and the panel that answers everything else.
+   Every value comes from the palette in style.css. */
+
+/* The ring is the control: it answers "how much of the window is used" without
+   being opened, so it is sized to read at a glance and pushed to sit against
+   Send. Send keeps its own auto margin off so this one absorbs the free space
+   and lands flush beside it instead of drifting to the tools. */
+.stat-btn {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  margin-left: auto;
+  margin-right: var(--sp-1);
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.stat-btn + .send {
+  margin-left: 0;
+}
+
+.stat-btn:hover,
+.stat-btn[aria-expanded="true"] {
+  color: var(--text);
+}
+
+.stat-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  overflow: visible;
+}
+
+/* The ring is drawn at the glyph's own edge, so the button needs no extra
+   room for it and the diameter reads as the control's size. */
+.stat-track,
+.stat-arc {
+  fill: none;
+  stroke-width: 2.4;
+  transform: rotate(-90deg);
+  transform-origin: 12px 12px;
+}
+
+.stat-track {
+  stroke: var(--border);
+}
+
+/* The arc is drawn as a full circle and clipped by the offset, which is the
+   one property the readout moves. `--stat-fill` is set from 0 to 1. */
+.stat-arc {
+  stroke: var(--text);
+  stroke-linecap: round;
+  stroke-dasharray: var(--stat-c, 62.83);
+  stroke-dashoffset: calc(var(--stat-c, 62.83) * (1 - var(--stat-fill, 0)));
+  transition: stroke-dashoffset var(--mo-base) var(--mo-ease);
+}
+
+/* With nothing to report the ring is the frame alone: a control that looks
+   half-drawn invites a click that tells the reader nothing new. */
+.stat-btn:not([data-live]) .stat-arc {
+  opacity: 0;
+}
+
+/* Past three quarters the window is close enough to full that the next long
+   prompt may be trimmed, and the ring says so in the ink the app already uses
+   for a warning rather than in a hue. */
+.stat-btn[data-full="warn"] {
+  color: var(--text);
+}
+
+.stat-btn[data-full="over"] {
+  color: var(--danger);
+}
+
+/* --- the panel --- */
+
+.stat-panel {
+  position: absolute;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 20;
+  width: 268px;
+  max-height: 70vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.stat-panel[hidden] {
+  display: none;
+}
+
+.stat-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.stat-title {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* The state is the answer to "is it up", so it takes the ink and the title
+   stays muted behind it. */
+.stat-state {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stat-state[data-off] {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.stat-model {
+  margin: var(--sp-hair) 0 var(--sp-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-2xs);
+  color: var(--faint);
+}
+
+/* Context is what the panel is for, so it gets the bar; every other group is
+   a list of figures that need no shape. */
+.stat-bar {
+  height: 3px;
+  margin-bottom: var(--sp-2);
+  border-radius: var(--radius-pill);
+  background: var(--border);
+  overflow: hidden;
+}
+
+.stat-bar i {
+  display: block;
+  width: calc(var(--stat-fill, 0) * 100%);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--text);
+  transition: width var(--mo-base) var(--mo-ease);
+}
+
+.stat-bar[data-over] i {
+  background: var(--danger);
+}
+
+.stat-group + .stat-group {
+  margin-top: var(--sp-3);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+
+.stat-group h4 {
+  margin: 0 0 var(--sp-1);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* Figures read as one column of pairs, so the labels line up and the values
+   line up with them. */
+.stat-group dl {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+}
+
+.stat-group dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.stat-group dt {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.stat-group dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* A row with nothing to report keeps its place and says so, so the panel does
+   not change height between a model that is loaded and one that is not. */
+.stat-group dd[data-none] {
+  font-family: var(--font);
+  color: var(--faint);
+}
+
+.stat-note {
+  margin: var(--sp-3) 0 0;
+  font-size: var(--fs-2xs);
+  line-height: 1.5;
+  color: var(--faint);
+}
+
+@media (max-width: 768px) {
+  .stat-panel {
+    width: min(268px, calc(100vw - 2 * var(--sp-4)));
+  }
+}

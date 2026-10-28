@@ -17,6 +17,9 @@ MODEL_DELTA = "model.delta"
 MODEL_THINKING = "model.thinking"
 MODEL_COMPLETED = "model.completed"
 
+# What the model call cost, stated by the server on the frame that ends it.
+MODEL_METRICS = "model.metrics"
+
 # Tools.
 TOOL_STARTED = "tool.started"
 TOOL_COMPLETED = "tool.completed"

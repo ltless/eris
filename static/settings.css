@@ -220,64 +220,6 @@
   width: auto;
 }
 
-/* ---- Switch ---- */
-
-.s-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  font-size: var(--fs-sm);
-  color: var(--text);
-  cursor: pointer;
-  justify-self: start;
-  align-self: end;
-}
-
-.s-switch input {
-  position: absolute;
-  opacity: 0;
-  width: 1px;
-  height: 1px;
-}
-
-.s-switch .s-track {
-  width: 36px;
-  height: 20px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-soft);
-  position: relative;
-  transition: background var(--mo-base) var(--mo-ease), border-color var(--mo-base) var(--mo-ease);
-  flex: none;
-}
-
-.s-switch .s-track::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--muted);
-  transition: transform var(--mo-base) var(--mo-ease), background var(--mo-base) var(--mo-ease);
-}
-
-.s-switch input:checked + .s-track {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.s-switch input:checked + .s-track::after {
-  transform: translateX(16px);
-  background: var(--accent-ink);
-}
-
-.s-switch input:focus-visible + .s-track {
-  outline: 2px solid var(--text);
-  outline-offset: 2px;
-}
-
 /* ---- Segmented control (theme) ---- */
 
 .s-seg {
@@ -524,8 +466,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .s-seg span,
-  .s-switch .s-track,
-  .s-switch .s-track::after,
   .s-pick {
     transition: none;
   }

@@ -32,14 +32,22 @@ from pydantic import BaseModel
 from . import auth, chats, encoding, tokens
 from .config import settings
 from .models import (
+    FALLBACK_LADDER,
     ModelError,
+    base_url,
     chat_url,
+    effort_label,
     list_models,
     merge_tool_calls,
     model_label,
     normalize_call,
     parse_chunk,
+    cached_ladder,
+    model_stats,
+    rung_index,
     stream_completion,
+    think_ladder,
+    think_value,
     to_native,
 )
 from .runtime import events as ev
@@ -125,7 +133,7 @@ class PasswordRequest(BaseModel):
 
 class PrefsRequest(BaseModel):
     model: str | None = None
-    thinking: bool | None = None
+    effort: int | None = None
     ctx: int | None = None
     system_prompt: str | None = None
 
@@ -133,7 +141,6 @@ class PrefsRequest(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[Message]
     model: str | None = None
-    thinking: bool = False
     chat_id: str | None = None
     regenerate: bool = False
 
@@ -180,6 +187,8 @@ def sse_frame(event):
     if t == ev.TOOL_FAILED:
         return {"type": "tool_error", "tool": d.get("tool", ""),
                 "code": d.get("code", ""), "message": d.get("message", "")}
+    if t == ev.MODEL_METRICS:
+        return {"type": "metrics", **{k: v for k, v in d.items() if k != "round"}}
     if t == ev.APPROVAL_REQUIRED:
         return {"type": "approval", "tool": d.get("tool", ""), "message": d.get("message", "")}
     if t in (ev.TASK_FAILED, ev.TASK_CANCELLED):
@@ -205,7 +214,7 @@ def _last_user_text(messages):
     return ""
 
 
-def _build_request(req: ChatRequest, u):
+async def _build_request(req: ChatRequest, u):
     prefs = u.get("prefs") or {}
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
@@ -222,10 +231,20 @@ def _build_request(req: ChatRequest, u):
         user_id=u["id"],
         approved=set(prefs.get("approved") or ()),
     )
+    model = req.model or prefs.get("model") or None
+    # The stored effort is an index, and which value it means belongs to the
+    # model being asked: a ladder is per model, so it is resolved here, against
+    # this model's own, rather than sent as the index it was remembered as.
+    #
+    # The ladder is read from the cache and never asked for here. A probe on a
+    # model that is not loaded costs the load, and a chat must not wait on the
+    # panel's question; when the panel has not opened yet, `think_value` answers
+    # for the unknown case with the value the request carried before any ladder.
+    ladder = cached_ladder(model)
     return RunRequest(
         messages=[{"role": "system", "content": system}] + messages,
-        model=req.model or prefs.get("model") or None,
-        thinking=bool(req.thinking or prefs.get("thinking")),
+        model=model,
+        thinking=think_value(prefs.get("effort"), ladder),
         ctx_tokens=int(prefs.get("ctx") or 0) or None,
         tags=("chat",),
         budget=Budget(rounds=settings.max_tool_rounds, extra_rounds=settings.extra_tool_rounds),
@@ -238,7 +257,7 @@ def _build_request(req: ChatRequest, u):
 async def chat(req: ChatRequest, u: dict = Depends(require_user)):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     query = _last_user_text(messages)
-    request = _build_request(req, u)
+    request = await _build_request(req, u)
     engine = Engine(request, emitter=Emitter())
 
     async def gen():
@@ -417,9 +436,55 @@ async def models(u: dict = Depends(require_user)):
         "items": items,
         "labels": {mid: model_label(mid) for mid in items},
         "default": default,
-        "thinking": bool(prefs.get("thinking")),
+        "effort": prefs.get("effort"),
         "ctx": prefs.get("ctx"),
     }
+
+
+@app.get("/api/effort")
+async def effort(model: str | None = None, u: dict = Depends(require_user)):
+    """The effort steps this model offers, for the control to draw.
+
+    Probed here rather than carried on `/api/models`, because a probe is a
+    round trip and the model list must not wait on one. The answer is cached
+    per model, so this is slow once per model and free afterwards.
+
+    The list is never empty: a model with no rungs gets the single fixed step
+    the control can still show, and `always` says it cannot be moved.
+    """
+    prefs = u.get("prefs") or {}
+    mid = model or prefs.get("model") or settings.model_name
+    ladder = await think_ladder(mid)
+    # Nothing could be asked, so the plain pair is offered: it is what the
+    # request would carry anyway, and a control that vanished would be a
+    # worse answer than one that works.
+    rungs = FALLBACK_LADDER if ladder is None else ladder
+    if not rungs:
+        # This model cannot think at all, so the only honest step is off.
+        rungs = [False]
+    return {
+        "model": mid,
+        "efforts": [{"value": i, "label": effort_label(v)} for i, v in enumerate(rungs)],
+        "always": len(rungs) == 1,
+        "current": rung_index(prefs.get("effort"), rungs),
+    }
+
+
+@app.get("/api/stats")
+async def server_stats(model: str | None = None, u: dict = Depends(require_user)):
+    """What the model server is holding, for the panel in the composer.
+
+    Read-only and cheap: the endpoint is asked what it has loaded, not asked to
+    generate anything, so this can be polled while a chat runs without loading
+    a model or spending a token.
+
+    `ctx` is the context this account would ask for, and it is passed rather
+    than assumed, because the KV figure is sized against it whenever the model
+    is not loaded yet.
+    """
+    prefs = u.get("prefs") or {}
+    mid = model or prefs.get("model") or settings.model_name
+    return await model_stats(mid, ctx=int(prefs.get("ctx") or 0) or None)
 
 
 @app.post("/api/prefs")
@@ -427,8 +492,8 @@ async def update_prefs(req: PrefsRequest, u: dict = Depends(require_session)):
     prefs = dict(u.get("prefs") or {})
     if req.model is not None:
         prefs["model"] = req.model[:80]
-    if req.thinking is not None:
-        prefs["thinking"] = bool(req.thinking)
+    if req.effort is not None:
+        prefs["effort"] = max(0, int(req.effort))
     if req.ctx is not None:
         prefs["ctx"] = max(0, min(int(req.ctx), 262144))
     if req.system_prompt is not None:

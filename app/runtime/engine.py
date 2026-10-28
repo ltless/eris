@@ -28,7 +28,7 @@ class RunRequest:
 
     messages: list                       # [{role, content}] with system prompt first
     model: str | None = None
-    thinking: bool = False
+    thinking: bool | str = False         # a rung the model accepts: False, True, or a level
     ctx_tokens: int | None = None
     tags: tuple = ("chat",)              # which tools to offer
     budget: Budget | None = None
@@ -49,6 +49,7 @@ class RunResult:
     stop_reason: str = "answered"
     budget: dict = field(default_factory=dict)
     error: str | None = None
+    metrics: dict = field(default_factory=dict)   # what the last model call cost
 
     def as_dict(self):
         return {
@@ -60,6 +61,7 @@ class RunResult:
             "stop_reason": self.stop_reason,
             "budget": self.budget,
             "error": self.error,
+            "metrics": self.metrics,
         }
 
 
@@ -181,12 +183,14 @@ class Engine:
 
             # Thinking off on the final pass: a reasoning model can keep
             # reasoning to the token limit with no answer, which the user
-            # sees as an answer hidden in a thinking card.
+            # sees as an answer hidden in a thinking card. Every other pass
+            # carries the rung exactly as it was resolved, which may be
+            # `True`, `False`, or a level name the model itself accepts.
             try:
                 async for kind, value in stream_completion(
                     messages,
                     model=self.req.model,
-                    thinking=self.req.thinking and not final,
+                    thinking=False if final else self.req.thinking,
                     tools=specs,
                     ctx=self.req.ctx_tokens,
                 ):
@@ -198,6 +202,13 @@ class Engine:
                     elif kind == "thinking":
                         self.thinking[-1] += value
                         yield self.emitter.emit(events.MODEL_THINKING, text=value, round=round_no)
+                    elif kind == "metrics":
+                        # Kept per round and overwritten, because the last call
+                        # is the one whose prompt held the whole conversation:
+                        # it is the only one whose count describes the context
+                        # in use, and that is what a reader wants to see.
+                        self.result.metrics = value
+                        yield self.emitter.emit(events.MODEL_METRICS, round=round_no, **value)
             except ModelError as e:
                 yield self.emitter.emit(
                     events.TASK_FAILED, reason="model_error", code=errors.MODEL_ERROR, message=str(e)

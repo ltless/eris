@@ -12,19 +12,23 @@
   the top step reads from the ink colour instead. The arrow-to-square send
   glyph belongs to the send button, which this page already has.
 
-  ErisPicker.init({ onModel })       wire both triggers and their panels; `onModel`
-                                     runs with the new id when the choice changes
+  ErisPicker.init({ onModel, onEffort })
+                                     wire both triggers and their panels; each
+                                     runs with the new choice when it changes
   ErisPicker.setModels(ids, id, labels)
                                      fill the model menu, marking `id` as chosen.
                                      `labels` maps an id to the name shown for it;
                                      an id without one is shown as itself.
 
-  The effort step is kept in localStorage and nowhere else: the slider draws
-  and remembers a choice that no request carries yet.
+  The effort ladder belongs to the model, so it is asked for rather than
+  assumed: the panel fetches it the first time it is opened for a model and
+  says "Checking..." until the answer lands, because a short ladder that then
+  grows is worse than a moment of honesty. What was chosen last is remembered
+  per model in localStorage so the trigger can name it before any probe, and
+  the choice itself is stored server-side, in prefs, along with the model.
 */
 const ErisPicker = (() => {
-  const EFFORTS = ["Low", "Medium", "High", "Extra", "Max"];
-  const KEY = "eris-effort";
+  const KEY = "eris-effort"; // model id -> the step last chosen for it
   const TICK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
 
   let box, input;
@@ -40,13 +44,22 @@ const ErisPicker = (() => {
   let glowShown = false;
   let modelOpen = false;
   let effortOpen = false;
-  let effort = 0;
   let onModel = () => {};
+  let onEffort = () => {};
+
+  // The ladder for one model, kept with it: `efforts` is what the server
+  // reported for `effortsFor`, and both drop when the model changes. `null`
+  // means the answer has not arrived.
+  let efforts = null; // [{value, label}], lowest first
+  let effortsFor = null; // the model `efforts` describes
+  let always = false; // one step, fixed: the model's own default
+  let effort = 0; // index into `efforts`
+  let probe = 0; // the newest probe, so a stale answer is dropped
 
   // Steps sit at even fractions of the travel span, not of the track: the span
   // is inset by the thumb's own radius, so the thumb's centre reaches a step
   // exactly when its edge reaches the rail's end.
-  const stepAt = (i) => `${(i / Math.max(1, EFFORTS.length - 1)) * 100}%`;
+  const stepAt = (i) => `${(i / Math.max(1, (efforts || [0]).length - 1)) * 100}%`;
 
   // --- the model menu -------------------------------------------------------
 
@@ -93,6 +106,9 @@ const ErisPicker = (() => {
     });
 
     if (modelLabel && chosen) modelLabel.textContent = nameOf(chosen);
+    // The readout beside Send describes whichever model is in use, so it is
+    // told whenever this one changes rather than asking for itself.
+    if (chosen) ErisStats?.setModel(chosen, nameOf(chosen));
   }
 
   function setActive(i) {
@@ -137,6 +153,9 @@ const ErisPicker = (() => {
 
   // --- the effort slider ----------------------------------------------------
 
+  // The panel is built from the ladder the server reported, so it is rebuilt
+  // when that answer changes and never before: with no ladder there is nothing
+  // to draw, and the head says so instead of showing empty marks.
   function paintEffort() {
     if (!effortMenu) return;
     effortMenu.textContent = "";
@@ -152,14 +171,43 @@ const ErisPicker = (() => {
     level = document.createElement("span");
     level.className = "pick-effort-level";
     head.append(title, level);
+    effortMenu.append(head);
 
+    if (!efforts) {
+      // A probe is a round trip, and a rail drawn from a guess would have to
+      // change shape when the answer lands. The head holds the line instead.
+      head.dataset.pending = "";
+      level.textContent = "Checking...";
+      return;
+    }
+
+    tracks();
+    if (!always) {
+      const ends = document.createElement("div");
+      ends.className = "pick-effort-ends";
+      const fast = document.createElement("span");
+      fast.textContent = "Faster";
+      const smart = document.createElement("span");
+      smart.textContent = "Smarter";
+      ends.append(fast, smart);
+      effortMenu.append(ends);
+    }
+  }
+
+  function tracks() {
     track = document.createElement("div");
     track.className = "pick-effort-track";
     track.setAttribute("role", "slider");
     track.tabIndex = 0;
     track.setAttribute("aria-label", "Effort");
     track.setAttribute("aria-valuemin", "0");
-    track.setAttribute("aria-valuemax", String(EFFORTS.length - 1));
+    track.setAttribute("aria-valuemax", String(efforts.length - 1));
+    // One step is not a choice, so the rail is drawn but never answers a
+    // pointer or a key: a control that cannot move must not look like one.
+    if (always) {
+      track.dataset.fixed = "";
+      track.removeAttribute("tabindex");
+    }
 
     // The rail is the thumb's travel: CSS insets it by half a thumb at each
     // end, so one percentage puts the thumb flush with the track at either
@@ -171,7 +219,7 @@ const ErisPicker = (() => {
     rail.append(fill);
     // Steps sit over the fill and under the thumb, so the thumb covers the one
     // it is on and the bar keeps reading as one piece.
-    for (let i = 0; i < EFFORTS.length; i++) {
+    for (let i = 0; i < efforts.length; i++) {
       const dot = document.createElement("i");
       dot.className = "pick-effort-dot";
       dot.style.left = stepAt(i);
@@ -182,21 +230,13 @@ const ErisPicker = (() => {
     rail.append(thumb);
     track.append(rail);
 
-    const ends = document.createElement("div");
-    ends.className = "pick-effort-ends";
-    const fast = document.createElement("span");
-    fast.textContent = "Faster";
-    const smart = document.createElement("span");
-    smart.textContent = "Smarter";
-    ends.append(fast, smart);
-
     // The press is cancelled instead of answered with a focus() call: the rail
     // never takes focus from the pointer, so it shows no ring for a click that
     // was not a Tab, and the caret stays in the field where the rest of the
     // composer keeps it. The grip is a flag for the same reason, because :active
     // hangs off the default this cancels.
     track.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || always) return;
       e.preventDefault();
       track.dataset.grab = "";
       if (e.pointerId !== undefined) {
@@ -207,38 +247,44 @@ const ErisPicker = (() => {
       effortFromPointer(e);
     });
     track.addEventListener("pointermove", (e) => {
-      if (e.buttons & 1) effortFromPointer(e);
+      if (!always && e.buttons & 1) effortFromPointer(e);
     });
     const ungrip = () => delete track.dataset.grab;
     track.addEventListener("pointerup", ungrip);
     track.addEventListener("pointercancel", ungrip);
     track.addEventListener("keydown", onTrackKey);
 
-    effortMenu.append(head, track, ends);
+    effortMenu.append(track);
   }
 
   function drawEffort() {
+    if (!efforts || !rail) {
+      if (effortLabel) effortLabel.textContent = "Effort";
+      return;
+    }
     // The fill runs to the thumb's centre, where the opaque thumb covers it, so
     // the bar reads as one piece and no step needs a special case.
     rail.style.setProperty("--pick-x", stepAt(effort));
     rail.style.setProperty("--pick-fill", stepAt(effort));
     track.setAttribute("aria-valuenow", String(effort));
-    track.setAttribute("aria-valuetext", EFFORTS[effort]);
-    level.textContent = EFFORTS[effort];
-    if (effortLabel) effortLabel.textContent = EFFORTS[effort];
-    const maxed = effort === EFFORTS.length - 1;
+    track.setAttribute("aria-valuetext", efforts[effort].label);
+    level.textContent = efforts[effort].label;
+    if (effortLabel) effortLabel.textContent = efforts[effort].label;
+    // The top step is the one state either control calls out, and a ladder
+    // with one step is already at it.
+    const maxed = always || effort === efforts.length - 1;
     for (const el of [effortBtn, effortMenu]) el.toggleAttribute("data-max", maxed);
   }
 
   function setEffort(i, remember) {
-    const next = Math.max(0, Math.min(EFFORTS.length - 1, i));
+    if (!efforts || always) return;
+    const next = Math.max(0, Math.min(efforts.length - 1, i));
     if (next === effort) return;
     effort = next;
     drawEffort();
     if (remember) {
-      try {
-        localStorage.setItem(KEY, EFFORTS[effort]);
-      } catch {}
+      saveEffort(effort);
+      onEffort(effort);
     }
   }
 
@@ -247,10 +293,11 @@ const ErisPicker = (() => {
   function effortFromPointer(e) {
     const r = rail.getBoundingClientRect();
     const k = (e.clientX - r.left) / Math.max(1, r.width);
-    setEffort(Math.round(k * (EFFORTS.length - 1)), true);
+    setEffort(Math.round(k * (efforts.length - 1)), true);
   }
 
   function onTrackKey(e) {
+    if (always) return;
     const step =
       e.key === "ArrowRight" || e.key === "ArrowUp" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowDown" ? -1 : 0;
     if (step) {
@@ -261,7 +308,7 @@ const ErisPicker = (() => {
       setEffort(0, true);
     } else if (e.key === "End") {
       e.preventDefault();
-      setEffort(EFFORTS.length - 1, true);
+      setEffort(efforts.length - 1, true);
     }
   }
 
@@ -309,6 +356,48 @@ const ErisPicker = (() => {
     close();
     effortOpen = true;
     show(effortMenu, effortBtn);
+    // Opening the panel is the first moment the ladder is needed, so it is the
+    // moment it is asked for: a model nobody opens the panel for is never
+    // probed, and the answer is cached server-side once it is.
+    if (effortsFor !== chosen) loadEfforts(chosen);
+  }
+
+  // The answer is per model, and the model can change while a probe is in
+  // flight, so each request carries a ticket and only the newest one lands.
+  function loadEfforts(model) {
+    const ticket = ++probe;
+    effortsFor = model;
+    efforts = null;
+    always = false;
+    effort = readSaved(model);
+    paintEffort();
+    drawEffort();
+    fetch(`/api/effort?model=${encodeURIComponent(model)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`effort ${r.status}`))))
+      .then((j) => {
+        if (ticket !== probe) return;
+        efforts = (j && Array.isArray(j.efforts) && j.efforts.length) ? j.efforts : [{ value: 0, label: "Off" }];
+        always = !!(j && j.always);
+        // The stored index was remembered against whatever ladder was there
+        // then, so it is clamped into this one rather than trusted.
+        effort = Math.max(0, Math.min(Number(j && j.current) || 0, efforts.length - 1));
+        saveEffort(effort);
+        paintEffort();
+        drawEffort();
+      })
+      .catch(() => {
+        if (ticket !== probe) return;
+        // The probe failed, so nothing is known. The plain pair is what the
+        // request would carry anyway, and the control keeps working. The model
+        // is forgotten with it, so opening the panel again asks once more
+        // rather than keeping a guess a transient failure produced.
+        effortsFor = null;
+        efforts = [{ value: 0, label: "Off" }, { value: 1, label: "On" }];
+        always = false;
+        effort = Math.min(effort, efforts.length - 1);
+        paintEffort();
+        drawEffort();
+      });
   }
 
   // The caret stays in the field for the whole interaction, so the menu's own
@@ -351,10 +440,11 @@ const ErisPicker = (() => {
     if (!box || !modelBtn || !effortBtn) return;
     input = box.querySelector("textarea");
     onModel = opts.onModel || onModel;
+    onEffort = opts.onEffort || onEffort;
 
+    // Nothing is drawn yet: the ladder belongs to the model, and the model
+    // arrives with setModels. Until then the trigger names the control alone.
     paintEffort();
-    const saved = EFFORTS.indexOf(readSaved());
-    effort = saved >= 0 ? saved : Math.floor((EFFORTS.length - 1) / 2);
     drawEffort();
 
     modelBtn.addEventListener("click", () => (modelOpen ? close() : openModel()));
@@ -372,20 +462,47 @@ const ErisPicker = (() => {
     document.addEventListener("keydown", onKeyDown, true);
   }
 
-  function readSaved() {
+  // The remembered step is per model, because the same index means different
+  // things on two ladders. It only seeds the control until the server's answer
+  // arrives, which then replaces it.
+  function saved() {
     try {
-      return localStorage.getItem(KEY) || "";
+      return JSON.parse(localStorage.getItem(KEY) || "{}") || {};
     } catch {
-      return "";
+      return {};
     }
   }
 
+  function readSaved(model) {
+    return Math.max(0, Number(saved()[model]) || 0);
+  }
+
+  function saveEffort(i) {
+    try {
+      const all = saved();
+      all[chosen] = i;
+      localStorage.setItem(KEY, JSON.stringify(all));
+    } catch {}
+  }
+
   function setModels(items, current, names) {
+    const model = current || (items || [])[0] || "";
+    const changed = model !== chosen;
     ids = (items || []).slice();
     labels = names || {};
-    chosen = current || ids[0] || "";
+    chosen = model;
     active = Math.max(0, ids.indexOf(chosen));
     paintModels();
+    if (changed) {
+      // A new model means a new ladder, so the old one is dropped rather than
+      // left to label the new model's steps.
+      efforts = null;
+      effortsFor = null;
+      effort = readSaved(chosen);
+      if (effortOpen) loadEfforts(chosen);
+      else paintEffort();
+      drawEffort();
+    }
     return ids.length;
   }
 

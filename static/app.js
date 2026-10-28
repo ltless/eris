@@ -542,6 +542,15 @@ async function send(text, regen = false) {
     webCtl = null;
     webR = -1;
   };
+  // Process cards belong above the answer whatever order the server sends
+  // them in. A model that narrates before it searches has already given the
+  // answer element a home, and appending the search card after that would
+  // put the process underneath prose it happened before.
+  const aboveAnswer = (el) => {
+    const ans = body.querySelector(".ans");
+    if (ans) body.insertBefore(el, ans);
+    return el;
+  };
 
   controller = new AbortController();
   setStreaming(true);
@@ -586,6 +595,7 @@ async function send(text, regen = false) {
           if (!webCtl) {
             body.querySelector(".status")?.remove();
             webCtl = ErisToolCall.webSearch(body);
+            aboveAnswer(webCtl.el);
             webR = evt.r;
           }
           webCtl.addQuery(evt.query || "Search");
@@ -601,11 +611,18 @@ async function send(text, regen = false) {
           if (!thinkCtl) {
             body.querySelector(".status")?.remove();
             thinkCtl = ErisToolCall.thinking(body);
+            // Same rule as the search card: a later round's reasoning is still
+            // process, and process stays above whatever has been written.
+            aboveAnswer(thinkCtl.el);
           }
           thinkAll += evt.text;
           thinkRound += evt.text;
           thinkCtl.append(evt.text);
           autoScroll();
+        } else if (evt.type === "metrics") {
+          // The server states prompt usage once per call, on the frame that
+          // ends it, and nowhere else; the readout keeps the newest.
+          ErisStats.metrics(evt);
         } else if (evt.type === "delta") {
           raw += evt.text;
           let ans = body.querySelector(".ans");
@@ -730,13 +747,24 @@ els.box.addEventListener("drop", (e) => {
 
 /* The model picker sits in the composer and writes the same preference the
    settings dialog does, so /api/chat keeps resolving the model from the
-   account rather than from each request. */
+   account rather than from each request. The effort step is stored the same
+   way: it is an index into the model's own ladder, which the server resolves
+   against whichever model is in use. */
+ErisStats.init();
+
 ErisPicker.init({
   onModel: (model) => {
     fetch("/api/prefs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),
+    }).catch(() => {});
+  },
+  onEffort: (effort) => {
+    fetch("/api/prefs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ effort }),
     }).catch(() => {});
   },
 });

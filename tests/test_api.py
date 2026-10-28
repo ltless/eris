@@ -70,6 +70,16 @@ class StubModel:
         self._srv.server_close()
         self._thread.join(timeout=5)
 
+    @property
+    def calls(self):
+        """The payloads that were a chat completion.
+
+        Asking the endpoint which thinking levels it takes reaches the same
+        route, and those probes are not calls the loop made, so they are kept
+        out of the count the round-budget checks are about.
+        """
+        return [p for p in self.payloads if p.get("stream")]
+
     def reply(self, payload):
         rounds_with_tools = sum(1 for p in self.payloads if p.get("tools"))
         if payload.get("tools") and self.calls_per_round and rounds_with_tools == 1:
@@ -171,9 +181,9 @@ class ChatStreamChecks(unittest.TestCase):
         deltas = "".join(e.get("text", "") for e in events if e.get("type") == "delta")
         self.assertEqual(deltas.strip(), "the answer")
         # One round asked for the tool; the next answered, so two calls.
-        self.assertEqual(len(self.h.stub.payloads), 2,
-                         [len(p["messages"]) for p in self.h.stub.payloads])
-        fed_back = self.h.stub.payloads[1]["messages"]
+        self.assertEqual(len(self.h.stub.calls), 2,
+                         [len(p["messages"]) for p in self.h.stub.calls])
+        fed_back = self.h.stub.calls[1]["messages"]
         self.assertTrue(any(m.get("role") == "tool" for m in fed_back),
                         "the tool result never reached the model")
         self.assertIn("2+2 = 4", json.dumps(fed_back))
@@ -195,8 +205,8 @@ class ChatStreamChecks(unittest.TestCase):
         settings.model_base_url = self.h.stub.start()
         events = sse_events(self.h.ask())
         # Three tool rounds, then one call with no tools to get an answer.
-        self.assertEqual(len(self.h.stub.payloads), settings.max_tool_rounds + 1)
-        self.assertFalse(self.h.stub.payloads[-1].get("tools"),
+        self.assertEqual(len(self.h.stub.calls), settings.max_tool_rounds + 1)
+        self.assertFalse(self.h.stub.calls[-1].get("tools"),
                          "the final call still offered tools")
         deltas = "".join(e.get("text", "") for e in events if e.get("type") == "delta")
         self.assertEqual(deltas.strip(), "final")
@@ -277,6 +287,16 @@ class ChatStreamChecks(unittest.TestCase):
         self.assertIn("stub-model", got["items"])
         self.assertTrue(got["default"])
 
+    def test_the_stats_readout_says_nothing_it_was_not_told(self):
+        """The stub serves neither `/api/ps` nor `/api/show`, so every figure
+        the readout would derive is absent rather than invented."""
+        got = self.h.client.get("/api/stats").json()
+        for key in ("model", "loaded", "context", "kv", "gpu", "last"):
+            self.assertIn(key, got)
+        self.assertFalse(got["loaded"])
+        self.assertIsNone(got["kv"]["bytes"])
+        self.assertIsNone(got["last"])
+
 
 class AnonymousChecks(unittest.TestCase):
     """Every route that touches user state refuses an anonymous caller."""
@@ -290,7 +310,7 @@ class AnonymousChecks(unittest.TestCase):
         self.h.close()
 
     def test_reads_need_a_session(self):
-        for path in ("/api/chats", "/api/auth/me", "/api/models"):
+        for path in ("/api/chats", "/api/auth/me", "/api/models", "/api/stats"):
             self.assertEqual(self.anon.get(path).status_code, 401, path)
 
     def test_writes_need_a_session(self):

@@ -177,6 +177,13 @@
   color: var(--text);
 }
 
+/* While the ladder is being asked for there is no value to answer with, so the
+   word in the value's place steps back to the muted ink the name uses. */
+.pick-effort-head[data-pending] .pick-effort-level {
+  font-weight: 400;
+  color: var(--muted);
+}
+
 /* Track is the pointer's target: a touch row that does nothing but hold the
    rail at its centre. */
 .pick-effort-track {
@@ -249,6 +256,12 @@
   outline: 2px solid var(--text);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
+}
+
+/* One step is not a range: a model with a single rung gets a rail that shows
+   where it stands and nothing that invites a drag or a key. */
+.pick-effort-track[data-fixed] {
+  cursor: default;
 }
 
 /* The ends' words sit under the rail's ends, which are inset by the thumb's

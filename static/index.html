@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/dialog.css" />
   <link rel="stylesheet" href="/settings.css" />
   <link rel="stylesheet" href="/picker.css" />
+  <link rel="stylesheet" href="/stats.css" />
 </head>
 
 <body class="app">
@@ -118,6 +119,17 @@
                 </svg>
               </button>
 
+              <!-- The context readout belongs to Send, so it sits against it rather
+                   than with the tools on the left: the ring is the whole
+                   control, and the panel behind it is everything else. -->
+              <button type="button" class="stat-btn" id="statBtn" aria-haspopup="true" aria-expanded="false"
+                aria-controls="statPanel" title="Context used">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle class="stat-track" cx="12" cy="12" r="10" />
+                  <circle class="stat-arc" cx="12" cy="12" r="10" />
+                </svg>
+              </button>
+
               <button type="submit" class="send" id="send" title="Send (Enter)" aria-label="Send message" disabled>
                 <svg class="icon-send" viewBox="0 0 24 24">
                   <path d="M12 19V5M5 12l7-7 7 7" />
@@ -130,6 +142,7 @@
 
             <div class="pick-menu" id="modelMenu" role="listbox" aria-label="Model" hidden></div>
             <div class="pick-menu pick-effort" id="effortMenu" hidden></div>
+            <div class="stat-panel" id="statPanel" role="region" aria-label="Server status" hidden></div>
           </div>
           <div class="bar">
             <span class="spacer"></span>
@@ -242,11 +255,6 @@
             <label>Context window (tokens)
               <input id="inpCtx" type="number" min="2048" max="262144" step="1024" placeholder="Server default" />
             </label>
-            <label class="s-switch">
-              <input id="chkThink" type="checkbox" />
-              <span class="s-track" aria-hidden="true"></span>
-              <span>Enable thinking</span>
-            </label>
 
             <div class="s-prompt">
               <div class="s-prompt-head">
@@ -318,6 +326,7 @@
   <script src="/toolcall.js"></script>
   <script src="/sidebar.js"></script>
   <script src="/picker.js"></script>
+  <script src="/stats.js"></script>
   <!-- Modules, not classic scripts: the names below ($, els, paint, load) are
        shared with app.js, and a module's own scope keeps them out of the global
        object the other page scripts declare into. -->

@@ -9,7 +9,9 @@ tokens.db
 database/
 *.db-shm
 *.db-wal
-models/
+# The pulled model blobs, at the repo root only. Unanchored, this also
+# swallowed app/models/ — the package app/api.py imports from.
+/models/
 AGENTS.md
 .superpowers/
 .impeccable/

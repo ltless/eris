@@ -25,6 +25,7 @@ SCRIPTS = [
 # unittest modules.
 MODULES = [
     "test_runtime.py",
+    "test_stats.py",
     "test_api.py",
 ]
 
