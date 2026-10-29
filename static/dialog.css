@@ -28,6 +28,17 @@
   display: none;
 }
 
+/* Arrivals. The scrim fades while the sheet rises the one --mo-open step;
+   closing stays the instant flip [hidden] already is. `both` holds the first
+   frame, so opening never paints the sheet before its entrance starts. */
+.dlg-modal:not([hidden]) .dlg-scrim {
+  animation: mo-fade var(--mo-base) var(--mo-ease) both;
+}
+
+.dlg-modal:not([hidden]) .dlg-sheet {
+  animation: mo-rise var(--mo-open) var(--mo-ease) both;
+}
+
 .dlg-scrim {
   position: absolute;
   inset: 0;
@@ -187,6 +198,12 @@
   display: none;
 }
 
+/* A rail click fades its panel in over the colour feedback the buttons
+   already ease: the swap acknowledges without the layout appearing to jump. */
+.dlg-panel:not([hidden]) {
+  animation: mo-fade var(--mo-fast) var(--mo-ease);
+}
+
 .dlg-panel h3 {
   font-size: var(--fs-lg);
   font-weight: 600;
@@ -264,5 +281,11 @@
   .dlg-nav button,
   .dlg-close {
     transition: none;
+  }
+
+  .dlg-scrim,
+  .dlg-sheet,
+  .dlg-panel {
+    animation: none;
   }
 }

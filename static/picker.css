@@ -70,6 +70,13 @@
   display: none;
 }
 
+/* The menu pops in from the corner it hangs from — both panels open upward
+   from a trigger on the left — and closes as the instant flip [hidden] is. */
+.pick-menu:not([hidden]) {
+  animation: mo-pop var(--mo-open) var(--mo-ease) both;
+  transform-origin: bottom left;
+}
+
 /* --- the model menu --- */
 
 #modelMenu {
@@ -295,5 +302,19 @@
   .pick-btn {
     max-width: 120px;
     padding: 0 var(--sp-1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pick-caret,
+  .pick-row-check,
+  .pick-glow,
+  .pick-effort-fill,
+  .pick-effort-thumb {
+    transition: none;
+  }
+
+  .pick-menu {
+    animation: none;
   }
 }

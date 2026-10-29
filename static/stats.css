@@ -103,6 +103,13 @@
   display: none;
 }
 
+/* Same arrival as the picker menus, hung from its own corner: the panel sits
+   against Send, so it grows from the bottom right. */
+.stat-panel:not([hidden]) {
+  animation: mo-pop var(--mo-open) var(--mo-ease) both;
+  transform-origin: bottom right;
+}
+
 .stat-head {
   display: flex;
   align-items: baseline;
@@ -220,5 +227,16 @@
 @media (max-width: 768px) {
   .stat-panel {
     width: min(268px, calc(100vw - 2 * var(--sp-4)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stat-arc,
+  .stat-bar i {
+    transition: none;
+  }
+
+  .stat-panel {
+    animation: none;
   }
 }

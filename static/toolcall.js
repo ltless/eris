@@ -7,24 +7,36 @@
 
   ---
 
-  ErisToolCall.webSearch(parentElement, { open: false, onRetry })
+  ErisToolCall.webSearch(parentElement, { open: false })
 
   const tc = ErisToolCall.webSearch(messageEl);
   tc.addQuery('react 19 features');
-  tc.addResults([{ title: '...', url: 'https://...' }]);
+  tc.addResults([{ title: '...', url: 'https://...', read: true }]);
   tc.done();
-  tc.fail('Network error');               // tombol Retry muncul hanya bila onRetry diisi
   tc.toggle() / tc.setOpen(true|false)
+
+  ---
+
+  ErisToolCall.fetchPage(parentElement, { open: false })
+
+  const fc = ErisToolCall.fetchPage(messageEl);
+  fc.setUrl('https://example.com/a');
+  fc.done(4200);        // chars read, or omit while it is still running
+  fc.fail('could not read it');
 */
 const ErisToolCall = (() => {
   let uid = 0;
   const I = {
     globe: '<svg class="tc-ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" /></svg>',
+    page: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></svg>',
     alert: '<svg class="tc-ico-err" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.01" /></svg>',
     search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>',
     chev: '<svg class="tc-chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>',
     spark: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /></svg>',
     ext: '<svg class="tc-ext" viewBox="0 0 24 24"><path d="M7 17L17 7M8 7h9v9" /></svg>',
+    // The mark on a result whose page was actually opened. Same page glyph as
+    // the fetch card, so "read" reads the same wherever it appears.
+    read: '<svg class="tc-read-ico" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></svg>',
   };
   const domainOf = (u) => {
     try {
@@ -33,8 +45,21 @@ const ErisToolCall = (() => {
       return typeof u === "string" ? u : "";
     }
   };
+  // Favicon chips get a quiet tint instead of the same grey for every site.
+  // The hue is hashed from the domain over a fixed palette, so a site keeps
+  // its colour across reloads with no network request: a remote favicon
+  // service would hand every result domain to a third party, which the
+  // self-hosted search stack exists to avoid.
+  const HUES = [215, 190, 152, 95, 38, 20, 358, 330, 270, 245];
+  const hueOf = (d) => {
+    let h = 0;
+    for (let i = 0; i < d.length; i++) h = (h * 31 + d.charCodeAt(i)) >>> 0;
+    return HUES[h % HUES.length];
+  };
   const safeUrl = (u) => (/^https?:\/\//i.test(u) ? u : "#");
   const plural = (n) => (n === 1 ? "1 source" : n + " sources");
+  const sizeText = (n) =>
+    n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k chars" : n + " chars";
 
   function shell(parent, ico, labelText, opts) {
     const id = "tc-" + ++uid;
@@ -76,10 +101,50 @@ const ErisToolCall = (() => {
     return api;
   }
 
+  // One result row, shared by the search list and the fetch card's own link so
+  // a URL looks the same wherever it is shown.
+  function resultRow(child) {
+    const row = document.createElement("div");
+    row.className = "tc-item";
+    row.setAttribute("role", "listitem");
+    row.append(child);
+    return row;
+  }
+
+  function linkEl(url, label, domain, mark) {
+    const a = document.createElement("a");
+    a.className = "tc-link";
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.href = safeUrl(url);
+    const fav = document.createElement("span");
+    fav.className = "tc-fav";
+    fav.textContent = (domain || "?").charAt(0) || "?";
+    fav.style.setProperty("--fav-h", String(hueOf(domain || "?")));
+    const title = document.createElement("span");
+    title.className = "tc-title";
+    title.textContent = label || domain;
+    const dom = document.createElement("span");
+    dom.className = "tc-domain";
+    dom.textContent = domain;
+    a.append(fav, title);
+    if (mark) {
+      const rd = document.createElement("span");
+      rd.className = "tc-read";
+      rd.title = "this page was read in full";
+      rd.innerHTML = I.read;
+      a.append(rd);
+    }
+    a.append(dom);
+    a.insertAdjacentHTML("beforeend", I.ext);
+    return a;
+  }
+
   function webSearch(parent, opts = {}) {
     const s = shell(parent, I.globe, "Searching the web", opts);
     let list = null;
     let total = 0;
+    let read = 0;
 
     function addQuery(q) {
       const g = document.createElement("div");
@@ -98,26 +163,24 @@ const ErisToolCall = (() => {
       for (const it of items) {
         const url = it.url || it.source || "";
         const domain = it.domain || domainOf(url);
-        const row = document.createElement("div");
-        row.className = "tc-item";
-        row.setAttribute("role", "listitem");
-        row.innerHTML =
-          '<a class="tc-link" target="_blank" rel="noopener noreferrer"><span class="tc-fav"></span><span class="tc-title"></span><span class="tc-domain"></span>' +
-          I.ext +
-          "</a>";
-        row.querySelector("a").href = safeUrl(url);
-        row.querySelector(".tc-fav").textContent = domain.charAt(0) || "?";
-        row.querySelector(".tc-title").textContent = it.title || domain;
-        row.querySelector(".tc-domain").textContent = domain;
-        list.appendChild(row);
+        const wasRead = !!it.read;
+        list.appendChild(
+          resultRow(linkEl(url, it.title || domain, domain, wasRead))
+        );
         total++;
+        if (wasRead) read++;
       }
+      // The count is restated as results arrive, so a card left open shows a
+      // number that keeps up rather than one frozen at the first batch.
+      s.meta.textContent = plural(total) + (read ? ` · ${read} read` : "");
     }
 
     function done() {
       s.el.dataset.state = "done";
       s.label.textContent = "Searched the web";
-      s.meta.textContent = total ? plural(total) : "No results";
+      s.meta.textContent = total
+        ? plural(total) + (read ? ` · ${read} read` : "")
+        : "No results";
       if (!total && !s.panel.querySelector(".tc-empty")) {
         const note = document.createElement("div");
         note.className = "tc-empty";
@@ -131,23 +194,53 @@ const ErisToolCall = (() => {
       s.label.textContent = "Search failed";
       s.meta.textContent = message || "";
       const e = document.createElement("div");
-      e.innerHTML = '<div class="tc-error"></div>';
-      e.querySelector(".tc-error").textContent =
-        message || "Something went wrong while searching.";
-      if (opts.onRetry) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "tc-retry";
-        b.textContent = "Retry";
-        b.onclick = () => opts.onRetry(api);
-        e.appendChild(b);
-      }
+      e.className = "tc-error";
+      e.textContent = message || "Something went wrong while searching.";
       s.panel.appendChild(e);
       s.setOpen(true);
     }
 
     const api = { el: s.el, addQuery, addResults, done, fail, setOpen: s.setOpen, toggle: s.toggle };
     return api;
+  }
+
+  // The model going back for one page in depth. It is drawn the moment the
+  // call starts, so a slow fetch is a visible wait rather than a stall, and
+  // the panel keeps the URL as a link: whatever the model read, the reader
+  // can open too.
+  function fetchPage(parent, opts = {}) {
+    const s = shell(parent, I.page, "Reading a page", opts);
+    let url = "";
+    let chars = 0;
+
+    function setUrl(u) {
+      url = String(u || "");
+      const domain = domainOf(url);
+      s.meta.textContent = domain || url;
+      s.panel.innerHTML = "";
+      s.panel.appendChild(resultRow(linkEl(url, url, domain, false)));
+    }
+
+    function done(n) {
+      if (typeof n === "number") chars = n;
+      s.el.dataset.state = "done";
+      const domain = domainOf(url) || url;
+      s.label.textContent = "Read a page";
+      s.meta.textContent = chars ? `${domain} · ${sizeText(chars)}` : domain;
+    }
+
+    function fail(message) {
+      s.el.dataset.state = "error";
+      s.label.textContent = "Could not read the page";
+      s.meta.textContent = message || "";
+      const e = document.createElement("div");
+      e.className = "tc-error";
+      e.textContent = message || "The page could not be read.";
+      s.panel.appendChild(e);
+      s.setOpen(true);
+    }
+
+    return { el: s.el, setUrl, done, fail, setOpen: s.setOpen, toggle: s.toggle };
   }
 
   function thinking(parent, opts = {}) {
@@ -182,5 +275,5 @@ const ErisToolCall = (() => {
     return { el: s.el, append, done, setOpen: s.setOpen, toggle: s.toggle };
   }
 
-  return { webSearch, thinking };
+  return { webSearch, fetchPage, thinking };
 })();

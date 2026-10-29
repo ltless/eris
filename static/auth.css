@@ -38,6 +38,11 @@
   font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
+  transition: background var(--mo-fast) var(--mo-ease), color var(--mo-fast) var(--mo-ease);
+}
+
+.auth-tabs button:hover {
+  color: var(--text);
 }
 
 .auth-tabs button.on {
@@ -64,6 +69,11 @@
   font-size: var(--fs-md);
   color: var(--text);
   background: var(--bg);
+  transition: border-color var(--mo-fast) var(--mo-ease);
+}
+
+.auth input:hover {
+  border-color: var(--faint);
 }
 
 .auth input:focus-visible {
@@ -89,6 +99,11 @@
   font-weight: 600;
   cursor: pointer;
   margin-top: var(--sp-1);
+  transition: opacity var(--mo-fast) var(--mo-ease);
+}
+
+.auth-go:hover {
+  opacity: 0.85;
 }
 
 .auth-go:focus-visible {
@@ -101,5 +116,13 @@
   .auth input,
   .auth-go {
     height: var(--ctl-hit);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-tabs button,
+  .auth input,
+  .auth-go {
+    transition: none;
   }
 }

@@ -1,7 +1,7 @@
 /**
  * ErisSidebar — Sidebar state management, chat history, and responsive drawer.
  * Provides consistent API for app.js:
- * .init(), .toggle(), .open(), .close(), .setChats(), .setActive(), .prepend()
+ * .init(), .toggle(), .open(), .close(), .setChats(), .setActive()
  */
 const ErisSidebar = (() => {
   const $ = (id) => document.getElementById(id);
@@ -201,11 +201,6 @@ const ErisSidebar = (() => {
     },
     setActive(id) {
       activeId = id;
-      render();
-    },
-    prepend(chat) {
-      chats = [chat, ...chats];
-      activeId = chat.id;
       render();
     },
   };

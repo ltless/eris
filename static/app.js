@@ -5,7 +5,6 @@ const els = {
   send: document.getElementById("send"),
   menuBtn: document.getElementById("menuBtn"),
   chatTitle: document.getElementById("chatTitle"),
-  atts: document.getElementById("atts"),
   attach: document.getElementById("attach"),
   fileInput: document.getElementById("fileInput"),
   box: document.getElementById("box"),
@@ -41,32 +40,17 @@ function autoScroll() {
 
 els.messages.addEventListener("scroll", syncScrollBtn, { passive: true });
 
-const X_ICON = '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
-const IMG_ICON =
-  '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 16l5-5 4 4 3-3 6 6" /><circle cx="9" cy="9" r="1.4" /></svg>';
-
-const MAX_ATTS = 8;
 const MAX = 4000;
 
 let sessions = [];
 let activeId = null;
 let controller = null;
 let sending = false;
-let atts = [];
-let attSeq = 0;
 let userName = "";
 let userAvatar = "";
 let modelAvatar = "";
 
 const current = () => sessions.find((s) => s.id === activeId);
-
-function render(text) {
-  return DOMPurify.sanitize(marked.parse(text));
-}
-
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
 
 function addRegen(body, s) {
   if (body.querySelector(".regen")) return;
@@ -157,7 +141,7 @@ function addMessage(role, text, images) {
     paintAvatar(av);
     wrap.append(av, body);
   } else {
-    body.innerHTML = render(text);
+    body.innerHTML = ErisMarkdown.render(text);
     paintRole(roleEl);
     wrap.append(roleEl, body);
   }
@@ -167,196 +151,9 @@ function addMessage(role, text, images) {
   return body;
 }
 
-function highlight(body) {
-  body.querySelectorAll("pre code").forEach((el) => {
-    if (!el.dataset.hl) {
-      hljs.highlightElement(el);
-      el.dataset.hl = "1";
-      addCopy(el);
-    }
-  });
-}
-
-function addCopy(codeEl) {
-  const pre = codeEl.parentElement;
-  if (!pre || pre.querySelector(".cp")) return;
-  const b = document.createElement("button");
-  b.type = "button";
-  b.className = "cp";
-  b.title = "Copy code";
-  b.textContent = "Copy";
-  b.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(codeEl.textContent);
-      b.textContent = "Copied";
-      setTimeout(() => {
-        b.textContent = "Copy";
-      }, 1500);
-    } catch {
-      b.textContent = "Failed";
-    }
-  });
-  pre.append(b);
-}
-
-function linkCitations(body, items) {
-  const ans = body.querySelector(".ans");
-  if (!ans) return;
-  const byN = new Map((items || []).filter((x) => x.n).map((x) => [x.n, x]));
-  const walker = document.createTreeWalker(ans, NodeFilter.SHOW_TEXT);
-  const targets = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    if (node.parentElement.closest("pre, code, a")) continue;
-    if (/\[\d{1,3}\]/.test(node.textContent)) targets.push(node);
-  }
-  for (const node of targets) {
-    const frag = document.createDocumentFragment();
-    let last = 0;
-    for (const hit of node.textContent.matchAll(/\[(\d{1,3})\]/g)) {
-      frag.append(document.createTextNode(node.textContent.slice(last, hit.index)));
-      const a = document.createElement("a");
-      a.className = "cite";
-      a.textContent = `[${hit[1]}]`;
-      const src = byN.get(parseInt(hit[1], 10));
-      if (src && src.kind === "web" && /^https?:\/\//i.test(src.source)) {
-        a.href = src.source;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.title = src.source;
-      } else if (src) {
-        a.title = src.source;
-      } else {
-        a.className = "cite cite-x";
-        a.title = "source not in this answer";
-      }
-      frag.append(a);
-      last = hit.index + hit[0].length;
-    }
-    frag.append(document.createTextNode(node.textContent.slice(last)));
-    node.replaceWith(frag);
-  }
-}
-
-/* ---------- attachments ---------- */
-
-function classify(file) {
-  if (file.type && file.type.startsWith("image/")) return "image";
-  return null;
-}
-
-function fileToDataURL(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
-}
-
-async function shrinkToDataURL(file) {
-  const raw = await fileToDataURL(file);
-  if (file.type === "image/gif") return raw;
-  try {
-    const img = await new Promise((res, rej) => {
-      const i = new Image();
-      i.onload = () => res(i);
-      i.onerror = rej;
-      i.src = raw;
-    });
-    const scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight));
-    if (scale === 1 && file.size <= 1_000_000) return raw;
-    const c = document.createElement("canvas");
-    c.width = Math.round(img.naturalWidth * scale);
-    c.height = Math.round(img.naturalHeight * scale);
-    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-    return c.toDataURL(file.type === "image/png" ? "image/png" : "image/jpeg", 0.85);
-  } catch {
-    return raw;
-  }
-}
-
-async function addFiles(fileList) {
-  for (const f of [...fileList]) {
-    if (atts.length >= MAX_ATTS) break;
-    const kind = classify(f);
-    const a = { id: ++attSeq, name: f.name || "file", kind, file: f, status: "ok" };
-    if (!kind) {
-      a.status = "err";
-      a.msg = "unsupported type";
-      atts.push(a);
-      renderAtts();
-      continue;
-    }
-    a.status = "busy";
-    a.msg = "reading...";
-    atts.push(a);
-    renderAtts();
-    try {
-      a.dataUrl = await shrinkToDataURL(f);
-      a.status = "ok";
-      a.msg = "";
-    } catch {
-      a.status = "err";
-      a.msg = "read failed";
-    }
-    renderAtts();
-  }
-}
-
-function renderAtts() {
-  els.atts.hidden = atts.length === 0;
-  els.atts.innerHTML = "";
-  for (const a of atts) {
-    const chip = document.createElement("span");
-    const thumb = a.kind === "image" && a.dataUrl;
-    chip.className = "chip" + (thumb ? " chip-img" : "") + (a.status === "err" ? " err" : "");
-    chip.title = a.msg ? `${a.name} — ${a.msg}` : a.name;
-
-    if (thumb) {
-      const im = document.createElement("img");
-      im.className = "chip-thumb";
-      im.src = a.dataUrl;
-      im.alt = a.name;
-      chip.append(im);
-    } else {
-      const box = document.createElement("span");
-      box.innerHTML = IMG_ICON;
-      chip.append(box.firstChild);
-      const nm = document.createElement("span");
-      nm.className = "chip-name";
-      nm.textContent = a.name;
-      chip.append(nm);
-      if (a.status === "err" && a.msg) {
-        const note = document.createElement("span");
-        note.className = "chip-note";
-        note.textContent = a.msg;
-        chip.append(note);
-      } else if (a.status === "busy") {
-        const note = document.createElement("span");
-        note.className = "chip-note";
-        note.textContent = "reading...";
-        chip.append(note);
-      }
-    }
-
-    const x = document.createElement("button");
-    x.type = "button";
-    x.className = "chip-x";
-    x.title = "Remove";
-    x.setAttribute("aria-label", `Remove ${a.name}`);
-    x.innerHTML = X_ICON;
-    x.addEventListener("click", () => {
-      atts = atts.filter((t) => t.id !== a.id);
-      renderAtts();
-    });
-    chip.append(x);
-    els.atts.append(chip);
-  }
-}
-
 function refresh() {
   const len = els.input.value.length;
-  const has = els.input.value.trim().length > 0 || atts.some((a) => a.kind === "image" && a.status === "ok");
+  const has = els.input.value.trim().length > 0 || ErisAttach.hasImage();
   const over = len > MAX;
   els.send.disabled = !sending && (!has || over);
   els.count.textContent = len + " / " + MAX;
@@ -370,15 +167,13 @@ function syncInput() {
   refresh();
 }
 
-
 /* ---------- sessions ---------- */
 
 function blankChat() {
   activeId = null;
   ErisSidebar.setActive(null);
   els.chatTitle.textContent = "New chat";
-  atts = [];
-  renderAtts();
+  ErisAttach.clear();
   resetMessages();
   showEmpty();
   els.input.value = "";
@@ -392,8 +187,7 @@ function loadSession(id) {
   activeId = id;
   ErisSidebar.setActive(id);
   els.chatTitle.textContent = s.title;
-  atts = [];
-  renderAtts();
+  ErisAttach.clear();
   resetMessages();
   const paint = () => {
     if (!s.messages.length) {
@@ -405,10 +199,16 @@ function loadSession(id) {
         const web = (m.sources || []).filter((x) => x.kind === "web");
         const groups = (m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [])
           .map((g) => ({ r: g.r ?? 0, query: g.query, items: g.items }));
+        const reads = (m.fetches || []).map((f) => ({ r: f.r ?? 0, url: f.url, chars: f.chars, ok: f.ok }));
         const rows = new Map();
         for (const g of groups) {
           if (!rows.has(g.r)) rows.set(g.r, []);
           rows.get(g.r).push(g);
+        }
+        const readRows = new Map();
+        for (const f of reads) {
+          if (!readRows.has(f.r)) readRows.set(f.r, []);
+          readRows.get(f.r).push(f);
         }
         let anchor = null;
         const put = (el) => {
@@ -416,7 +216,10 @@ function loadSession(id) {
           else body.prepend(el);
           anchor = el;
         };
-        const rounds = Math.max(thinkRounds.length, ...[...rows.keys()].map((r) => r + 1), 0);
+        // A round's searches and its reads are replayed in the same order the
+        // round drew them: the search that prompted a read comes first.
+        const roundNums = new Set([...rows.keys(), ...readRows.keys()]);
+        const rounds = Math.max(thinkRounds.length, ...[...roundNums].map((r) => r + 1), 0);
         for (let i = 0; i < rounds; i++) {
           if (i < thinkRounds.length) {
             const th = ErisToolCall.thinking(body);
@@ -431,10 +234,17 @@ function loadSession(id) {
             tc.addResults(g.items);
             tc.done();
           }
+          for (const f of readRows.get(i) || []) {
+            const fc = ErisToolCall.fetchPage(body);
+            put(fc.el);
+            fc.setUrl(f.url);
+            if (f.ok === false) fc.fail("the page could not be read");
+            else fc.done(f.chars);
+          }
         }
         if (m.role === "assistant") {
-          highlight(body);
-          linkCitations(body, m.sources);
+          ErisMarkdown.highlight(body);
+          ErisMarkdown.linkCitations(body, m.sources);
           if (m === s.messages.at(-1) && m.content) addRegen(body, s);
         }
       });
@@ -442,7 +252,7 @@ function loadSession(id) {
   };
   if (!s.messages.length && s.remote) {
     fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
-      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, web: m.web, remote: true }));
+      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, remote: true }));
       s.remote = false;
       paint();
     }).catch(paint);
@@ -481,9 +291,8 @@ async function send(text, regen = false) {
   let images = [];
 
   if (!regen) {
-    images = atts.filter((a) => a.kind === "image" && a.status === "ok").map((a) => a.dataUrl);
-    atts = [];
-    renderAtts();
+    images = ErisAttach.images();
+    ErisAttach.clear();
   }
 
   sending = true;
@@ -520,8 +329,13 @@ async function send(text, regen = false) {
   let thinkRound = "";
   let webCtl = null;
   let webR = -1;
+  // Fetch cards, oldest first. The engine runs one round's calls in order, so
+  // the card that started first is the one `fetch_done` closes first; the
+  // frame carries no URL to match on.
+  let fetchQ = [];
   let sources = [];
   let webGroups = [];
+  let fetchGroups = [];
 
   const finishThink = () => {
     if (!thinkCtl) return;
@@ -541,6 +355,14 @@ async function send(text, regen = false) {
     webCtl.done();
     webCtl = null;
     webR = -1;
+  };
+  // A fetch card is closed by its own `fetch_done`, not by the round ending:
+  // a card left spinning through the rest of the round would be claiming a
+  // read that already finished. A run that ends without the closing frame
+  // still leaves nothing spinning, which is what the sweep is for.
+  const finishFetch = () => {
+    for (const f of fetchQ) f.ctl.done(f.g.chars);
+    fetchQ = [];
   };
   // Process cards belong above the answer whatever order the server sends
   // them in. A model that narrates before it searches has already given the
@@ -600,12 +422,50 @@ async function send(text, regen = false) {
           }
           webCtl.addQuery(evt.query || "Search");
           webGroups.push({ r: evt.r, query: evt.query || "", items: [] });
+        } else if (evt.type === "fetch") {
+          finishThink();
+          body.querySelector(".status")?.remove();
+          const g = { r: evt.r, url: evt.url, chars: 0 };
+          const ctl = ErisToolCall.fetchPage(body);
+          ctl.setUrl(evt.url);
+          aboveAnswer(ctl.el);
+          fetchQ.push({ ctl, g });
+          fetchGroups.push(g);
+        } else if (evt.type === "fetch_done") {
+          // Closed by round, not by arrival order: calls of one round run in
+          // turn, but a card from an earlier round that already closed is gone
+          // from the queue, and this must not close someone else's.
+          const i = fetchQ.findIndex((f) => f.g.r === evt.r);
+          if (i >= 0) {
+            const [f] = fetchQ.splice(i, 1);
+            f.g.chars = evt.chars || 0;
+            f.ctl.done(f.g.chars);
+          }
         } else if (evt.type === "sources") {
           sources.push(...evt.items);
           const web = evt.items.filter((x) => x.kind === "web");
           if (web.length) {
-            (webGroups[webGroups.length - 1] ||= { query: "", items: [] }).items.push(...web);
-            webCtl?.addResults(web);
+            // Filed by the round the frame names: a search's results follow its
+            // own `tool` frame, but a fetch in the same round emits sources of
+            // its own, and those must not be appended to the search group.
+            const g = webGroups.find((x) => x.r === evt.r) ||
+              (webGroups[webGroups.length] = { r: evt.r, query: "", items: [] });
+            g.items.push(...web);
+            if (evt.r === webR) webCtl?.addResults(web);
+          }
+        } else if (evt.type === "tool_error") {
+          // A tool that failed still leaves the card it was drawing: the user
+          // watching a search go by should see it end, not vanish.
+          if (evt.tool === "fetch_url") {
+            const i = fetchQ.findIndex((f) => f.g.r === evt.r);
+            if (i >= 0) {
+              const [f] = fetchQ.splice(i, 1);
+              f.ctl.fail(evt.message || evt.code);
+            }
+          } else if (webCtl && (!evt.tool || evt.tool === "web_search")) {
+            webCtl.fail(evt.message || evt.code);
+            webCtl = null;
+            webR = -1;
           }
         } else if (evt.type === "thinking") {
           if (!thinkCtl) {
@@ -634,7 +494,7 @@ async function send(text, regen = false) {
             ans.className = "ans";
             body.append(ans);
           }
-          ans.innerHTML = render(raw) + '<span class="cursor">&#9613;</span>';
+          ans.innerHTML = ErisMarkdown.render(raw) + '<span class="cursor">&#9613;</span>';
           autoScroll();
         } else if (evt.type === "approval") {
           finishThink();
@@ -677,10 +537,21 @@ async function send(text, regen = false) {
     }
     finishThink();
     finishWeb();
-    highlight(body);
-    linkCitations(body, sources);
-    if (raw) s.messages.push({ role: "assistant", content: raw, thinking: thinkRounds.length ? thinkRounds : undefined, ...(sources.length ? { sources } : {}), ...(webGroups.filter((g) => g.items.length).length ? { web: webGroups.filter((g) => g.items.length) } : {}) });
-    if (raw) addRegen(body, s);
+    finishFetch();
+    ErisMarkdown.highlight(body);
+    ErisMarkdown.linkCitations(body, sources);
+    if (raw) {
+      const groups = webGroups.filter((g) => g.items.length);
+      s.messages.push({
+        role: "assistant",
+        content: raw,
+        ...(thinkRounds.length ? { thinking: thinkRounds } : {}),
+        ...(sources.length ? { sources } : {}),
+        ...(groups.length ? { web: groups } : {}),
+        ...(fetchGroups.length ? { fetches: fetchGroups } : {}),
+      });
+      addRegen(body, s);
+    }
   }
 }
 
@@ -695,7 +566,7 @@ els.form.addEventListener("submit", (e) => {
   }
   const text = els.input.value.trim();
   if (els.input.value.length > MAX) return;
-  const hasImg = atts.some((a) => a.kind === "image" && a.status === "ok");
+  const hasImg = ErisAttach.hasImage();
   if (!text && !hasImg) return;
   els.input.value = "";
   syncInput();
@@ -710,13 +581,14 @@ els.input.addEventListener("keydown", (e) => {
 });
 
 els.input.addEventListener("input", syncInput);
+ErisAttach.onChange(refresh);
 
 els.menuBtn.addEventListener("click", () => ErisSidebar.open());
 
 els.attach.addEventListener("click", () => els.fileInput.click());
 
 els.fileInput.addEventListener("change", () => {
-  addFiles(els.fileInput.files);
+  ErisAttach.add(els.fileInput.files);
   els.fileInput.value = "";
 });
 
@@ -724,7 +596,7 @@ els.input.addEventListener("paste", (e) => {
   const files = [...(e.clipboardData?.files || [])];
   if (files.length) {
     e.preventDefault();
-    addFiles(files);
+    ErisAttach.add(files);
   }
 });
 
@@ -742,7 +614,7 @@ for (const ev of ["dragleave", "drop"]) {
 }
 els.box.addEventListener("drop", (e) => {
   const files = e.dataTransfer?.files;
-  if (files?.length) addFiles(files);
+  if (files?.length) ErisAttach.add(files);
 });
 
 /* The model picker sits in the composer and writes the same preference the
@@ -770,7 +642,7 @@ ErisPicker.init({
 });
 
 fetch("/api/models").then((r) => r.json()).then((j) => {
-  ErisPicker.setModels(j.items, j.default, j.labels);
+  ErisPicker.setModels(j.items, j.default, j.labels, j.capabilities);
 }).catch(() => {});
 
 
@@ -848,7 +720,7 @@ window.addEventListener("eris:settings-saved", () => {
   refreshAccount();
   fetch("/api/models")
     .then((r) => r.json())
-    .then((j) => ErisPicker.setModels(j.items, j.default, j.labels))
+    .then((j) => ErisPicker.setModels(j.items, j.default, j.labels, j.capabilities))
     .catch(() => {});
 });
 

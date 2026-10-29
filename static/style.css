@@ -44,11 +44,13 @@
   --ctl-seg: 32px;     /* one segment of a segmented control */
   --ctl-hit: 44px;     /* the same controls under a coarse pointer */
 
-  /* Motion. Two durations and one curve; the sidebar's rail keeps its own
+  /* Motion. Three durations and one curve; the sidebar's rail keeps its own
      longer ones in sidebar.css, because its width is what carries the change
-     and the three of them describe one gesture. */
+     and the three of them describe one gesture. Exits stay instant everywhere:
+     an overlay arrives, a close is a flip. */
   --mo-fast: 120ms;  /* a colour or an opacity, where the change is the feedback */
   --mo-base: 150ms;  /* a control arriving or leaving */
+  --mo-open: 220ms;  /* an overlay arriving: the dialog sheet, a menu, the drawer */
   --mo-ease: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Type scale. Seven steps, each a whole pixel apart, so two sizes that sit
@@ -105,6 +107,30 @@ body {
 ::selection {
   background: var(--accent);
   color: var(--accent-ink);
+}
+
+/* Shared entrance keyframes, named once here because every page loads this
+   file. `to` is omitted, so each keyframe animates toward the element's own
+   styles and nothing needs a resting override. `both` keeps an overlay off its
+   final frame until its animation's first paint, so opening never flashes. */
+@keyframes mo-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes mo-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+}
+
+@keyframes mo-pop {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
 }
 
 /* The chat app owns its own scroll regions: .layout is exactly one viewport
@@ -206,6 +232,7 @@ body.app {
   color: var(--muted);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
   cursor: pointer;
+  transition: color var(--mo-fast) var(--mo-ease), border-color var(--mo-fast) var(--mo-ease);
 }
 
 .jump-btn:hover {
@@ -476,12 +503,22 @@ body.app {
   margin: var(--sp-5) 0;
 }
 
+/* The streaming caret breathes instead of blinking: a smooth fade reads calmer
+   beside text that is itself arriving than a hard on/off tick. It exists only
+   while the model is writing, so the loop stops with the state. */
 .cursor {
   display: inline-block;
   color: var(--text);
   font-weight: 700;
   margin-left: var(--sp-hair);
   line-height: 1;
+  animation: cursor-blink 1.1s ease-in-out infinite;
+}
+
+@keyframes cursor-blink {
+  50% {
+    opacity: 0.25;
+  }
 }
 
 .status {
@@ -493,12 +530,21 @@ body.app {
   padding: 0 0 var(--sp-hair);
 }
 
+/* Same rule as the caret: the dot lives only while the turn is waiting, and
+   its pulse is what says the wait is the app working, not a stall. */
 .status .dot {
   flex: none;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--muted);
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* Error text is danger ink behind the page's own hairline: no fill, matching
@@ -600,8 +646,8 @@ body.app {
   position: absolute;
   top: var(--sp-1);
   right: var(--sp-1);
-  width: 16px;
-  height: 16px;
+  width: var(--ctl-xs);
+  height: var(--ctl-xs);
   border-radius: 50%;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -631,6 +677,7 @@ body.app {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: background var(--mo-fast) var(--mo-ease), color var(--mo-fast) var(--mo-ease);
 }
 
 .chip-x:hover {
@@ -657,6 +704,7 @@ body.app {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: var(--sp-2) var(--sp-4);
+  transition: border-color var(--mo-fast) var(--mo-ease);
 }
 
 .box:hover,
@@ -752,11 +800,15 @@ body.app {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  transition: color var(--mo-fast) var(--mo-ease);
 }
 
+/* Hover brings the ink up, the way every other rest-at-muted control in the
+   product hovers: the old rule dimmed to --faint, so pointing at a tool made
+   it quieter. */
 .tool:hover {
   background: transparent;
-  color: var(--faint);
+  color: var(--text);
 }
 
 .tool[aria-expanded="true"] {
@@ -787,6 +839,7 @@ body.app {
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  transition: color var(--mo-fast) var(--mo-ease);
 }
 
 .send:disabled {
@@ -892,6 +945,7 @@ textarea:focus-visible {
   font-size: var(--fs-2xs);
   font-weight: 500;
   cursor: pointer;
+  transition: color var(--mo-fast) var(--mo-ease), border-color var(--mo-fast) var(--mo-ease);
 }
 
 .cp:hover {
@@ -919,6 +973,7 @@ textarea:focus-visible {
   font-size: var(--fs-xs);
   font-weight: 500;
   cursor: pointer;
+  transition: color var(--mo-fast) var(--mo-ease), border-color var(--mo-fast) var(--mo-ease);
 }
 
 .regen:hover {
@@ -929,4 +984,23 @@ textarea:focus-visible {
 .regen:focus-visible {
   outline: 2px solid var(--text);
   outline-offset: 2px;
+}
+
+/* Reduced motion: the arrivals and the pulses go, the colour feedback stays —
+   the colour change is the acknowledgment, not the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .jump-btn,
+  .box,
+  .tool,
+  .send,
+  .chip-x,
+  .cp,
+  .regen {
+    transition: none;
+  }
+
+  .cursor,
+  .status .dot {
+    animation: none;
+  }
 }

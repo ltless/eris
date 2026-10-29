@@ -1,5 +1,7 @@
-/* Tool call + thinking rows. Instant state flips only.
-   Reuses style.css :root tokens. Danger red + hairlines are the only non-grey. */
+/* Tool call + thinking rows. Open/close flips stay instant; colour feedback
+   eases at --mo-fast like every other control.
+   Reuses style.css :root tokens. Danger red + hairlines are the only non-grey;
+   the one exception is the favicon chip, whose quiet tint identifies a domain. */
 
 .tc {
   max-width: 100%;
@@ -31,9 +33,9 @@
 }
 
 /* Header — the always-visible toggle row */
-/* Geometry here is axis-derived and stays off the spacing scale: icon center
-   sits at x=7 and the label at x=22, matching .tc-panel below, so the toggle,
-   the panel text, and the row title share one column. */
+/* Icon center at x=7.5 and the label at x=22. The card below puts its own icon
+   column on that same x=22 line, so the header text and the card's favicon
+   column read as one grid. */
 .tc-head {
   display: flex;
   align-items: center;
@@ -50,6 +52,7 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+  transition: color var(--mo-fast) var(--mo-ease);
 }
 
 .tc-head:hover {
@@ -79,6 +82,7 @@
   margin-left: auto;
   flex: none;
   color: var(--faint);
+  transition: transform var(--mo-base) var(--mo-ease);
 }
 
 .tc[data-open="true"] .tc-chev {
@@ -115,42 +119,48 @@
   min-height: 0;
 }
 
-/* Line on the icon-center axis (x=7), text column on the label axis (x=22).
-   Spacing ladder inside the panel: 2px between result rows, 24px from one
-   search group to the next. A query header has no gap to its own rows. */
+/* The panel is a card: one soft surface per tool call, the background the
+   composer and fields use. Its left edge sits under the head icon, and the
+   1px border + 12px padding put an 18px favicon's center at x=22 — the head
+   label's axis, noted above. Between query groups of one card (a round can
+   search twice) the ladder keeps its 24px section step. */
 .tc-panel {
   display: flex;
   flex-direction: column;
   gap: var(--sp-5);
-  margin: var(--sp-1) 0 var(--sp-1) 7px;
-  padding: var(--sp-hair) 0 var(--sp-hair) 14px;
-  border-left: 1px solid var(--border);
+  margin: var(--sp-2) 0 var(--sp-1);
+  padding: var(--sp-3);
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
 /* Query header */
 .tc-group {
   display: flex;
   flex-direction: column;
+  gap: var(--sp-1);
 }
 
+/* The query is the literal string that went out, so it is set as a quote: mono
+   face, a step down, muted. The 13px glyph keeps its 2.5px sides so it shares
+   the 18px favicon slot's center, and the query text stays off the result
+   title column — it is what was asked, not a row of it. */
 .tc-q {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  line-height: 1.2;
-  color: var(--text);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 18px;
+  color: var(--muted);
 }
 
-/* 2.5px a side puts the 13px glyph in an 18px slot, the same slot the result
-   favicon occupies, so the query icon shares the favicon center and the query
-   text shares the result title column. Off the spacing scale on purpose. */
 .tc-q svg {
   width: 13px;
   height: 13px;
   margin: 0 2.5px;
-  color: var(--muted);
+  color: var(--faint);
 }
 
 .tc-q span {
@@ -167,19 +177,23 @@
   gap: var(--sp-hair);
 }
 
+/* Rows bleed through the card padding, so a hover stripe reaches the card's
+   edges like a menu item. --hover is near-identical to the card's background,
+   so the stripe mixes a little of the text colour instead of using the token. */
 .tc-link {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  margin: 0 calc(var(--sp-2) * -1);
-  padding: var(--sp-1) var(--sp-2);
+  margin: 0 calc(var(--sp-3) * -1);
+  padding: var(--sp-1) var(--sp-3);
   border-radius: var(--radius-sm);
   color: var(--text);
   text-decoration: none;
+  transition: background var(--mo-fast) var(--mo-ease);
 }
 
 .tc-link:hover {
-  background: var(--hover);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
 .tc-link:focus-visible {
@@ -187,19 +201,28 @@
   outline-offset: -2px;
 }
 
+/* The favicon chip: the domain's initial on a tint of its own hue. --fav-h is
+   set per chip in toolcall.js (hash of the domain over a fixed palette); the
+   fallback is the first palette hue, for a row without a parsable domain. The
+   tint mixes into --bg, one step off the card's own surface, and the ink at
+   half saturation stays behind the title — identification, not decoration. */
 .tc-fav {
   flex: none;
   width: 18px;
   height: 18px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  background: var(--bg-soft);
-  color: var(--muted);
+  background: color-mix(in srgb, hsl(var(--fav-h, 215) 60% 45%) 13%, var(--bg));
+  color: hsl(var(--fav-h, 215) 50% 38%);
   font-size: var(--fs-2xs);
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
+}
+
+[data-theme="dark"] .tc-fav {
+  background: color-mix(in srgb, hsl(var(--fav-h, 215) 55% 55%) 16%, var(--bg));
+  color: hsl(var(--fav-h, 215) 65% 74%);
 }
 
 .tc-title {
@@ -209,12 +232,38 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--fs-sm);
+  transition: color var(--mo-fast) var(--mo-ease);
+}
+
+/* The affordance the underline would have carried: on hover the title takes
+   the link colour, the one the answer's citations already use. */
+.tc-link:hover .tc-title {
+  color: var(--link);
 }
 
 .tc-domain {
   flex: none;
   color: var(--muted);
   font-size: var(--fs-xs);
+}
+
+/* The "this page was read in full" mark, on the result column just before the
+   domain. Muted and not interactive: it is a fact about the row, not a control,
+   and it should be findable at a glance without competing with the title. */
+.tc-read {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--faint);
+}
+
+.tc-read-ico {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.tc-link:hover .tc-read {
+  color: var(--muted);
 }
 
 .tc-ext {
@@ -281,5 +330,14 @@
 @media (max-width: 480px) {
   .tc-domain {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tc-head,
+  .tc-link,
+  .tc-title,
+  .tc-chev {
+    transition: none;
   }
 }

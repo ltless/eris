@@ -532,6 +532,14 @@
 }
 
 /* --- Mobile Drawer (≤ 768px) --- */
+/* The drawer arrives from its own edge while the scrim fades behind it; the
+   close is the instant flip display:none already is. */
+@keyframes side-drawer {
+  from {
+    transform: translateX(-100%);
+  }
+}
+
 .menu-btn {
   display: none;
   width: var(--ctl-icon);
@@ -583,6 +591,7 @@
 
   .side.open {
     display: flex;
+    animation: side-drawer var(--mo-open) var(--mo-ease);
   }
 
   .side-scrim {
@@ -595,6 +604,7 @@
 
   .side-scrim.show {
     display: block;
+    animation: mo-fade var(--mo-base) var(--mo-ease);
   }
 
   .side.collapsed {
@@ -616,5 +626,12 @@
   .side.collapsed .lbl {
     flex: 1;
     padding-right: var(--sp-2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .side.open,
+  .side-scrim.show {
+    animation: none;
   }
 }

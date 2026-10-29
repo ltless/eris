@@ -15,10 +15,13 @@
   ErisPicker.init({ onModel, onEffort })
                                      wire both triggers and their panels; each
                                      runs with the new choice when it changes
-  ErisPicker.setModels(ids, id, labels)
+  ErisPicker.setModels(ids, id, labels, caps)
                                      fill the model menu, marking `id` as chosen.
                                      `labels` maps an id to the name shown for it;
-                                     an id without one is shown as itself.
+                                     an id without one is shown as itself. `caps`
+                                     maps an id to what it declared it can do; a
+                                     model that did not declare thinking has no
+                                     effort control to show.
 
   The effort ladder belongs to the model, so it is asked for rather than
   assumed: the panel fetches it the first time it is opened for a model and
@@ -38,6 +41,7 @@ const ErisPicker = (() => {
   let ids = []; // model ids, in menu order
   let labels = {}; // id -> the name shown for it
   const nameOf = (id) => labels[id] || id;
+  let caps = {}; // id -> what it declared, for the ids that declared anything
   let chosen = ""; // the model that is in use
   let active = 0; // the row the pointer or the arrows are on
   let rowEls = [];
@@ -485,14 +489,26 @@ const ErisPicker = (() => {
     } catch {}
   }
 
-  function setModels(items, current, names) {
+  function setModels(items, current, names, capabilities) {
     const model = current || (items || [])[0] || "";
     const changed = model !== chosen;
     ids = (items || []).slice();
     labels = names || {};
+    caps = capabilities || {};
     chosen = model;
     active = Math.max(0, ids.indexOf(chosen));
     paintModels();
+    // A model that declared it cannot think has no ladder to draw, so the
+    // control is hidden rather than left to answer a question with one step.
+    // A model that declared nothing about thinking keeps it: unknown is not
+    // the same as absent, and a control that vanishes on a quiet server would
+    // take the feature with it.
+    const thinks = caps[chosen] ? caps[chosen].thinking !== false : true;
+    if (effortBtn) effortBtn.hidden = !thinks;
+    if (!thinks) close();
+    // The composer reads the same answer to decide what it can attach, so it
+    // is told whenever the model changes rather than asking for itself.
+    if (chosen) ErisAttach?.setVision(caps[chosen] ? caps[chosen].vision !== false : true);
     if (changed) {
       // A new model means a new ladder, so the old one is dropped rather than
       // left to label the new model's steps.
