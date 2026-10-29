@@ -9,43 +9,36 @@ refused at routes that change the account itself.
 """
 
 import hashlib
-import os
 import secrets
-import sqlite3
 import time
-from pathlib import Path
 
 from .encoding import new_id
+from .store import open_db, path_from_env
 
 MAX_TOKENS = 20
 MAX_NAME = 60
 
 PREFIX = "eris_"
 
+SCHEMA = (
+    "CREATE TABLE tokens("
+    "id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
+    "name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE, "
+    "prefix TEXT NOT NULL, created INTEGER NOT NULL, "
+    "used INTEGER NOT NULL DEFAULT 0);"
+    "CREATE INDEX tokens_user ON tokens(user_id);"
+)
+
 _db = None
 
 
 def db_path():
-    return Path(os.getenv("TOKENS_DB", "database/tokens.db"))
+    return path_from_env("TOKENS_DB", "database/tokens.db")
 
 
 def db():
     global _db
-    if _db is None:
-        path = db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fresh = not path.exists()
-        _db = sqlite3.connect(path, check_same_thread=False)
-        _db.row_factory = sqlite3.Row
-        if fresh:
-            _db.executescript(
-                "CREATE TABLE tokens("
-                "id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
-                "name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE, "
-                "prefix TEXT NOT NULL, created INTEGER NOT NULL, "
-                "used INTEGER NOT NULL DEFAULT 0);"
-                "CREATE INDEX tokens_user ON tokens(user_id);"
-            )
+    _db = open_db(_db, db_path(), SCHEMA)
     return _db
 
 

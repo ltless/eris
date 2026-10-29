@@ -5,8 +5,10 @@ handlers that need run context and wraps results with render text for the model
 and source lists for the UI.
 """
 
-from . import calc, fetch, policy, search
-from .registry import ToolResult, registry
+from . import calc, fetch, search
+from ..security import EXTERNAL, READ_ONLY
+from ..runtime.errors import INVALID_ARGUMENTS, TOOL_ERROR
+from .registry import Tool, ToolResult, registry
 
 CHAT_TAGS = ("chat",)
 
@@ -23,25 +25,23 @@ async def _search(args, ctx):
 
 
 async def _fetch(args, ctx):
-    text = await fetch.run(args)
+    ok, text = await fetch.read(args)
     url = str((args or {}).get("url", "") or "").strip()
-    ok = not text.startswith("Could not read") and not text.startswith("No URL given")
     return ToolResult(
         success=ok,
         data={"url": url},
         text=text,
-        error=None if ok else {"code": "tool_error", "message": text, "retryable": False},
+        error=None if ok else {"code": TOOL_ERROR, "message": text, "retryable": False},
     )
 
 
-async def _calc(args, ctx):
-    text = await calc.run(args)
-    ok = not text.startswith("calc:")
+def _calc(args, ctx):
+    ok, text = calc.compute(args)
     return ToolResult(
         success=ok,
         data={"expression": str((args or {}).get("expression", "") or "")},
         text=text,
-        error=None if ok else {"code": "invalid_arguments", "message": text, "retryable": False},
+        error=None if ok else {"code": INVALID_ARGUMENTS, "message": text, "retryable": False},
     )
 
 
@@ -51,6 +51,11 @@ def _web_sources(hits):
             "source": h.get("url") or h.get("title") or "",
             "title": h.get("title") or h.get("url") or "",
             "kind": "web",
+            # Whether this page's text was actually read. The text itself goes
+            # to the model and never to the browser, so this flag is the only
+            # thing that lets the card tell a page the answer may rest on from
+            # one that was never more than a snippet.
+            "read": bool(h.get("page")),
         }
         for h in hits
         if h.get("url") or h.get("title")
@@ -65,7 +70,7 @@ def register_builtins():
         _tool(
             search.TOOL,
             handler=_search,
-            permission=policy.EXTERNAL,
+            permission=EXTERNAL,
             timeout=45.0,
             tags=CHAT_TAGS + ("research",),
             side_effect="network_read",
@@ -75,7 +80,7 @@ def register_builtins():
         _tool(
             fetch.TOOL,
             handler=_fetch,
-            permission=policy.EXTERNAL,
+            permission=EXTERNAL,
             timeout=30.0,
             tags=CHAT_TAGS + ("research",),
             side_effect="network_read",
@@ -85,7 +90,7 @@ def register_builtins():
         _tool(
             calc.TOOL,
             handler=_calc,
-            permission=policy.READ_ONLY,
+            permission=READ_ONLY,
             timeout=10.0,
             tags=CHAT_TAGS + ("research",),
             side_effect="none",
@@ -94,8 +99,6 @@ def register_builtins():
 
 
 def _tool(module_tool, *, handler, permission, timeout, tags, side_effect):
-    from .registry import Tool
-
     spec = module_tool["function"]
     return Tool(
         name=spec["name"],

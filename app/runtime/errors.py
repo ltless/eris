@@ -13,14 +13,9 @@ UNKNOWN_TOOL = "unknown_tool"
 INVALID_ARGUMENTS = "invalid_arguments"
 TOOL_ERROR = "tool_error"
 TIMEOUT = "timeout"
-DENIED = "denied"
 APPROVAL_REQUIRED = "approval_required"
 BUDGET_EXCEEDED = "budget_exceeded"
 MODEL_ERROR = "model_error"
-CANCELLED = "cancelled"
-
-# A model that cannot reach its server is a deployment problem, not a retry.
-FATAL_CODES = frozenset({MODEL_ERROR, BUDGET_EXCEEDED, CANCELLED})
 
 
 @dataclass(frozen=True)
@@ -36,8 +31,3 @@ class ToolError(Exception):
 
     def as_dict(self):
         return {"code": self.code, "message": self.message, "retryable": self.retryable}
-
-
-def from_exception(e):
-    """An unexpected exception from a handler, described for the model."""
-    return ToolError(TOOL_ERROR, f"{type(e).__name__}: {e}", retryable=True)

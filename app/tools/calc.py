@@ -57,13 +57,18 @@ def evaluate(expression):
     return eval(compile(tree, "<calc>", "eval"), {"__builtins__": {}}, {})
 
 
-async def run(args):
+def compute(args):
+    """The expression and its value, or `(False, reason)`."""
     args = as_args(args)
     expr = str(args.get("expression", "") or "").strip()
     if not expr:
-        return "calc: no expression given."
+        return False, "calc: no expression given."
     try:
         value = evaluate(expr)
     except Exception:
-        return f"calc: cannot evaluate {expr!r}. Use only numbers and + - * / // % **."
-    return f"{expr} = {value}"
+        return False, f"calc: cannot evaluate {expr!r}. Use only numbers and + - * / // % **."
+    return True, f"{expr} = {value}"
+
+
+async def run(args):
+    return compute(args)[1]

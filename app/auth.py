@@ -7,48 +7,42 @@ database and signed tokens instead of a sessions table.
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import sqlite3
 import time
-from pathlib import Path
+
+from .store import open_db, path_from_env
 
 SESSION_TTL = 7 * 24 * 3600  # 7 days
+
+SCHEMA = (
+    "CREATE TABLE users("
+    "id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
+    "email TEXT UNIQUE NOT NULL COLLATE NOCASE, "
+    "pw TEXT NOT NULL, created INTEGER NOT NULL, "
+    "avatar TEXT, cover TEXT, prefs TEXT);"
+    "CREATE TABLE sessions("
+    "token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
+    "expires INTEGER NOT NULL);"
+)
 
 _db = None
 
 
 def db_path():
-    return Path(os.getenv("AUTH_DB", "database/users.db"))
+    return path_from_env("AUTH_DB", "database/users.db")
+
+
+def _migrate(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+    for column in ("avatar", "cover", "prefs"):
+        if column not in cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
 
 
 def db():
     global _db
-    if _db is None:
-        path = db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fresh = not path.exists()
-        _db = sqlite3.connect(path, check_same_thread=False)
-        _db.row_factory = sqlite3.Row
-        if fresh:
-            _db.executescript(
-                "CREATE TABLE users("
-                "id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
-                "email TEXT UNIQUE NOT NULL COLLATE NOCASE, "
-                "pw TEXT NOT NULL, created INTEGER NOT NULL, "
-                "avatar TEXT, cover TEXT, prefs TEXT);"
-                "CREATE TABLE sessions("
-                "token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
-                "expires INTEGER NOT NULL);"
-            )
-        else:
-            cols = {r["name"] for r in _db.execute("PRAGMA table_info(users)")}
-            if "avatar" not in cols:
-                _db.execute("ALTER TABLE users ADD COLUMN avatar TEXT")
-            if "cover" not in cols:
-                _db.execute("ALTER TABLE users ADD COLUMN cover TEXT")
-            if "prefs" not in cols:
-                _db.execute("ALTER TABLE users ADD COLUMN prefs TEXT")
+    _db = open_db(_db, db_path(), SCHEMA, _migrate)
     return _db
 
 

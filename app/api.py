@@ -1,17 +1,12 @@
-"""HTTP surface: routes, authentication, validation, and SSE.
+"""HTTP surface: routes, validation, and streaming.
 
 This layer holds no execution logic. `/api/chat` builds a RunRequest, drives
-the shared engine, and translates its events into the SSE frames the browser
-already understands; the engine does the rest.
-
-The old transports were also in this file. They now live in `app/models`
-(`stream_completion`, `parse_chunk`, `to_native`, `merge_tool_calls`,
-`normalize_call`, `chat_url`) and are re-exported here, because the routes and
-the existing tests still refer to them by these names.
+the shared engine, and hands its events to `sse`; the engine does the rest.
+Who the caller is comes from `deps`, the MCP endpoint from `mcp`, and the model
+transports from `app/models`, re-exported here because the routes and the
+existing tests still refer to them by these names.
 """
 
-import json
-import secrets
 from datetime import date
 
 import httpx
@@ -19,35 +14,33 @@ from fastapi import (
     Cookie,
     Depends,
     FastAPI,
-    Header,
     HTTPException,
     Request,
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, chats, encoding, tokens
+from . import auth, chats, encoding, mcp, tokens
 from .config import settings
+from .deps import db_user, require_session, require_user
 from .models import (
     FALLBACK_LADDER,
     ModelError,
-    base_url,
-    chat_url,
-    effort_label,
-    list_models,
-    merge_tool_calls,
-    model_label,
-    normalize_call,
-    parse_chunk,
     cached_ladder,
+    effort_label,
+    healthy,
+    listed_capabilities,
+    list_models,
+    model_label,
     model_stats,
     rung_index,
-    stream_completion,
     think_ladder,
     think_value,
+    # Re-exported for the tests, which reach the transport through this module.
+    stream_completion,
     to_native,
 )
 from .runtime import events as ev
@@ -55,9 +48,9 @@ from .runtime.budgets import Budget
 from .runtime.context import ContextBudget, assemble
 from .runtime.engine import Engine, RunRequest
 from .runtime.events import Emitter
+from .sse import sse, sse_frame
 from .tools import builtin as builtin_tools
-from .tools import policy, search
-from .tools.registry import ToolContext, registry
+from .tools.registry import ToolContext
 
 app = FastAPI(title="Eris")
 
@@ -65,53 +58,8 @@ ROOT = encoding.ROOT
 STATIC_DIR = encoding.STATIC_DIR
 MEDIA_DIR = encoding.MEDIA_DIR
 
-def _register_tools():
-    """Register built-in tools once at import."""
-    builtin_tools.register_builtins()
-
-
-_register_tools()
-
-
-# --- auth helpers ---
-
-
-def db_user(user_id):
-    row = auth.db().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-    return row
-
-
-def require_user(session: str | None = Cookie(None),
-                 authorization: str | None = Header(None)):
-    """The account making this call, from a cookie or a bearer token.
-
-    A browser holds a session cookie. A script, an editor, or an agent speaking
-    MCP cannot, so it presents a token instead; `tokens.resolve` is the only
-    place the plaintext is ever compared.
-    """
-    u = auth.get_session(session)
-    if u:
-        return u
-    if authorization and authorization.lower().startswith("bearer "):
-        user_id = tokens.resolve(authorization.split(" ", 1)[1].strip())
-        row = db_user(user_id) if user_id is not None else None
-        if row:
-            return auth.profile(row)
-    raise HTTPException(401, "Login required")
-
-
-def require_session(session: str | None = Cookie(None)):
-    """The account, from a session cookie only.
-
-    A token is read scope: it may ask the app questions, and it may not rewrite
-    the account that issued it. Every route that changes the account itself —
-    its name, its credentials, its preferences, its tokens — stands behind this
-    instead, so a leaked token cannot be escalated into a takeover.
-    """
-    u = auth.get_session(session)
-    if not u:
-        raise HTTPException(401, "Login required")
-    return u
+builtin_tools.register_builtins()
+app.include_router(mcp.router)
 
 
 # --- request models ---
@@ -156,46 +104,6 @@ class LoginRequest(BaseModel):
     password: str
 
 
-# --- SSE ---
-
-
-def sse(obj):
-    return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
-
-
-def sse_frame(event):
-    """One runtime event, in the frame the browser already parses.
-
-    The names differ between the two eras of this app — `tool.started` here,
-    `tool` there — and the frontend is not being rewritten, so the mapping is
-    here, in one place, with the event still carrying its own fields.
-    """
-    d = event.data or {}
-    t = event.type
-    if t == ev.MODEL_DELTA:
-        return {"type": "delta", "text": d.get("text", "")}
-    if t == ev.MODEL_THINKING:
-        return {"type": "thinking", "text": d.get("text", "")}
-    if t == ev.SOURCE_FOUND:
-        return {"type": "sources", "items": [{
-            "n": d.get("n"), "source": d.get("source", ""), "title": d.get("title", ""),
-            "kind": d.get("kind", "web"),
-        }]}
-    if t == ev.TOOL_STARTED and d.get("tool") == "web_search":
-        return {"type": "tool", "r": d.get("round", 0),
-                "query": str((d.get("args") or {}).get("query", "") or "")}
-    if t == ev.TOOL_FAILED:
-        return {"type": "tool_error", "tool": d.get("tool", ""),
-                "code": d.get("code", ""), "message": d.get("message", "")}
-    if t == ev.MODEL_METRICS:
-        return {"type": "metrics", **{k: v for k, v in d.items() if k != "round"}}
-    if t == ev.APPROVAL_REQUIRED:
-        return {"type": "approval", "tool": d.get("tool", ""), "message": d.get("message", "")}
-    if t in (ev.TASK_FAILED, ev.TASK_CANCELLED):
-        return {"type": "error", "message": d.get("message") or d.get("reason") or t}
-    return None
-
-
 # --- chat ---
 
 
@@ -214,9 +122,8 @@ def _last_user_text(messages):
     return ""
 
 
-async def _build_request(req: ChatRequest, u):
+def _build_request(req: ChatRequest, u, messages):
     prefs = u.get("prefs") or {}
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
     base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
     system = assemble(
         ContextBudget(),
@@ -257,31 +164,47 @@ async def _build_request(req: ChatRequest, u):
 async def chat(req: ChatRequest, u: dict = Depends(require_user)):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     query = _last_user_text(messages)
-    request = await _build_request(req, u)
+    request = _build_request(req, u, messages)
     engine = Engine(request, emitter=Emitter())
 
     async def gen():
         if req.regenerate:
             chats.drop_last_assistant(u["id"], req.chat_id)
         web_groups = []
+        fetch_rows = []
         try:
             async for event in engine.run():
                 frame = sse_frame(event)
                 if frame is not None:
                     if event.type == ev.TOOL_STARTED and frame.get("type") == "tool":
                         web_groups.append({"r": frame["r"], "query": frame["query"], "items": []})
+                    elif event.type == ev.TOOL_STARTED and frame.get("type") == "fetch":
+                        # Recorded from the start frame, not the closing one: a
+                        # read that failed is still a read the user watched, and
+                        # the URL is only ever stated here.
+                        fetch_rows.append({"r": frame["r"], "url": frame["url"],
+                                           "chars": 0, "ok": True})
+                    elif event.type == ev.TOOL_COMPLETED and frame.get("type") == "fetch_done":
+                        row = next((f for f in reversed(fetch_rows)
+                                    if f["r"] == frame["r"] and not f["chars"]), None)
+                        if row is not None:
+                            row["chars"] = frame["chars"]
+                    elif event.type == ev.TOOL_FAILED and frame.get("tool") == "fetch_url":
+                        row = next((f for f in reversed(fetch_rows)
+                                    if f["r"] == frame["r"] and f["ok"]), None)
+                        if row is not None:
+                            row["ok"] = False
                     elif event.type == ev.SOURCE_FOUND and frame.get("type") == "sources":
                         items = [i for i in frame["items"] if i.get("kind") == "web"]
                         if items:
-                            if web_groups:
-                                web_groups[-1]["items"].extend(items)
-                            else:
-                                web_groups.append({"r": 0, "query": "", "items": items})
-                            yield sse({"type": "sources", "items": items})
+                            group = next((g for g in web_groups if g["r"] == frame["r"]), None)
+                            if group is None:
+                                group = {"r": frame["r"], "query": "", "items": []}
+                                web_groups.append(group)
+                            group["items"].extend(items)
+                            yield sse({"type": "sources", "r": frame["r"], "items": items})
                     if frame.get("type") != "sources":
                         yield sse(frame)
-                if event.type == ev.MODEL_DELTA:
-                    continue
         except ModelError as e:
             yield sse({"type": "error", "message": f"Cannot reach model server: {e}"})
         else:
@@ -301,6 +224,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                         thinking=engine.result.thinking or None,
                         sources=_number_sources(engine.sources),
                         web=[g for g in web_groups if g["items"]],
+                        fetches=fetch_rows or None,
                     )
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -432,10 +356,19 @@ async def models(u: dict = Depends(require_user)):
     # The id is what the endpoint accepts and what prefs store; the label is
     # what a person reads. Parallel rather than a list of objects, so a client
     # that only knows `items` keeps working unchanged.
+    #
+    # `capabilities` is read here because this is the one route the composer
+    # already calls: the answer also fills the cache the chat loop reads, so a
+    # chat sent without opening a menu still knows whether to offer tools. A
+    # model the endpoint says nothing about is absent from the map, and the
+    # client reads a missing entry the same way the engine does — unknown, so
+    # nothing is hidden.
+    caps = await listed_capabilities() or {}
     return {
         "items": items,
         "labels": {mid: model_label(mid) for mid in items},
         "default": default,
+        "capabilities": {mid: caps[mid] for mid in items if mid in caps},
         "effort": prefs.get("effort"),
         "ctx": prefs.get("ctx"),
     }
@@ -571,10 +504,8 @@ async def me(u: dict = Depends(require_user)):
 @app.get("/api/health")
 async def health():
     """The sidebar's dots. Each dependency is reported as up, down, or unknown."""
-    from .models import healthy as model_healthy
-
     out = {"model": "unknown", "search": "unknown"}
-    out["model"] = "up" if await model_healthy() else "down"
+    out["model"] = "up" if await healthy() else "down"
     try:
         async with httpx.AsyncClient(timeout=3) as c:
             r = await c.get(f"{settings.searxng_url}/healthz")
@@ -582,205 +513,6 @@ async def health():
     except Exception:
         out["search"] = "down"
     return out
-
-
-# --- MCP ---
-
-# The Model Context Protocol over Streamable HTTP: one endpoint, JSON-RPC over
-# POST. The tools are the ones already registered — this exposes them, it does
-# not define any — so a client sees exactly what a chat turn sees and a tool is
-# added in one place.
-MCP_VERSION = "2025-06-18"
-# A version older than the server's own. A request without the version header
-# is assumed to speak this one, which is what the spec says to assume.
-MCP_FALLBACK = "2025-03-26"
-MCP_SESSIONS = 64
-_mcp_sessions: dict = {}
-
-MCP_METHODS = ("initialize", "ping", "tools/list", "tools/call")
-
-
-def _rpc_error(rpc_id, code, message, data=None):
-    err = {"code": code, "message": message}
-    if data is not None:
-        err["data"] = data
-    return {"jsonrpc": "2.0", "id": rpc_id, "error": err}
-
-
-def _rpc_result(rpc_id, result):
-    return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
-
-
-def _mcp_tools():
-    """The registered tools, in the shape MCP names them.
-
-    `inputSchema` is the registry's own JSON Schema — the same object the model
-    is offered — so a tool cannot describe itself one way to the model and
-    another way to an MCP client.
-    """
-    out = []
-    for t in registry.all():
-        if "chat" not in t.tags:
-            continue
-        out.append({
-            "name": t.name,
-            "description": t.description,
-            "inputSchema": t.parameters,
-            "annotations": {
-                "readOnlyHint": t.permission == policy.READ_ONLY,
-                "destructiveHint": t.permission == policy.DESTRUCTIVE,
-                "idempotentHint": t.permission == policy.READ_ONLY,
-            },
-        })
-    return out
-
-
-def _mcp_content(result):
-    """A ToolResult as MCP's content list."""
-    if result.success:
-        text = result.text if result.text is not None else json.dumps(
-            result.data or {}, ensure_ascii=False, indent=2
-        )
-    else:
-        err = result.error or {}
-        text = err.get("message") or err.get("code") or "the tool failed"
-    return [{"type": "text", "text": str(text)}]
-
-
-async def _mcp_call(user, params):
-    """Run one tool for the account the request authenticated as.
-
-    A refusal is an MCP tool error, not a protocol error: the call was well
-    formed, the tool said no. That distinction is the client's, and it is the
-    difference between fixing the request and reading the message.
-    """
-    name = str((params or {}).get("name") or "")
-    args = (params or {}).get("arguments") or {}
-    if not isinstance(args, dict):
-        return None, "Arguments must be an object"
-    if registry.get(name) is None:
-        return None, f"Unknown tool: {name}"
-    ctx = ToolContext(user_id=user["id"], approved=set())
-    result = await registry.call(name, args, ctx)
-    return {"content": _mcp_content(result), "isError": not result.success,
-            "structuredContent": result.data if result.data else None}, None
-
-
-async def _mcp_handle(user, body):
-    """One JSON-RPC message, from a parsed body to a response body.
-
-    Returns `(payload, http_status)`. A notification has no id and gets a 202
-    with no body, because a reply to one is a protocol violation — including a
-    notification this server does not implement, which is why the notification
-    check comes before the method list.
-    """
-    if not isinstance(body, dict) or body.get("jsonrpc") != "2.0":
-        return {"jsonrpc": "2.0", "id": None,
-                "error": {"code": -32600, "message": "Invalid Request"}}, 200
-    rpc_id = body.get("id")
-    method = body.get("method")
-    params = body.get("params") or {}
-    if isinstance(method, str) and method.startswith("notifications/"):
-        return None, 202
-    if method not in MCP_METHODS:
-        return _rpc_error(rpc_id, -32601, f"Method not found: {method}"), 200
-    if method == "initialize":
-        return _rpc_result(rpc_id, {
-            "protocolVersion": MCP_VERSION,
-            "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "eris", "version": "1.0"},
-            "instructions": (
-                "These are Eris's own tools, running as the account that owns this "
-                "token. A tool that changes state needs an approval the token cannot "
-                "give, so it will refuse; reads and searches run."
-            ),
-        }), 200
-    if method == "ping":
-        return _rpc_result(rpc_id, {}), 200
-    if method == "tools/list":
-        return _rpc_result(rpc_id, {"tools": _mcp_tools()}), 200
-    result, err = await _mcp_call(user, params)
-    if err:
-        return _rpc_error(rpc_id, -32602, err), 200
-    return _rpc_result(rpc_id, result), 200
-
-
-def _mcp_origin_ok(origin, host):
-    """Whether an Origin header names this server.
-
-    A browser sends Origin on a cross-site request, and this endpoint answers
-    with the caller's own tools. A page on another host must not be able to
-    drive them through a visitor's browser, so a mismatched Origin is refused
-    outright rather than left to CORS.
-    """
-    if not origin:
-        return True
-    try:
-        from urllib.parse import urlsplit
-
-        return urlsplit(origin).netloc.split(":")[0] == (host or "").split(":")[0]
-    except Exception:
-        return False
-
-
-@app.post("/mcp")
-async def mcp(request: Request, u: dict = Depends(require_user)):
-    if not _mcp_origin_ok(request.headers.get("origin"), request.headers.get("host")):
-        raise HTTPException(403, "origin not allowed")
-    accept = request.headers.get("accept") or ""
-    if "application/json" not in accept or "text/event-stream" not in accept:
-        raise HTTPException(406, "Accept must include application/json and text/event-stream")
-    version = (request.headers.get("mcp-protocol-version") or "").strip()
-    if version and version not in (MCP_VERSION, MCP_FALLBACK):
-        raise HTTPException(400, f"unsupported MCP-Protocol-Version: {version}")
-
-    raw = await request.body()
-    if len(raw) > 1_000_000:
-        raise HTTPException(413, "request too large")
-    try:
-        body = json.loads(raw or b"null")
-    except ValueError:
-        return JSONResponse(
-            _rpc_error(None, -32700, "Parse error"), status_code=200
-        )
-
-    session_id = request.headers.get("mcp-session-id")
-    if session_id and session_id not in _mcp_sessions:
-        # Terminated or never issued: the client has to initialize again.
-        raise HTTPException(404, "unknown MCP session")
-    if session_id and _mcp_sessions[session_id] != u["id"]:
-        raise HTTPException(403, "this session belongs to another account")
-
-    payload, status = await _mcp_handle(u, body)
-    if payload is None:
-        return Response(status_code=status)
-    headers = {}
-    if body.get("method") == "initialize":
-        # The id is issued on the initialize response and required afterwards.
-        sid = secrets.token_urlsafe(18)
-        _mcp_sessions[sid] = u["id"]
-        while len(_mcp_sessions) > MCP_SESSIONS:
-            _mcp_sessions.pop(next(iter(_mcp_sessions)))
-        headers["Mcp-Session-Id"] = sid
-    return JSONResponse(payload, status_code=status, headers=headers)
-
-
-@app.get("/mcp")
-async def mcp_get():
-    """No server-initiated stream: this server only answers.
-
-    The spec wants either an SSE stream or a 405 here, and a second channel of
-    unsolicited events is not what this server has to say.
-    """
-    return Response(status_code=405, headers={"Allow": "POST, DELETE"})
-
-
-@app.delete("/mcp")
-async def mcp_delete(request: Request, u: dict = Depends(require_user)):
-    session_id = request.headers.get("mcp-session-id")
-    if session_id:
-        _mcp_sessions.pop(session_id, None)
-    return Response(status_code=204)
 
 
 # --- pages ---

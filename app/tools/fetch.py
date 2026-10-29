@@ -24,10 +24,20 @@ from ..config import settings
 from . import as_args
 
 TIMEOUT = 12
-MIN_READABLE = 200
+MIN_READABLE = 80
 MAX_BYTES = 2_000_000
 MAX_REDIRECTS = 5
-USER_AGENT = "Mozilla/5.0 (compatible; ErisBot/1.0)"
+# A bot UA is refused outright by most CDNs, so this reads as an ordinary
+# browser and sends the headers one sends.
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+)
+HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+}
 
 _STRIP_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "form", "nav", "footer", "header")
 
@@ -77,24 +87,28 @@ def extract_text(raw, max_chars):
 
 
 async def fetch_page(client, url, max_chars):
-    """Return up to max_chars of readable page text, or None. Never raises."""
+    """Return `(text, reason)`. `text` is None when the page could not be read.
+
+    `reason` is a short phrase naming what stopped it, so the caller can say
+    which of the several failures happened. Never raises.
+    """
     url = str(url)
     for _ in range(MAX_REDIRECTS + 1):
         if not await asyncio.to_thread(is_public_url, url):
-            return None
+            return None, "not a public http(s) address"
         try:
             async with client.stream("GET", url, follow_redirects=False) as r:
                 if 300 <= r.status_code < 400:
                     loc = r.headers.get("location")
                     if not loc:
-                        return None
+                        return None, f"redirect from {url} without a destination"
                     url = str(httpx.URL(str(r.url)).join(loc))
                     continue
                 if r.status_code >= 400:
-                    return None
+                    return None, f"the server answered {r.status_code}"
                 ctype = (r.headers.get("content-type") or "").lower()
                 if "html" not in ctype and "text" not in ctype and "pdf" not in ctype:
-                    return None
+                    return None, f"not a readable document ({ctype or 'no content-type'})"
                 total = 0
                 chunks = []
                 async for part in r.aiter_bytes():
@@ -102,19 +116,25 @@ async def fetch_page(client, url, max_chars):
                     chunks.append(part)
                     if total >= MAX_BYTES:
                         break
-        except (httpx.HTTPError, ValueError):
-            return None
+        except httpx.HTTPError as e:
+            return None, f"the request failed ({type(e).__name__})"
+        except ValueError:
+            return None, "the URL could not be followed"
         raw = b"".join(chunks)
         if "pdf" in ctype:
             try:
                 text = "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(raw)).pages)
                 text = re.sub(r"\s+", " ", text).strip()[:max_chars]
             except Exception:
-                return None
-        else:
-            text = extract_text(raw.decode("utf-8", errors="ignore"), max_chars)
-        return text if text and len(text) >= MIN_READABLE else None
-    return None
+                return None, "the PDF could not be parsed"
+            if not text or len(text) < MIN_READABLE:
+                return None, "the PDF held no readable text"
+            return text, ""
+        text = extract_text(raw.decode("utf-8", errors="ignore"), max_chars)
+        if not text or len(text) < MIN_READABLE:
+            return None, "no readable text in the page (scripts, or too little prose)"
+        return text, ""
+    return None, f"more than {MAX_REDIRECTS} redirects"
 
 
 async def fetch_pages(urls, max_chars):
@@ -125,11 +145,11 @@ async def fetch_pages(urls, max_chars):
     async with httpx.AsyncClient(
         timeout=TIMEOUT,
         follow_redirects=False,
-        headers={"User-Agent": USER_AGENT},
+        headers=HEADERS,
         limits=httpx.Limits(max_connections=4),
     ) as c:
         texts = await asyncio.gather(*[fetch_page(c, u, max_chars) for u in urls])
-    return dict(zip(urls, texts))
+    return {u: t for u, (t, _) in zip(urls, texts)}
 
 
 TOOL = {
@@ -152,16 +172,21 @@ TOOL = {
 }
 
 
-async def run(args):
-    """Handler for the fetch_url tool. Returns text for the model, never raises."""
+async def read(args):
+    """The page text, or `(False, reason)` for a URL that could not be read."""
     args = as_args(args)
     url = str(args.get("url", "") or "").strip()
     if not url:
-        return "No URL given."
+        return False, "No URL given."
     async with httpx.AsyncClient(
-        timeout=TIMEOUT, follow_redirects=False, headers={"User-Agent": USER_AGENT}
+        timeout=TIMEOUT, follow_redirects=False, headers=HEADERS
     ) as c:
-        text = await fetch_page(c, url, settings.fetch_max_chars)
+        text, reason = await fetch_page(c, url, settings.fetch_max_chars)
     if not text:
-        return f"Could not read {url} (non-public address, offline, or not readable text)."
-    return f"Page content for {url}:\n{text}"
+        return False, f"Could not read {url}: {reason}."
+    return True, f"Page content for {url}:\n{text}"
+
+
+async def run(args):
+    """Handler for the fetch_url tool. Returns text for the model, never raises."""
+    return (await read(args))[1]

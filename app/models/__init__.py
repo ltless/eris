@@ -1,19 +1,24 @@
-"""Model selection, transport, and capability reporting.
+"""Model transport, the thinking ladder, the declared capabilities, and the
+server readout.
 
-The runtime asks this package for a model and a stream of deltas; nothing above
-it knows the endpoint's URL shape, its NDJSON framing, or which of the two
-route families it is on.
+The runtime asks this package for a stream of deltas; nothing above it knows
+the endpoint's URL shape, its NDJSON framing, or which of the two route
+families it is on.
 """
 
-from .capabilities import Capabilities, ModelInfo, for_configured_backend
-from .providers import (
+from .caps import cached_capabilities, capabilities, listed_capabilities
+from .endpoint import base_url, chat_url
+from .ladder import (
     FALLBACK_LADDER,
     THINK_LEVELS,
-    ModelError,
-    base_url,
     cached_ladder,
-    chat_url,
     effort_label,
+    rung_index,
+    think_ladder,
+    think_value,
+)
+from .providers import (
+    ModelError,
     healthy,
     list_models,
     merge_tool_calls,
@@ -21,21 +26,16 @@ from .providers import (
     normalize_call,
     parse_chunk,
     parse_metrics,
-    rung_index,
     stream_completion,
-    think_ladder,
-    think_value,
     to_native,
 )
-from .router import CHAT, RESEARCH, VERIFICATION, NoModelAvailable, Router, build
 from .stats import model_stats
 
 __all__ = [
-    "CHAT", "RESEARCH", "VERIFICATION",
     "FALLBACK_LADDER", "THINK_LEVELS",
-    "Capabilities", "ModelError", "ModelInfo", "NoModelAvailable", "Router",
-    "base_url", "build", "cached_ladder", "chat_url", "effort_label",
-    "for_configured_backend", "healthy",
+    "ModelError",
+    "base_url", "cached_capabilities", "cached_ladder", "capabilities", "chat_url",
+    "effort_label", "healthy", "listed_capabilities",
     "list_models", "merge_tool_calls", "model_label", "normalize_call",
     "model_stats", "parse_chunk", "parse_metrics", "rung_index",
     "stream_completion",

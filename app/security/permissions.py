@@ -29,10 +29,6 @@ class Decision:
     allowed: bool
     code: str = ""
     reason: str = ""
-    _rewrite: object = None
-
-    def rewrite(self, args):
-        return self._rewrite(args) if self._rewrite else args
 
 
 ALLOW = Decision(True)

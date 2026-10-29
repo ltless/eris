@@ -13,8 +13,9 @@ from typing import Callable
 
 import jsonschema
 
-from . import policy
-from ..runtime.errors import INVALID_ARGUMENTS, UNKNOWN_TOOL, ToolError
+from ..security import READ_ONLY, authorize
+from ..runtime.errors import INVALID_ARGUMENTS, TIMEOUT, TOOL_ERROR, UNKNOWN_TOOL, ToolError
+
 
 @dataclass
 class ToolContext:
@@ -55,7 +56,7 @@ class Tool:
     description: str
     parameters: dict
     handler: Callable
-    permission: str = policy.READ_ONLY
+    permission: str = READ_ONLY
     timeout: float = 30.0
     tags: tuple = ()
     side_effect: str = "none"
@@ -136,22 +137,21 @@ class Registry:
         if err:
             return ToolResult.failed(err.code, err.message, err.retryable)
 
-        decision = policy.authorize(tool, ctx, args)
+        decision = authorize(tool, ctx, args)
         if not decision.allowed:
             return ToolResult.failed(decision.code, decision.reason)
-        args = decision.rewrite(args)
 
         try:
             result = await asyncio.wait_for(_invoke(tool, args, ctx), timeout=tool.timeout)
         except asyncio.TimeoutError:
-            return ToolResult.failed("timeout", f"{name} exceeded {tool.timeout:g}s", retryable=True)
+            return ToolResult.failed(TIMEOUT, f"{name} exceeded {tool.timeout:g}s", retryable=True)
         except ToolError as e:
             return ToolResult.failed(e.code, e.message, e.retryable)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             return ToolResult.failed(
-                "tool_error", f"{type(e).__name__}: {e}", retryable=True
+                TOOL_ERROR, f"{type(e).__name__}: {e}", retryable=True
             )
 
         if isinstance(result, ToolResult):
@@ -168,7 +168,7 @@ class Registry:
         """
         out = []
         for t in self.all():
-            d = policy.authorize(t, ctx)
+            d = authorize(t, ctx)
             if d.allowed or d.code == "approval_required":
                 out.append(t.spec())
         return out
@@ -197,25 +197,3 @@ def _as_text(value):
 
 
 registry = Registry()
-
-
-def register_builtin(module, *, name=None, description=None, permission=policy.READ_ONLY,
-                     timeout=30.0, tags=("chat",), handler=None, side_effect="none"):
-    """Wrap an existing tools/<module>.py, which exposes TOOL and run().
-
-    `run` is called as the module already calls it, so the module keeps working
-    on its own for its own tests.
-    """
-    spec = module.TOOL["function"]
-    return registry.add(
-        Tool(
-            name=name or spec["name"],
-            description=description or spec["description"],
-            parameters=spec["parameters"],
-            handler=handler or module.run,
-            permission=permission,
-            timeout=timeout,
-            tags=tuple(tags),
-            side_effect=side_effect,
-        )
-    )

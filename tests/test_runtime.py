@@ -26,7 +26,7 @@ from app.runtime.budgets import Budget, BudgetExceeded, clip
 from app.runtime.engine import Engine, RunRequest
 from app.runtime.events import Emitter, Event, scrub
 from app.security import permissions as perms
-from app.tools import builtin, policy
+from app.tools import builtin
 from app.tools.registry import Registry, Tool, ToolContext, ToolResult, registry
 
 
@@ -133,30 +133,30 @@ class RegistryChecks(unittest.TestCase):
 class PolicyChecks(unittest.TestCase):
     def test_read_only_runs_without_a_project(self):
         tool = Tool(name="r", description="d", parameters={}, handler=lambda a: "",
-                    permission=policy.READ_ONLY)
-        self.assertTrue(policy.authorize(tool, ToolContext()).allowed)
+                    permission=perms.READ_ONLY)
+        self.assertTrue(perms.authorize(tool, ToolContext()).allowed)
 
     def test_a_write_needs_an_approval_for_these_arguments(self):
         tool = Tool(name="w", description="d", parameters={}, handler=lambda a: "",
-                    permission=policy.WRITE)
+                    permission=perms.WRITE)
         ctx = ToolContext()
-        decision = policy.authorize(tool, ctx, {"proposal_id": "abc"})
+        decision = perms.authorize(tool, ctx, {"proposal_id": "abc"})
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.code, "approval_required")
 
     def test_an_approval_is_bound_to_the_arguments(self):
         tool = Tool(name="w", description="d", parameters={}, handler=lambda a: "",
-                    permission=policy.WRITE)
+                    permission=perms.WRITE)
         token = perms.approval_token("w", {"proposal_id": "abc"})
         ctx = ToolContext(approved={token})
-        self.assertTrue(policy.authorize(tool, ctx, {"proposal_id": "abc"}).allowed)
+        self.assertTrue(perms.authorize(tool, ctx, {"proposal_id": "abc"}).allowed)
         # The same tool with different arguments is a different operation.
-        self.assertFalse(policy.authorize(tool, ctx, {"proposal_id": "def"}).allowed)
+        self.assertFalse(perms.authorize(tool, ctx, {"proposal_id": "def"}).allowed)
 
     def test_an_unknown_permission_is_refused(self):
         tool = Tool(name="x", description="d", parameters={}, handler=lambda a: "",
                     permission="god_mode")
-        decision = policy.authorize(tool, ToolContext())
+        decision = perms.authorize(tool, ToolContext())
         self.assertFalse(decision.allowed)
         self.assertIn("unknown permission", decision.reason)
 
@@ -170,9 +170,9 @@ class PolicyChecks(unittest.TestCase):
     def test_specs_offer_what_can_be_asked_for_and_withhold_the_rest(self):
         reg = Registry()
         reg.add(Tool(name="read", description="d", parameters={"type": "object"},
-                     handler=lambda a: "", permission=policy.READ_ONLY, tags=("chat",)))
+                     handler=lambda a: "", permission=perms.READ_ONLY, tags=("chat",)))
         reg.add(Tool(name="write", description="d", parameters={"type": "object"},
-                     handler=lambda a: "", permission=policy.WRITE, tags=("chat",)))
+                     handler=lambda a: "", permission=perms.WRITE, tags=("chat",)))
 
         # Both are offered: a write is unapproved, and asking is what puts the
         # approval in front of the user.
@@ -516,7 +516,7 @@ class LoopChecks(unittest.TestCase):
 
         shared.add(Tool(name="gated", description="d",
                         parameters={"type": "object", "properties": {}},
-                        handler=lambda a: "did it", permission=policy.WRITE,
+                        handler=lambda a: "did it", permission=perms.WRITE,
                         tags=("chat",)))
 
         class Gated(StubModel):

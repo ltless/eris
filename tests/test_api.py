@@ -241,6 +241,37 @@ class ChatStreamChecks(unittest.TestCase):
         self.assertEqual(frame["type"], "tool_error")
         self.assertIn("timeout", frame["code"])
 
+    def test_a_fetch_is_its_own_card_and_carries_its_round(self):
+        """A read opened by the model, not by the search: two frames, and the
+        round on both so the browser can close the right card."""
+        from app.runtime.events import Emitter
+        from app.runtime import events as ev
+
+        e = Emitter()
+        opened = api.sse_frame(e.emit(
+            ev.TOOL_STARTED, tool="fetch_url", round=2, args={"url": "https://a.com/x"}))
+        self.assertEqual(opened, {"type": "fetch", "r": 2, "url": "https://a.com/x"})
+
+        closed = api.sse_frame(e.emit(ev.TOOL_COMPLETED, tool="fetch_url", round=2, chars=1234))
+        self.assertEqual(closed, {"type": "fetch_done", "r": 2, "ok": True, "chars": 1234})
+
+    def test_a_source_states_its_round_and_whether_it_was_read(self):
+        """The card files a result under the round that found it, and marks the
+        few whose page text was actually pulled."""
+        from app.runtime.events import Emitter
+        from app.runtime import events as ev
+
+        frame = api.sse_frame(Emitter().emit(
+            ev.SOURCE_FOUND, round=1, n=1, source="https://a.com", title="A",
+            kind="web", read=True))
+        self.assertEqual(frame["r"], 1)
+        self.assertTrue(frame["items"][0]["read"])
+
+        # A source that reached the list on a snippet alone says so.
+        plain = api.sse_frame(Emitter().emit(
+            ev.SOURCE_FOUND, round=1, n=2, source="https://b.com", kind="web"))
+        self.assertFalse(plain["items"][0]["read"])
+
     def test_the_turn_is_persisted_and_reloads(self):
         chat_id = "chat-1"
         sse_events(self.h.ask(chat_id=chat_id))

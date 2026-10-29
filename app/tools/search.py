@@ -52,6 +52,11 @@ LOW_VALUE = ("facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.co
 TRUSTED_SUFFIXES = (".gov", ".edu")
 TRUSTED_DOMAINS = ("wikipedia.org", "arxiv.org", "github.com")
 
+# A fresh query scores a result published inside RECENT_DAYS at full recency and
+# one at STALE_DAYS or older at none, sliding in between.
+RECENT_DAYS = 7
+STALE_DAYS = 30
+
 
 def _word_in(text, term):
     return re.search(rf"\b{re.escape(term)}\b", text) is not None
@@ -118,7 +123,10 @@ def rank(query, results, fresh=False):
         recency = 0.0
         if fresh:
             age = _age_days(r.get("published"))
-            recency = 1.0 if age is not None and age <= 7 else (0.0 if age is None or age >= 30 else (30 - age) / 23)
+            if age is not None:
+                # Full credit inside the week, none past the month, linear between.
+                span = STALE_DAYS - RECENT_DAYS
+                recency = max(0.0, min(1.0, (STALE_DAYS - age) / span))
         scored.append((title_hits + domain - penalty + recency, -i, r))
     scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
     per_host, out = {}, []

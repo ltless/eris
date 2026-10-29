@@ -1,49 +1,47 @@
 """Chat persistence in sqlite. Turns are replayed, never searched, so no vector store here."""
 
 import json
-import os
-import sqlite3
 import time
-from pathlib import Path
+
+from .store import open_db, path_from_env
 
 MAX_THINKING = 8000
 MAX_SOURCES = 8
+
+SCHEMA = (
+    "CREATE TABLE chats("
+    "id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
+    "title TEXT NOT NULL DEFAULT 'New chat', "
+    "pinned INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);"
+    "CREATE TABLE turns("
+    "chat_id TEXT NOT NULL, role TEXT NOT NULL, "
+    "content TEXT NOT NULL, thinking TEXT, sources TEXT, "
+    "web TEXT, fetches TEXT, ts INTEGER NOT NULL);"
+    "CREATE INDEX turns_chat ON turns(chat_id);"
+)
 
 _db = None
 
 
 def db_path():
-    return Path(os.getenv("CHAT_DB", "database/chats.db"))
+    return path_from_env("CHAT_DB", "database/chats.db")
+
+
+def _migrate(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(turns)")}
+    if "web" not in cols:
+        conn.execute("ALTER TABLE turns ADD COLUMN web TEXT")
+    if "fetches" not in cols:
+        conn.execute("ALTER TABLE turns ADD COLUMN fetches TEXT")
 
 
 def db():
     global _db
-    if _db is None:
-        path = db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fresh = not path.exists()
-        _db = sqlite3.connect(path, check_same_thread=False)
-        _db.row_factory = sqlite3.Row
-        if fresh:
-            _db.executescript(
-                "CREATE TABLE chats("
-                "id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
-                "title TEXT NOT NULL DEFAULT 'New chat', "
-                "pinned INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);"
-                "CREATE TABLE turns("
-                "chat_id TEXT NOT NULL, role TEXT NOT NULL, "
-                "content TEXT NOT NULL, thinking TEXT, sources TEXT, "
-                "web TEXT, ts INTEGER NOT NULL);"
-                "CREATE INDEX turns_chat ON turns(chat_id);"
-            )
-        else:
-            cols = {r["name"] for r in _db.execute("PRAGMA table_info(turns)")}
-            if "web" not in cols:
-                _db.execute("ALTER TABLE turns ADD COLUMN web TEXT")
+    _db = open_db(_db, db_path(), SCHEMA, _migrate)
     return _db
 
 
-def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=None):
+def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=None, fetches=None):
     if not chat_id or not text.strip():
         return
     # chat_id comes from the client, so a turn may only land in a chat the
@@ -57,18 +55,22 @@ def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=Non
         # Truncating the serialized JSON would leave it unparseable, so trim by
         # whole rounds and capped text until the encoding itself fits.
         kept = [part for part in thinking if part.strip()]
-        while kept and len(json.dumps(kept)) > MAX_THINKING:
-            over = len(json.dumps(kept)) - MAX_THINKING
+        size = len(json.dumps(kept))
+        while kept and size > MAX_THINKING:
+            over = size - MAX_THINKING
             kept[-1] = kept[-1][: max(len(kept[-1]) - over, 0)]
             if not kept[-1]:
                 kept.pop()
+            size = len(json.dumps(kept))
         thinking = json.dumps(kept) if kept else None
     elif thinking:
         thinking = thinking[:MAX_THINKING]
     webj = json.dumps(web) if web else None
+    fetchj = json.dumps(fetches) if fetches else None
     db().execute(
-        "INSERT INTO turns(chat_id,role,content,thinking,sources,web,ts) VALUES(?,?,?,?,?,?,?)",
-        (chat_id, role, text, thinking or None, meta, webj, now),
+        "INSERT INTO turns(chat_id,role,content,thinking,sources,web,fetches,ts) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (chat_id, role, text, thinking or None, meta, webj, fetchj, now),
     )
     db().execute(
         "INSERT INTO chats(id,user_id,ts) VALUES(?,?,?) "
@@ -99,7 +101,7 @@ def turns(user_id, chat_id, limit=100):
     # Newest window, then flipped back to reading order: a long chat has to
     # open on its latest exchange, not its first one.
     rows = db().execute(
-        "SELECT role,content,thinking,sources,web FROM turns "
+        "SELECT role,content,thinking,sources,web,fetches FROM turns "
         "WHERE chat_id=(SELECT id FROM chats WHERE id=? AND user_id=?) "
         "ORDER BY rowid DESC LIMIT ?",
         (chat_id, user_id, limit),
@@ -121,6 +123,8 @@ def turns(user_id, chat_id, limit=100):
             t["sources"] = json.loads(r["sources"])
         if r["web"]:
             t["web"] = json.loads(r["web"])
+        if r["fetches"]:
+            t["fetches"] = json.loads(r["fetches"])
         out.append(t)
     return out
 

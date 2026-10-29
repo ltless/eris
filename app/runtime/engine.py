@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
-from ..models import ModelError, stream_completion
+from ..models import ModelError, cached_capabilities, merge_tool_calls, stream_completion
 from ..security.permissions import READ_ONLY
 from ..tools.registry import ToolContext, registry
 from . import errors, events
@@ -73,18 +73,6 @@ def tool_message(call, content):
     return m
 
 
-def _merge_calls(calls, incoming):
-    """A round can carry several tool calls, and a server that re-sends one as
-    its arguments stream in must not have it run twice."""
-    for call in incoming:
-        for i, seen in enumerate(calls):
-            if call.get("id") and seen.get("id") == call["id"]:
-                calls[i] = call
-                break
-        else:
-            calls.append(call)
-
-
 def _drop_old_tool_messages(messages):
     """Keep the conversation bounded without losing the turns that matter.
 
@@ -93,7 +81,7 @@ def _drop_old_tool_messages(messages):
     """
     if len(messages) <= MAX_TOOL_MESSAGES:
         return messages
-    head = [m for m in messages[:2]]
+    head = messages[:2]
     tail = messages[-(MAX_TOOL_MESSAGES - 2):]
     return head + tail
 
@@ -116,6 +104,19 @@ class Engine:
         self._cancelled = False
         self._awaiting_approval = False
         self._allowed_tool_names = {s["function"]["name"] for s in registry.specs_for(self.ctx)}
+        # The offered list is the same every round: the registry is fixed for the
+        # life of a run, and only the final pass withholds it.
+        #
+        # A model that declares it does not call tools is offered none: the
+        # list is sent on every round, and one the model cannot use is prompt
+        # spent on a schema it will not answer. An undeclared model keeps the
+        # list, because nothing was said and a silent model is not a capable
+        # one — `None` means "unknown" here, never "no".
+        declared = cached_capabilities(request.model)
+        offer = declared is None or declared.get("tools", True)
+        specs = [s for s in registry.specs(request.tags)
+                 if s["function"]["name"] in self._allowed_tool_names]
+        self._specs = specs if offer and specs else None
 
     def cancel(self):
         """Ask the loop to stop at the next boundary. A tool already running is
@@ -170,7 +171,7 @@ class Engine:
 
             # The final pass drops the tool list so the model answers from
             # what it has rather than searching until the budget dies.
-            specs = None if final else self._allowed_specs(registry.specs(self.req.tags))
+            specs = None if final else self._specs
             self.budget.spend_model()
             self.result.model_calls += 1
 
@@ -195,7 +196,7 @@ class Engine:
                     ctx=self.req.ctx_tokens,
                 ):
                     if kind == "tool_calls":
-                        _merge_calls(calls, value)
+                        merge_tool_calls(calls, value)
                     elif kind == "delta":
                         text_parts.append(value)
                         yield self.emitter.emit(events.MODEL_DELTA, text=value, round=round_no)
@@ -264,11 +265,6 @@ class Engine:
         """Extra rounds the model-call budget can afford."""
         left = self.budget.model_calls - self.budget.spent_models
         return max(left - rounds - 1, 0)
-
-    def _allowed_specs(self, specs):
-        """Withhold tools the context can't use; offer those needing approval."""
-        out = [s for s in specs or [] if s["function"]["name"] in self._allowed_tool_names]
-        return out or None
 
     def _filter_calls(self, calls):
         """Drop names nobody registered, and keep the rest in order."""
