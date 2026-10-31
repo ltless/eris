@@ -338,10 +338,14 @@ class Engine:
                 )
                 self.result.stop_reason = "approval_required"
             else:
+                # `reason` is the tool's own short phrase for what stopped it,
+                # which is what the card replays; `message` is the sentence the
+                # model was given, which repeats the URL the card already shows.
                 yield self.emitter.emit(
                     events.TOOL_FAILED, tool=name, round=round_no,
                     code=(result.error or {}).get("code", errors.TOOL_ERROR),
                     message=(result.error or {}).get("message", ""),
+                    reason=str((result.metadata or {}).get("reason", "") or ""),
                 )
 
     def _note_source(self, source):

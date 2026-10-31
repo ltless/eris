@@ -150,6 +150,13 @@ def check_fetch_tool_shape():
     assert asyncio.run(fetch.run("not json")) == "No URL given."
     # SSRF: private address never fetched, message says so
     assert "Could not read" in asyncio.run(fetch.run({"url": "http://127.0.0.1:8000/"}))
+    # The short reason travels apart from the sentence, so the card can replay
+    # it after a reload without restating the URL it already shows.
+    ok, text, reason = asyncio.run(fetch.read({"url": "http://127.0.0.1:8000/"}))
+    assert not ok and reason == "not a public http(s) address", reason
+    assert text.startswith("Could not read"), text
+    ok, text, reason = asyncio.run(fetch.read({}))
+    assert not ok and reason and text == "No URL given."
 
 
 def check_numbering():

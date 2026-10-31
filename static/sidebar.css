@@ -95,7 +95,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   /* The row's right inset, on the element that actually ends the label, so
-     the text stops at the same x as a badge or an action button. */
+     the text stops at the same x as an action button. */
   padding-right: var(--sp-2);
 }
 
@@ -175,7 +175,7 @@
    Rows carry no padding of their own. Collapsed, the rail's content box is
    exactly --gut, so a padded row would push the icon off the axis the expanded
    state uses. The inset sits on the last thing in the row instead: the label's
-   trailing pad, the badge's margin, or the action strip. */
+   trailing pad or the action strip. */
 .side-new,
 .side-row,
 .side-profile {
@@ -385,35 +385,6 @@
 
 .side-row.active .lbl {
   font-weight: 600;
-}
-
-/* A count of things waiting on the operator. Sits at the end of the row so it
-   reads as a status on the entry rather than part of its name, and it is
-   hidden when there is nothing to say. */
-.side-badge {
-  flex: none;
-  margin-left: auto;
-  /* The row has no right padding, so the badge carries the trailing inset. */
-  margin-right: var(--sp-2);
-  min-width: 18px;
-  padding: 0 var(--sp-1);
-  border-radius: var(--radius-pill);
-  background: var(--danger);
-  color: var(--bg);
-  font-size: var(--fs-2xs);
-  font-weight: 700;
-  line-height: 18px;
-  text-align: center;
-}
-
-.side-badge[hidden] {
-  display: none;
-}
-
-/* Collapsed, the rail is icon-only: a badge floating beside an icon with no
-   label reads as a stray dot, so it goes with the text. */
-.side.collapsed .side-badge {
-  display: none;
 }
 
 /* Row actions ride over the end of the row instead of being removed from flow.

@@ -60,6 +60,45 @@ def assemble(budget, *, base_prompt, today, session="",
     return "\n\n".join(p for p in parts if p and p.strip())
 
 
+def recent(messages, limit=None, budget=None):
+    """The newest whole turns that fit, oldest first.
+
+    A reopened chat replays every turn it stored, and a long one would be sent
+    whole without this. Turns are kept or dropped as a unit — half a message
+    is worse than none — and the window opens on a user turn, because an
+    answer whose question fell off the end reads as the model talking to
+    itself.
+    """
+    budget = budget or ContextBudget()
+    room = limit or budget.session
+    kept = []
+    spent = 0
+    for m in reversed(messages):
+        cost = _message_cost(m)
+        if kept and spent + cost > room:
+            break
+        kept.append(m)
+        spent += cost
+    kept.reverse()
+    while len(kept) > 1 and kept[0].get("role") != "user":
+        kept.pop(0)
+    return kept or list(messages[-1:])
+
+
+def _message_cost(message):
+    """Rough size of one turn. An image is a fixed estimate: the payload is a
+    data URL, and counting its characters would call one picture the size of a
+    whole conversation."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return len(content)
+    if isinstance(content, list):
+        text = sum(len(p.get("text", "")) for p in content if isinstance(p, dict))
+        images = sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
+        return text + 4_000 * images
+    return 0
+
+
 def _blocks(items, label, budget, room):
     """One block per passage, with its origin, until `room` runs out."""
     if not items:

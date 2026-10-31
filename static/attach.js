@@ -155,7 +155,6 @@ const ErisAttach = (() => {
 
   return {
     add,
-    render,
     clear,
     // What the model in use declared about images, told by the picker when the
     // model changes. An undeclared model keeps `true`: nothing was said.

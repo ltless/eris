@@ -46,8 +46,11 @@ def sse_frame(event):
         return {"type": "fetch_done", "r": d.get("round", 0),
                 "ok": True, "chars": d.get("chars", 0)}
     if t == ev.TOOL_FAILED:
+        # `reason` is the short phrase the card replays; `message` is the full
+        # sentence the model got, kept for anything that shows it verbatim.
         return {"type": "tool_error", "tool": d.get("tool", ""), "r": d.get("round", 0),
-                "code": d.get("code", ""), "message": d.get("message", "")}
+                "code": d.get("code", ""), "message": d.get("message", ""),
+                "reason": d.get("reason", "")}
     if t == ev.MODEL_METRICS:
         return {"type": "metrics", **{k: v for k, v in d.items() if k != "round"}}
     if t == ev.APPROVAL_REQUIRED:

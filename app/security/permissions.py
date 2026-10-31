@@ -20,9 +20,6 @@ DESTRUCTIVE = "destructive"
 
 LEVELS = (READ_ONLY, WRITE, COMMAND, EXTERNAL, DESTRUCTIVE)
 
-# Reads don't need approval, even network ones: the operator asked a question.
-NEEDS_APPROVAL = frozenset({WRITE, COMMAND, DESTRUCTIVE})
-
 
 @dataclass(frozen=True)
 class Decision:

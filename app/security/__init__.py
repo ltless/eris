@@ -10,7 +10,6 @@ from .permissions import (
     DESTRUCTIVE,
     EXTERNAL,
     LEVELS,
-    NEEDS_APPROVAL,
     READ_ONLY,
     WRITE,
     Decision,
@@ -20,7 +19,7 @@ from .permissions import (
 )
 
 __all__ = [
-    "ALLOW", "COMMAND", "DESTRUCTIVE", "EXTERNAL", "LEVELS", "NEEDS_APPROVAL",
+    "ALLOW", "COMMAND", "DESTRUCTIVE", "EXTERNAL", "LEVELS",
     "READ_ONLY", "WRITE", "Decision", "approval_token", "authorize",
     "deny",
 ]

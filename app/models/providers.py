@@ -176,6 +176,40 @@ async def stream_completion(messages, model=None, thinking=False, tools=None, ct
         raise ModelError(f"cannot reach the model server at {chat_url()}: {e}") from e
 
 
+TITLE_PROMPT = (
+    "Write the title of this conversation as three to six words. Name the "
+    "topic as a noun phrase — not the question, not a sentence, no quotes. "
+    "Answer in the language of the message below. Reply with the title alone."
+)
+
+async def title_for(prompt, model=None):
+    """A short title naming what the first message is about.
+
+    A title is a second model call, so it is allowed to fail quietly: an
+    unreachable server, or an answer with no words in it, leaves the caller
+    with the message's own opening words instead — what it had before.
+    """
+    text = ""
+    try:
+        async for kind, value in stream_completion(
+            [
+                {"role": "system", "content": TITLE_PROMPT},
+                {"role": "user", "content": prompt[:2000]},
+            ],
+            model=model,
+            thinking=False,
+        ):
+            if kind == "delta":
+                text += value
+    except ModelError:
+        return ""
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    line = line.strip("\"'“”‘’*_ `")
+    for prefix in ("title:", "judul:"):
+        if line.lower().startswith(prefix):
+            line = line[len(prefix) :].strip()
+    return line[:80]
+
 async def list_models():
     """Model ids the endpoint reports. Empty when it cannot be reached."""
     try:

@@ -28,7 +28,10 @@ MIN_READABLE = 80
 MAX_BYTES = 2_000_000
 MAX_REDIRECTS = 5
 # A bot UA is refused outright by most CDNs, so this reads as an ordinary
-# browser and sends the headers one sends.
+# browser and sends the headers one sends. Sec-Fetch-* and the referer are what
+# most 403s actually check: without them a page that opens in a browser answers
+# 403 to the same URL here (medium, weather-atlas). A site that still refuses is
+# refusing the request itself, not its shape, and no header fixes that.
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -37,6 +40,11 @@ HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+    "Referer": "https://www.google.com/",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "cross-site",
+    "Upgrade-Insecure-Requests": "1",
 }
 
 _STRIP_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "form", "nav", "footer", "header")
@@ -173,18 +181,22 @@ TOOL = {
 
 
 async def read(args):
-    """The page text, or `(False, reason)` for a URL that could not be read."""
+    """`(ok, text, reason)` for one URL. `reason` is empty on success.
+
+    The reason is returned apart from the text so the card can say what happened
+    without the URL it is already showing.
+    """
     args = as_args(args)
     url = str(args.get("url", "") or "").strip()
     if not url:
-        return False, "No URL given."
+        return False, "No URL given.", "no URL was given"
     async with httpx.AsyncClient(
         timeout=TIMEOUT, follow_redirects=False, headers=HEADERS
     ) as c:
         text, reason = await fetch_page(c, url, settings.fetch_max_chars)
     if not text:
-        return False, f"Could not read {url}: {reason}."
-    return True, f"Page content for {url}:\n{text}"
+        return False, f"Could not read {url}: {reason}.", reason
+    return True, f"Page content for {url}:\n{text}", ""
 
 
 async def run(args):

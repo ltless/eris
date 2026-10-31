@@ -22,7 +22,6 @@
   --sp-4: 16px;     /* room: container padding, page gutter */
   --sp-5: 24px;     /* section: between turns, between cards */
   --sp-6: 32px;     /* page: region padding */
-  --sp-7: 48px;     /* page foot: last block to the end of the document */
 
   /* Radius scale. Three steps and a pill: a corner follows what the element
      is, not which file it happens to live in. */

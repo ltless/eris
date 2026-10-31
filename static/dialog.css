@@ -68,19 +68,6 @@
   outline: none;
 }
 
-/* A surface with no rail at all: one section does not need a column holding a
-   single item, nor a tab row repeating the word the panel already says. The
-   layout collapses to the panel alone. */
-.dlg-sheet--solo .dlg-layout {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
-}
-
-.dlg-sheet--solo .dlg-panel {
-  border: 0;
-  padding: 0;
-}
-
 .dlg-head {
   display: flex;
   align-items: center;

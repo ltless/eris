@@ -25,12 +25,16 @@ async def _search(args, ctx):
 
 
 async def _fetch(args, ctx):
-    ok, text = await fetch.read(args)
+    ok, text, reason = await fetch.read(args)
     url = str((args or {}).get("url", "") or "").strip()
     return ToolResult(
         success=ok,
         data={"url": url},
         text=text,
+        # `reason` is what the card shows on a replay, where the streamed frames
+        # are gone and all that is left is this row. The text keeps it for the
+        # model; the metadata keeps it for the reader.
+        metadata={"reason": reason},
         error=None if ok else {"code": TOOL_ERROR, "message": text, "retryable": False},
     )
 

@@ -199,7 +199,9 @@ function loadSession(id) {
         const web = (m.sources || []).filter((x) => x.kind === "web");
         const groups = (m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [])
           .map((g) => ({ r: g.r ?? 0, query: g.query, items: g.items }));
-        const reads = (m.fetches || []).map((f) => ({ r: f.r ?? 0, url: f.url, chars: f.chars, ok: f.ok }));
+        const reads = (m.fetches || []).map((f) => ({
+          r: f.r ?? 0, url: f.url, chars: f.chars, ok: f.ok, reason: f.reason || "",
+        }));
         const rows = new Map();
         for (const g of groups) {
           if (!rows.has(g.r)) rows.set(g.r, []);
@@ -238,7 +240,7 @@ function loadSession(id) {
             const fc = ErisToolCall.fetchPage(body);
             put(fc.el);
             fc.setUrl(f.url);
-            if (f.ok === false) fc.fail("the page could not be read");
+            if (f.ok === false) fc.fail(f.reason);
             else fc.done(f.chars);
           }
         }
@@ -252,7 +254,7 @@ function loadSession(id) {
   };
   if (!s.messages.length && s.remote) {
     fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
-      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, remote: true }));
+      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches }));
       s.remote = false;
       paint();
     }).catch(paint);
@@ -262,7 +264,10 @@ function loadSession(id) {
 }
 
 function toPayload(s) {
-  return s.messages.filter((m) => !m.remote).map((m) => {
+  // The whole chat goes back, including the turns rehydrated from the server.
+  // The server stores them but never replays them into a request, so leaving
+  // them out here is what made a reopened chat start over from nothing.
+  return s.messages.map((m) => {
     if (m.images && m.images.length) {
       const parts = [];
       if (m.content) parts.push({ type: "text", text: m.content });
@@ -460,7 +465,7 @@ async function send(text, regen = false) {
             const i = fetchQ.findIndex((f) => f.g.r === evt.r);
             if (i >= 0) {
               const [f] = fetchQ.splice(i, 1);
-              f.ctl.fail(evt.message || evt.code);
+              f.ctl.fail(evt.reason || evt.message || evt.code);
             }
           } else if (webCtl && (!evt.tool || evt.tool === "web_search")) {
             webCtl.fail(evt.message || evt.code);
@@ -483,6 +488,12 @@ async function send(text, regen = false) {
           // The server states prompt usage once per call, on the frame that
           // ends it, and nowhere else; the readout keeps the newest.
           ErisStats.metrics(evt);
+        } else if (evt.type === "title") {
+          // The server names the chat after the answer, from what was asked;
+          // the opening words it was showing were only a placeholder.
+          s.title = evt.title;
+          if (s.id === activeId) els.chatTitle.textContent = s.title;
+          ErisSidebar.setChats(sessions);
         } else if (evt.type === "delta") {
           raw += evt.text;
           let ans = body.querySelector(".ans");

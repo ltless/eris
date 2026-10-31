@@ -41,11 +41,12 @@ from .models import (
     think_value,
     # Re-exported for the tests, which reach the transport through this module.
     stream_completion,
+    title_for,
     to_native,
 )
 from .runtime import events as ev
 from .runtime.budgets import Budget
-from .runtime.context import ContextBudget, assemble
+from .runtime.context import ContextBudget, assemble, recent
 from .runtime.engine import Engine, RunRequest
 from .runtime.events import Emitter
 from .sse import sse, sse_frame
@@ -148,8 +149,11 @@ def _build_request(req: ChatRequest, u, messages):
     # panel's question; when the panel has not opened yet, `think_value` answers
     # for the unknown case with the value the request carried before any ladder.
     ladder = cached_ladder(model)
+    # A reopened chat sends its stored turns back with each question, so the
+    # window is what actually fits rather than everything the chat ever held.
+    window = recent(messages)
     return RunRequest(
-        messages=[{"role": "system", "content": system}] + messages,
+        messages=[{"role": "system", "content": system}] + window,
         model=model,
         thinking=think_value(prefs.get("effort"), ladder),
         ctx_tokens=int(prefs.get("ctx") or 0) or None,
@@ -170,8 +174,31 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
     async def gen():
         if req.regenerate:
             chats.drop_last_assistant(u["id"], req.chat_id)
+        # Asked before the run, because the run's own turns rename the chat:
+        # the model-written title only ever replaces the placeholder the first
+        # user message wrote, never a name someone chose.
+        name_this = bool(req.chat_id and query and not req.regenerate
+                         and chats.untitled(req.chat_id))
         web_groups = []
         fetch_rows = []
+        # Written here, not in `finally`: a client that signs out or refreshes
+        # before the stream ends would otherwise lose the turn it just asked.
+        async def remember():
+            if not req.chat_id:
+                return
+            if query and not req.regenerate:
+                chats.save_turn(u["id"], req.chat_id, "user", query)
+                chats.touch_title(req.chat_id, query)
+            answer = engine.result.answer
+            if answer:
+                chats.save_turn(
+                    u["id"], req.chat_id, "assistant", answer,
+                    thinking=engine.result.thinking or None,
+                    sources=_number_sources(engine.sources),
+                    web=[g for g in web_groups if g["items"]],
+                    fetches=fetch_rows or None,
+                )
+
         try:
             async for event in engine.run():
                 frame = sse_frame(event)
@@ -183,7 +210,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                         # read that failed is still a read the user watched, and
                         # the URL is only ever stated here.
                         fetch_rows.append({"r": frame["r"], "url": frame["url"],
-                                           "chars": 0, "ok": True})
+                                           "chars": 0, "ok": True, "reason": ""})
                     elif event.type == ev.TOOL_COMPLETED and frame.get("type") == "fetch_done":
                         row = next((f for f in reversed(fetch_rows)
                                     if f["r"] == frame["r"] and not f["chars"]), None)
@@ -194,6 +221,9 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                                     if f["r"] == frame["r"] and f["ok"]), None)
                         if row is not None:
                             row["ok"] = False
+                            # Stored so the card says why after a reload; the
+                            # streamed frame is the only other place it exists.
+                            row["reason"] = frame.get("reason", "")
                     elif event.type == ev.SOURCE_FOUND and frame.get("type") == "sources":
                         items = [i for i in frame["items"] if i.get("kind") == "web"]
                         if items:
@@ -207,25 +237,20 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                         yield sse(frame)
         except ModelError as e:
             yield sse({"type": "error", "message": f"Cannot reach model server: {e}"})
-        else:
-            yield "data: [DONE]\n\n"
         finally:
             # Persist even if the client hit Stop mid-stream: the turn happened
             # and should still be there after a refresh. No yields are allowed
             # in here, which is why the sources are collected above instead.
-            if req.chat_id:
-                if query and not req.regenerate:
-                    chats.save_turn(u["id"], req.chat_id, "user", query)
-                    chats.touch_title(req.chat_id, query)
-                answer = engine.result.answer
-                if answer:
-                    chats.save_turn(
-                        u["id"], req.chat_id, "assistant", answer,
-                        thinking=engine.result.thinking or None,
-                        sources=_number_sources(engine.sources),
-                        web=[g for g in web_groups if g["items"]],
-                        fetches=fetch_rows or None,
-                    )
+            await remember()
+        # Named after the answer, so the stream never waits on it, and only
+        # while the chat is still the placeholder the first message wrote. An
+        # empty title is the failure case, and the opening words stand.
+        if name_this:
+            title = await title_for(query, model=request.model)
+            if title:
+                chats.set_meta(u["id"], req.chat_id, title=title)
+                yield sse({"type": "title", "chat_id": req.chat_id, "title": title})
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 

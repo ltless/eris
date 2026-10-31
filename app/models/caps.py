@@ -84,19 +84,6 @@ def _capabilities(flags):
     }
 
 
-async def capabilities(model=None):
-    """What this model declares, or `None` when the endpoint does not say.
-
-    Cached per id: the answer is a property of the model file, and the endpoint
-    re-reads it on every listing request otherwise.
-    """
-    name = model or settings.model_name
-    if name in _CAPS:
-        return _CAPS[name]
-    await listed_capabilities()
-    return _CAPS.get(name)
-
-
 async def listed_capabilities():
     """Every model's flags, by id, from one listing read.
 

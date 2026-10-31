@@ -241,6 +241,20 @@ class ChatStreamChecks(unittest.TestCase):
         self.assertEqual(frame["type"], "tool_error")
         self.assertIn("timeout", frame["code"])
 
+    def test_a_failed_fetch_carries_the_reason_the_card_replays(self):
+        """After a reload the streamed frames are gone and only the stored row
+        is left, so the reason has to travel on the frame that closes the read."""
+        from app.runtime.events import Emitter
+        from app.runtime import events as ev
+
+        frame = api.sse_frame(Emitter().emit(
+            ev.TOOL_FAILED, tool="fetch_url", round=1,
+            code="tool_error", message="Could not read https://a.com: the server answered 403.",
+            reason="the server answered 403"))
+        self.assertEqual(frame["type"], "tool_error")
+        self.assertEqual(frame["tool"], "fetch_url")
+        self.assertEqual(frame["reason"], "the server answered 403")
+
     def test_a_fetch_is_its_own_card_and_carries_its_round(self):
         """A read opened by the model, not by the search: two frames, and the
         round on both so the browser can close the right card."""
@@ -271,6 +285,39 @@ class ChatStreamChecks(unittest.TestCase):
         plain = api.sse_frame(Emitter().emit(
             ev.SOURCE_FOUND, round=1, n=2, source="https://b.com", kind="web"))
         self.assertFalse(plain["items"][0]["read"])
+
+    def test_a_reopened_chat_sends_its_earlier_turns_back(self):
+        """A chat reloaded from storage reaches the model with its history.
+
+        This is the round trip the browser makes: the turn is stored, the chat
+        is loaded back, and the next question carries what was loaded. A server
+        that dropped the earlier turns here would answer as if the chat were
+        new, however complete the page looked.
+        """
+        sse_events(self.h.ask("first question", chat_id="c"))
+        history = self.h.client.get("/api/chats/c").json()["items"]
+        self.h.stub.payloads.clear()
+        replay = [{"role": t["role"], "content": t["content"]} for t in history]
+        replay.append({"role": "user", "content": "second question"})
+        sse_events(self.h.client.post("/api/chat", json={"messages": replay, "chat_id": "c"}))
+        fed = self.h.stub.calls[-1]["messages"]
+        self.assertEqual([m["role"] for m in fed],
+                         ["system", "user", "assistant", "user"])
+        self.assertIn("first question", fed[1]["content"])
+        self.assertIn("second question", fed[3]["content"])
+
+    def test_a_long_history_is_windowed_instead_of_sent_whole(self):
+        """A chat that outgrew the budget keeps its newest turns, whole."""
+        turns = []
+        for i in range(40):
+            turns.append({"role": "user", "content": f"q{i} " + "x" * 900})
+            turns.append({"role": "assistant", "content": f"a{i} " + "y" * 900})
+        turns.append({"role": "user", "content": "q40 " + "x" * 900})
+        sse_events(self.h.client.post("/api/chat", json={"messages": turns}))
+        fed = self.h.stub.calls[-1]["messages"]
+        self.assertLess(len(fed), len(turns) + 1, "the whole history was sent")
+        self.assertEqual(fed[1]["role"], "user", "the window does not open on a question")
+        self.assertIn("q40", fed[-1]["content"])
 
     def test_the_turn_is_persisted_and_reloads(self):
         chat_id = "chat-1"

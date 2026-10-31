@@ -1,5 +1,6 @@
-/* Tool call + thinking rows. Open/close flips stay instant; colour feedback
-   eases at --mo-fast like every other control.
+/* Tool call + thinking rows. The open and the close both animate the card's
+   height (--mo-base); colour feedback eases at --mo-fast like every other
+   control.
    Reuses style.css :root tokens. Danger red + hairlines are the only non-grey;
    the one exception is the favicon chip, whose quiet tint identifies a domain. */
 
@@ -106,17 +107,34 @@
   color: var(--text);
 }
 
-/* Body — display swap only */
+/* Body — a grid row that animates between 0fr and the element's own size, so
+   the card grows to whatever height its results turned out to be and collapses
+   back the same way. Nothing here measures anything. */
 .tc-body {
-  display: none;
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--mo-base) var(--mo-ease);
 }
 
 .tc[data-open="true"] .tc-body {
-  display: block;
+  grid-template-rows: 1fr;
 }
 
+/* The clip is what makes the 0fr row take no space at all, so the panel's own
+   margins never leak; min-height lets the 1fr row stay unclipped when open.
+   visibility keeps a collapsed card's links out of the tab order and the
+   accessibility tree, and holds until the collapse finishes so closing is a
+   movement rather than an instant blank. */
 .tc-inner {
   min-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  transition: visibility 0s linear var(--mo-base);
+}
+
+.tc[data-open="true"] .tc-inner {
+  visibility: visible;
+  transition: visibility 0s;
 }
 
 /* The panel is a card: one soft surface per tool call, the background the
@@ -290,27 +308,6 @@
   color: var(--danger);
 }
 
-.tc-retry {
-  margin-top: var(--sp-2);
-  padding: var(--sp-1) var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-xs);
-  cursor: pointer;
-}
-
-.tc-retry:hover {
-  border-color: var(--text);
-}
-
-.tc-retry:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: 2px;
-}
-
 /* Thinking text body */
 .tc-think {
   max-height: 220px;
@@ -337,7 +334,9 @@
   .tc-head,
   .tc-link,
   .tc-title,
-  .tc-chev {
+  .tc-chev,
+  .tc-body,
+  .tc-inner {
     transition: none;
   }
 }

@@ -6,7 +6,7 @@ the endpoint's URL shape, its NDJSON framing, or which of the two route
 families it is on.
 """
 
-from .caps import cached_capabilities, capabilities, listed_capabilities
+from .caps import cached_capabilities, listed_capabilities
 from .endpoint import base_url, chat_url
 from .ladder import (
     FALLBACK_LADDER,
@@ -27,6 +27,7 @@ from .providers import (
     parse_chunk,
     parse_metrics,
     stream_completion,
+    title_for,
     to_native,
 )
 from .stats import model_stats
@@ -34,10 +35,10 @@ from .stats import model_stats
 __all__ = [
     "FALLBACK_LADDER", "THINK_LEVELS",
     "ModelError",
-    "base_url", "cached_capabilities", "cached_ladder", "capabilities", "chat_url",
+    "base_url", "cached_capabilities", "cached_ladder", "chat_url",
     "effort_label", "healthy", "listed_capabilities",
     "list_models", "merge_tool_calls", "model_label", "normalize_call",
     "model_stats", "parse_chunk", "parse_metrics", "rung_index",
-    "stream_completion",
+    "stream_completion", "title_for",
     "think_ladder", "think_value", "to_native",
 ]

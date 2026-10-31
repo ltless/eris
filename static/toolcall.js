@@ -229,13 +229,18 @@ const ErisToolCall = (() => {
       s.meta.textContent = chars ? `${domain} · ${sizeText(chars)}` : domain;
     }
 
-    function fail(message) {
+    function fail(reason) {
       s.el.dataset.state = "error";
       s.label.textContent = "Could not read the page";
-      s.meta.textContent = message || "";
+      // The reason is the tool's own short phrase ("the server answered 403"),
+      // so it sits beside the label like the size does on a success, and the
+      // panel states it as a sentence for the reader who opened the card.
+      s.meta.textContent = reason || "";
       const e = document.createElement("div");
       e.className = "tc-error";
-      e.textContent = message || "The page could not be read.";
+      e.textContent = reason
+        ? "The page could not be read: " + reason + "."
+        : "The page could not be read.";
       s.panel.appendChild(e);
       s.setOpen(true);
     }

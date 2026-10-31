@@ -80,6 +80,13 @@ def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=Non
     db().commit()
 
 
+def untitled(chat_id):
+    """True while a chat has never been named: no row yet, or still the
+    placeholder the first user message overwrites."""
+    row = db().execute("SELECT title FROM chats WHERE id=?", (chat_id,)).fetchone()
+    return row is None or row["title"] == "New chat"
+
+
 def touch_title(chat_id, text):
     """Set title from first user message."""
     row = db().execute("SELECT title FROM chats WHERE id=?", (chat_id,)).fetchone()
