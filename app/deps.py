@@ -1,9 +1,9 @@
 """Who is making this call.
 
 Two scopes exist because two kinds of client do. A browser holds a session
-cookie and may do anything the account can do. A script, an editor, or an agent
-speaking MCP carries a token, and a token is read scope: it may ask the app
-questions, and it may not rewrite the account that issued it.
+cookie and may do anything the account can do. A script or an editor carries a
+token, and a token is read scope: it may ask the app questions, and it may not
+rewrite the account that issued it.
 """
 
 from fastapi import Cookie, Header, HTTPException
@@ -20,9 +20,9 @@ def require_user(session: str | None = Cookie(None),
                  authorization: str | None = Header(None)):
     """The account making this call, from a cookie or a bearer token.
 
-    A browser holds a session cookie. A script, an editor, or an agent speaking
-    MCP cannot, so it presents a token instead; `tokens.resolve` is the only
-    place the plaintext is ever compared.
+    A browser holds a session cookie. A script or an editor cannot, so it
+    presents a token instead; `tokens.resolve` is the only place the plaintext
+    is ever compared.
     """
     u = auth.get_session(session)
     if u:

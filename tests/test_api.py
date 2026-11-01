@@ -84,7 +84,7 @@ class StubModel:
         rounds_with_tools = sum(1 for p in self.payloads if p.get("tools"))
         if payload.get("tools") and self.calls_per_round and rounds_with_tools == 1:
             return [json.dumps({"message": {"content": "", "tool_calls": [{
-                "id": "c1", "function": {"name": "calc", "arguments": {"expression": "2+2"}},
+                "id": "c1", "function": {"name": "web_search", "arguments": {"query": "eris"}},
             }]}})]
         return [json.dumps({"message": {"content": self.answer}})]
 
@@ -186,7 +186,7 @@ class ChatStreamChecks(unittest.TestCase):
         fed_back = self.h.stub.calls[1]["messages"]
         self.assertTrue(any(m.get("role") == "tool" for m in fed_back),
                         "the tool result never reached the model")
-        self.assertIn("2+2 = 4", json.dumps(fed_back))
+        self.assertIn("No web results were found", json.dumps(fed_back))
 
     def test_a_model_that_keeps_asking_stops_at_the_round_budget(self):
         """The budget, not the model, decides when the tool rounds end."""
@@ -197,7 +197,7 @@ class ChatStreamChecks(unittest.TestCase):
                 if payload.get("tools"):
                     return [json.dumps({"message": {"content": "", "tool_calls": [{
                         "id": f"c{len(self.payloads)}",
-                        "function": {"name": "calc", "arguments": {"expression": "1+1"}},
+                        "function": {"name": "web_search", "arguments": {"query": "eris"}},
                     }]}})]
                 return [json.dumps({"message": {"content": "final"}})]
 
@@ -472,131 +472,6 @@ class TokenChecks(unittest.TestCase):
         c.close()
         listed = self.h.client.get("/api/tokens").json()["items"][0]
         self.assertGreater(listed["used"], 0)
-
-
-class McpChecks(unittest.TestCase):
-    """The MCP endpoint. The tools it exposes are the registered ones, so what is
-    checked is the protocol shape and the scope the token arrives with."""
-
-    HEADERS = {"Accept": "application/json, text/event-stream",
-               "Content-Type": "application/json"}
-
-    def setUp(self):
-        self.h = Harness()
-        self.value = self.h.client.post("/api/tokens", json={"name": "mcp"}).json()["token"]
-        self.client = TestClient(api.app)
-        self.client.headers.update({"Authorization": f"Bearer {self.value}"})
-
-    def tearDown(self):
-        self.client.close()
-        self.h.close()
-
-    def rpc(self, method, params=None, rpc_id=1, headers=None, **kw):
-        body = {"jsonrpc": "2.0", "id": rpc_id, "method": method}
-        if params is not None:
-            body["params"] = params
-        return self.client.post("/mcp", json=body, headers=headers or self.HEADERS, **kw)
-
-    def test_initialize_names_the_protocol_and_issues_a_session(self):
-        r = self.rpc("initialize", {"protocolVersion": "2025-06-18",
-                                    "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}})
-        self.assertEqual(r.status_code, 200, r.text)
-        result = r.json()["result"]
-        self.assertEqual(result["protocolVersion"], "2025-06-18")
-        self.assertEqual(result["serverInfo"]["name"], "eris")
-        self.assertTrue(r.headers.get("mcp-session-id"))
-
-    def test_tools_list_returns_the_registered_schemas(self):
-        r = self.rpc("tools/list", {})
-        tools = r.json()["result"]["tools"]
-        names = sorted(t["name"] for t in tools)
-        self.assertEqual(names, ["calc", "fetch_url", "web_search"])
-        for t in tools:
-            self.assertIn("inputSchema", t)
-        calc = next(t for t in tools if t["name"] == "calc")
-        self.assertTrue(calc["annotations"]["readOnlyHint"])
-
-    def test_a_read_only_tool_runs_through_mcp(self):
-        r = self.rpc("tools/call", {"name": "calc", "arguments": {"expression": "2+2"}})
-        self.assertEqual(r.status_code, 200, r.text)
-        result = r.json()["result"]
-        self.assertFalse(result["isError"])
-        self.assertIn("4", result["content"][0]["text"])
-
-    def test_an_unknown_tool_is_a_protocol_error(self):
-        """The request was malformed as a request — this is not a tool saying no."""
-        r = self.rpc("tools/call", {"name": "nope", "arguments": {}})
-        err = r.json()["error"]
-        self.assertEqual(err["code"], -32602)
-        self.assertIn("nope", err["message"])
-
-    def test_an_unknown_method_is_a_protocol_error(self):
-        self.assertEqual(self.rpc("tools/nope").json()["error"]["code"], -32601)
-
-    def test_a_notification_is_accepted_with_no_body(self):
-        r = self.client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-                             headers=self.HEADERS)
-        self.assertEqual(r.status_code, 202)
-        self.assertEqual(r.content, b"")
-
-    def test_a_bad_accept_header_is_refused(self):
-        r = self.rpc("tools/list", {}, headers={"Accept": "application/json"})
-        self.assertEqual(r.status_code, 406)
-
-    def test_a_bad_version_is_refused(self):
-        r = self.rpc("tools/list", {}, headers={**self.HEADERS, "MCP-Protocol-Version": "1999-01-01"})
-        self.assertEqual(r.status_code, 400)
-
-    def test_an_unknown_session_is_404(self):
-        r = self.rpc("tools/list", {}, headers={**self.HEADERS, "Mcp-Session-Id": "nope"})
-        self.assertEqual(r.status_code, 404)
-
-    def test_delete_terminates_the_session(self):
-        sid = self.rpc("initialize", {"protocolVersion": "2025-06-18"}).headers["mcp-session-id"]
-        r = self.client.delete("/mcp", headers={**self.HEADERS, "Mcp-Session-Id": sid})
-        self.assertEqual(r.status_code, 204)
-        again = self.rpc("tools/list", {}, headers={**self.HEADERS, "Mcp-Session-Id": sid})
-        self.assertEqual(again.status_code, 404)
-
-    def test_get_is_405_because_this_server_never_pushes(self):
-        self.assertEqual(self.client.get("/mcp", headers=self.HEADERS).status_code, 405)
-
-    def test_a_cross_origin_request_is_refused(self):
-        r = self.rpc("tools/list", {}, headers={**self.HEADERS, "Origin": "https://evil.example"})
-        self.assertEqual(r.status_code, 403)
-
-    def test_an_anonymous_caller_cannot_speak_mcp(self):
-        anon = TestClient(api.app)
-        r = anon.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-                      headers=self.HEADERS)
-        self.assertEqual(r.status_code, 401)
-        anon.close()
-
-    def test_a_gated_tool_refuses_rather_than_running(self):
-        """Nothing behind a token can answer "may I?", so a tool that changes
-        state comes back as a tool error the client can read rather than as a
-        silent run."""
-        from app.tools.registry import Tool, ToolContext, registry
-        from app.security import permissions
-
-        called = []
-
-        async def handler(args, ctx):
-            called.append(args)
-            return "ran"
-
-        tool = Tool(
-            name="write_thing", description="Changes something.", parameters={"type": "object"},
-            handler=handler, permission=permissions.WRITE, tags=("chat",),
-        )
-        registry.add(tool)
-        try:
-            r = self.rpc("tools/call", {"name": "write_thing", "arguments": {}})
-            result = r.json()["result"]
-            self.assertTrue(result["isError"])
-            self.assertEqual(called, [], "a refused tool ran")
-        finally:
-            registry.remove("write_thing")
 
 
 if __name__ == "__main__":

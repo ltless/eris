@@ -21,15 +21,34 @@ const ErisSidebar = (() => {
     return box;
   }
 
+  /* The header carries two copies of the same control: the logo, which is the
+     one the rail keeps, and a copy at the far end that only exists in the
+     expanded row. Only one of them is ever a button, and which one follows the
+     state, so the label, the tab stop and the accessibility tree entry move
+     together rather than being announced twice. */
   function applyCollapse() {
     if (!side) return;
     side.classList.toggle("collapsed", collapsed);
-    const btn = $("sideToggle");
-    if (btn) {
-      const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
-      btn.setAttribute("aria-label", label);
-      btn.setAttribute("aria-expanded", String(!collapsed));
-      btn.title = `${label} (Ctrl+B)`;
+
+    /* The drawer ignores the rail, so the logo is never the control there. */
+    const rail = collapsed && !mobile();
+    const label = collapsed ? "Expand sidebar" : "Collapse sidebar";
+    const hint = `${label} (Ctrl+B)`;
+    const live = rail ? $("sideToggle") : $("sideMin");
+    const dead = rail ? $("sideMin") : $("sideToggle");
+
+    if (live) {
+      live.setAttribute("aria-label", label);
+      live.setAttribute("aria-expanded", String(!collapsed));
+      live.title = hint;
+      live.removeAttribute("aria-hidden");
+      live.removeAttribute("tabindex");
+    }
+    if (dead) {
+      dead.removeAttribute("aria-label");
+      dead.removeAttribute("title");
+      dead.setAttribute("aria-hidden", "true");
+      dead.tabIndex = -1;
     }
   }
 
@@ -152,9 +171,20 @@ const ErisSidebar = (() => {
       collapsed = false;
     }
 
+    /* The logo answers a click only where it is the control, which is the rail,
+       and there the only thing it can do is expand. Expanded it is the mark and
+       the button at the end of the row takes the click; the drawer ignores the
+       rail, so it does nothing there. */
     const toggleBtn = $("sideToggle");
     if (toggleBtn) {
-      toggleBtn.onclick = () => (mobile() ? close() : toggle());
+      toggleBtn.onclick = () => {
+        if (!mobile() && collapsed) toggle();
+      };
+    }
+
+    const minBtn = $("sideMin");
+    if (minBtn) {
+      minBtn.onclick = () => (mobile() ? close() : toggle());
     }
 
     const newBtn = $("sideNew");
@@ -178,8 +208,11 @@ const ErisSidebar = (() => {
       }
     });
 
+    /* Crossing the breakpoint changes which copy is the control, so the labels
+       and the tab stop have to be re-resolved with it. */
     window.addEventListener("resize", () => {
       if (!mobile()) close();
+      applyCollapse();
     });
 
     applyCollapse();

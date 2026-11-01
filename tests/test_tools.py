@@ -9,7 +9,7 @@ sys.path.insert(0, ".")
 from datetime import datetime, timedelta, timezone
 
 from app import api
-from app.tools import calc, fetch, search
+from app.tools import fetch, search
 
 TOOL = search.TOOL
 
@@ -42,6 +42,56 @@ def check_time_range():
     assert search.time_range_for({"time_range": "bogus"}, "latest ai model") == "week"
     assert search.time_range_for({}, "harga emas hari ini") == "week"
     assert search.time_range_for({}, "what is dependency injection") == ""
+    # What the small models actually send: quotes kept on, or two options run
+    # together. Both were refused by the schema before they ever reached SearXNG.
+    assert search.time_range_for({"time_range": '"day"'}, "anything") == "day"
+    assert search.time_range_for({"time_range": " YEAR "}, "anything") == "year"
+
+
+def _capturing_client(sent):
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": []}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None):
+            sent.update(params or {})
+            return FakeResp()
+
+    return FakeClient
+
+
+def check_enum_slips_reach_searxng():
+    """A stray value is a dropped argument, never a refused call."""
+    from app.tools import builtin
+    from app.tools.registry import registry
+
+    sent = {}
+    old_client = search.httpx.AsyncClient
+    search.httpx.AsyncClient = _capturing_client(sent)
+    try:
+        builtin.register_builtins()
+        r = asyncio.run(registry.call(
+            "web_search",
+            {"query": "gold price", "categories": "generalnews", "time_range": '"day"'},
+        ))
+    finally:
+        search.httpx.AsyncClient = old_client
+    assert r.success, r.error
+    assert sent["categories"] == "news", sent
+    assert sent["time_range"] == "day", sent
 
 
 def check_render():
@@ -243,22 +293,10 @@ def check_render_page_content():
     assert "could not be read" not in skipped
 
 
-def check_calc():
-    assert asyncio.run(calc.run({"expression": "2*1000000 + 6*3000000"})) == "2*1000000 + 6*3000000 = 20000000"
-    assert "= 2.5" in asyncio.run(calc.run({"expression": "5/2"}))
-    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "__import__('os').system('echo x')"}))
-    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "'abc'}"}))
-    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "2**9999999"}))
-    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "1/0"}))
-    assert "cannot evaluate" in asyncio.run(calc.run({"expression": "9**9**9"}))
-    assert "= 81" in asyncio.run(calc.run({"expression": "(1+2)**(2+2)"}))
-    assert "no expression" in asyncio.run(calc.run({}))
-
-
 def check_registry_chat_tools():
     from app.tools.registry import registry
     chat_tools = {t.name for t in registry.all() if "chat" in t.tags}
-    assert chat_tools == {"web_search", "fetch_url", "calc"}
+    assert chat_tools == {"web_search", "fetch_url"}
 
 
 def check_native_stream():
@@ -398,6 +436,98 @@ def check_quote_roundtrip():
     )
     assert api._with_quote("", "cuma kutipan") == "> cuma kutipan"
     assert api._with_quote("apa ini", "") == "apa ini"
+
+    chats._db.close()
+    chats._db = None
+    del os.environ["CHAT_DB"]
+    os.unlink(path)
+
+
+def check_images_roundtrip():
+    import base64
+    import os
+    import tempfile
+    from app import chats
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    os.environ["CHAT_DB"] = path
+    chats._db = None
+
+    jpeg = b"\xff\xd8\xff" + b"body" * 50
+    png = b"\x89PNG\r\n\x1a\n" + b"pixels" * 50
+    url = lambda raw, mime: f"data:{mime};base64,{base64.b64encode(raw).decode()}"
+
+    # A turn can be nothing but an image.
+    chats.save_turn(1, "c1", "user", "", images=[jpeg, png])
+    turn = chats.turns(1, "c1")[0]
+    assert turn["content"] == ""
+    assert [u.split(",")[0] for u in turn["images"]] == ["data:image/jpeg;base64", "data:image/png;base64"]
+    assert turn["images"][0] == url(jpeg, "image/jpeg")
+
+    # The type comes from the bytes, not from what the data URL claimed.
+    assert chats.decode_data_url(url(jpeg, "image/png")) == jpeg
+    assert chats.decode_data_url("https://example.com/a.png") is None
+    assert chats.decode_data_url("data:image/png;base64,!!!!") is None
+    assert chats.decode_data_url("data:image/png,notbase64") is None
+
+    # Something that is not an image is dropped rather than stored as one.
+    assert chats.pack_images([b"not an image"]) is None
+    assert chats.pack_images([jpeg, b"not an image"]) is not None
+
+    # The cap is on the bytes, and it stops rather than overruns.
+    chats.MAX_IMAGE_BYTES = len(jpeg) + 10
+    try:
+        blob = chats.pack_images([jpeg, jpeg])
+        assert chats.unpack_images(blob) == [url(jpeg, "image/jpeg")], blob
+    finally:
+        chats.MAX_IMAGE_BYTES = 4_000_000
+
+    # A turn with no images carries no column and no key.
+    chats.save_turn(1, "c1", "user", "text only")
+    assert "images" not in chats.turns(1, "c1")[-1]
+
+    chats._db.close()
+    chats._db = None
+    del os.environ["CHAT_DB"]
+    os.unlink(path)
+
+
+def check_files_roundtrip():
+    import os
+    import tempfile
+    from app import api, chats
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    os.environ["CHAT_DB"] = path
+    chats._db = None
+
+    files = [{"name": "notes.txt", "text": "hello\nworld"}, {"name": "a.py", "text": "print(1)"}]
+    # A turn can be nothing but a file.
+    chats.save_turn(1, "c1", "user", "", files=files)
+    turn = chats.turns(1, "c1")[0]
+    assert turn["files"] == files, turn
+    assert turn["content"] == ""
+
+    # The model reads each file under its own name, in a fence.
+    joined = api._with_files("what is this?", files)
+    assert "### File: notes.txt\n```txt\nhello\nworld\n```" in joined, joined
+    assert "what is this?" in joined and joined.endswith("what is this?")
+    assert api._with_files("", None) == ""
+
+    # A file alone still carries a turn to the model, and names the chat.
+    cleaned = api._clean_files([{"name": "x.md", "text": "a" * 90_000}])
+    assert cleaned[0]["name"] == "x.md"
+    assert cleaned[0]["text"].endswith("[... truncated]")
+    assert len(cleaned[0]["text"]) <= api.MAX_FILE_CHARS + len("\n[... truncated]")
+    assert api._clean_files([]) is None
+    assert api._clean_files(None) is None
+
+    chats.save_turn(1, "c1", "user", "text only")
+    assert "files" not in chats.turns(1, "c1")[-1]
 
     chats._db.close()
     chats._db = None

@@ -41,7 +41,10 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  width: 100%;
+  /* Hugs its own content: the row is a toggle, and a toggle that spans the
+     whole column turns empty space to the right of the label into a target.
+     The indent below only lines the icon up with the card's own column. */
+  width: fit-content;
   max-width: 100%;
   min-height: 26px;
   margin-left: -6px;
@@ -79,8 +82,14 @@
   color: var(--faint);
 }
 
+/* An empty meta still sits in the flex row, so its margin would push the
+   chevron away from the label. Dropping it keeps every card's header spacing
+   identical whether or not it has a count to show. */
+.tc-meta:empty {
+  display: none;
+}
+
 .tc-chev {
-  margin-left: auto;
   flex: none;
   color: var(--faint);
   transition: transform var(--mo-base) var(--mo-ease);

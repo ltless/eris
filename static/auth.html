@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Eris — Login</title>
+  <link rel="icon" type="image/png" href="/icon.png" />
   <script src="/theme.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -15,6 +16,9 @@
 <body>
   <main class="auth">
     <div class="auth-card">
+      <!-- Decorative: the heading below already names the product, so the art
+           adds no text for assistive tech to read. -->
+      <img class="auth-mark" src="/icon.png" alt="" width="128" height="128" />
       <h1 class="auth-brand">Eris</h1>
       <div class="auth-tabs" role="tablist" aria-label="Account access">
         <button type="button" id="tabLogin" class="on" role="tab" aria-selected="true"

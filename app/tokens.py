@@ -1,11 +1,11 @@
 """Long-lived API tokens, in sqlite.
 
 A session cookie belongs to one browser and dies with it. A token is for
-scripts, editors, or agents speaking MCP. Only the hash is stored; the
-plaintext exists once in the response that created it.
+scripts or editors. Only the hash is stored; the plaintext exists once in the
+response that created it.
 
-Tokens are scoped to read: they may call the API and MCP server, but are
-refused at routes that change the account itself.
+Tokens are scoped to read: they may call the API, but are refused at routes
+that change the account itself.
 """
 
 import hashlib

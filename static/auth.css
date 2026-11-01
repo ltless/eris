@@ -13,6 +13,20 @@
   padding: var(--sp-5);
 }
 
+/* The same mark the sidebar carries, above the name. Dark ink on transparent,
+   so it reverses instead of sitting on a plate. */
+.auth-mark {
+  display: block;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto var(--sp-3);
+  object-fit: contain;
+}
+
+[data-theme="dark"] .auth-mark {
+  filter: invert(1);
+}
+
 .auth-brand {
   font-size: var(--fs-2xl);
   font-weight: 700;

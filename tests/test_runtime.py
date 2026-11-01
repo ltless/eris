@@ -40,7 +40,7 @@ class RegistryChecks(unittest.TestCase):
     def test_registry_is_idempotent(self):
         builtin.register_builtins()
         self.assertEqual(sorted(registry.names()),
-                         ["calc", "fetch_url", "web_search"])
+                         ["fetch_url", "web_search"])
 
     def test_specs_carry_name_description_and_schema(self):
         spec = next(s for s in registry.specs(("chat",))
@@ -50,7 +50,7 @@ class RegistryChecks(unittest.TestCase):
         self.assertEqual(spec["function"]["parameters"]["required"], ["query"])
 
     def test_invalid_arguments_are_refused_before_running(self):
-        r = asyncio.run(registry.call("calc", {"expression": 12}))
+        r = asyncio.run(registry.call("web_search", {"query": 12}))
         self.assertFalse(r.success)
         self.assertEqual(r.error["code"], errors.INVALID_ARGUMENTS)
 
@@ -302,7 +302,7 @@ class StubModel:
         for i in range(self.calls_per_round):
             out.append(json.dumps({"message": {"content": "", "tool_calls": [{
                 "id": f"c{rounds}_{i}",
-                "function": {"name": "calc", "arguments": {"expression": "1+1"}},
+                "function": {"name": "web_search", "arguments": {"query": "eris"}},
             }]}}))
         return out
 

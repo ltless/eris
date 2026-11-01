@@ -36,7 +36,6 @@ const els = {
   tokenNew: $("tokenNew"),
   tokenValue: $("tokenValue"),
   tokenCopy: $("tokenCopy"),
-  mcpWhere: $("mcpWhere"),
   tokenList: $("tokenList"),
   tokenEmpty: $("tokenEmpty"),
 };
@@ -167,7 +166,6 @@ function paintTokens(items) {
 async function loadTokens() {
   const j = await jget("/api/tokens");
   paintTokens(j.items || []);
-  els.mcpWhere.textContent = `MCP clients connect to ${location.origin}/mcp with a token as a bearer credential.`;
 }
 
 async function revokeToken(t) {

@@ -174,7 +174,7 @@ function addRegen(body, s) {
     if (sending) return;
     const last = s.messages.at(-1);
     const q = s.messages.at(-2);
-    if (!last || last.role !== "assistant" || !q || q.role !== "user" || typeof q.content !== "string" || !q.content || (q.images && q.images.length)) return;
+    if (!last || last.role !== "assistant" || !q || q.role !== "user" || typeof q.content !== "string" || !q.content || (q.images && q.images.length) || (q.files && q.files.length)) return;
     send(q.content, true);
   });
   body.append(b);
@@ -222,7 +222,31 @@ function paintRole(el) {
   el.textContent = "AI";
 }
 
-function addMessage(role, text, images, quote) {
+// A file a turn carried, named rather than printed. It sits in the row between
+// the avatar and the question, so the chip reads as riding along with the turn.
+// Clicking one opens the text the model was handed.
+function filesRow(files) {
+  if (!files || !files.length) return null;
+  const row = document.createElement("div");
+  row.className = "files";
+  for (const f of files) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "file-chip";
+    chip.title = f.name;
+    chip.setAttribute("aria-label", `Open ${f.name}`);
+    chip.insertAdjacentHTML("afterbegin", ErisAttach.iconFor(f.name));
+    const nm = document.createElement("span");
+    nm.className = "chip-name";
+    nm.textContent = f.name;
+    chip.append(nm);
+    chip.addEventListener("click", () => ErisFileView.open(f, chip));
+    row.append(chip);
+  }
+  return row;
+}
+
+function addMessage(role, text, images, quote, files) {
   document.getElementById("empty")?.remove();
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
@@ -238,21 +262,24 @@ function addMessage(role, text, images, quote) {
       const im = document.createElement("img");
       im.src = src;
       im.alt = "attachment";
-      im.addEventListener("click", () => window.open(src, "_blank"));
+      im.addEventListener("click", () => ErisLightbox.open(src, im.alt, im));
       imgs.append(im);
     }
     body.append(imgs);
   }
   if (role === "user") {
-    // Two surfaces, not one: the quote is text the reader picked out of an
-    // earlier answer and the bubble is what they typed, so the quote keeps its
-    // own smaller chip instead of riding inside the question.
     if (quote) {
       const q = document.createElement("div");
       q.className = "quoted";
       q.textContent = quote;
       body.append(q);
     }
+    // A file is named, not printed: the model got its text, the reader only
+    // needs to see which file the answer is about. It rides in the body above
+    // the question, where the quote sits, so both read as what the turn carried
+    // rather than as a column of the answer.
+    const filesEl = filesRow(files);
+    if (filesEl) body.append(filesEl);
     if (text) {
       const t = document.createElement("div");
       t.className = "bubble";
@@ -262,7 +289,10 @@ function addMessage(role, text, images, quote) {
     const av = document.createElement("div");
     av.className = "avatar";
     paintAvatar(av);
-    wrap.append(av, body);
+    wrap.append(av);
+    // A turn that is only a file has nothing to put in the body, and an empty
+    // one would still take the row's gap.
+    if (body.childNodes.length) wrap.append(body);
   } else {
     body.innerHTML = ErisMarkdown.render(text);
     paintRole(roleEl);
@@ -277,7 +307,7 @@ function addMessage(role, text, images, quote) {
 function refresh() {
   const len = els.input.value.length;
   const has =
-    els.input.value.trim().length > 0 || ErisAttach.hasImage() || !!pendingQuote;
+    els.input.value.trim().length > 0 || ErisAttach.hasImage() || ErisAttach.hasFile() || !!pendingQuote;
   const over = len > MAX;
   els.send.disabled = !sending && (!has || over);
   els.count.textContent = len + " / " + MAX;
@@ -327,7 +357,7 @@ function loadSession(id) {
         const answerRows = new Map(
           (Array.isArray(m.answers) ? m.answers : []).map((a) => [a.r ?? 0, a.text])
         );
-        const body = addMessage(m.role, answerRows.size ? "" : m.content, m.images, m.quote);
+        const body = addMessage(m.role, answerRows.size ? "" : m.content, m.images, m.quote, m.files);
         const web = (m.sources || []).filter((x) => x.kind === "web");
         const groups = (m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [])
           .map((g) => ({ r: g.r ?? 0, query: g.query, items: g.items }));
@@ -394,7 +424,7 @@ function loadSession(id) {
   };
   if (!s.messages.length && s.remote) {
     fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
-      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, quote: m.quote, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, answers: m.answers }));
+      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, quote: m.quote, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, answers: m.answers, images: m.images, files: m.files }));
       s.remote = false;
       paint();
     }).catch(paint);
@@ -411,13 +441,14 @@ function toPayload(s) {
     // Sent as its own field so the server can keep the two apart on disk; it is
     // the server that joins them again into what the model reads.
     const quoted = m.quote ? { quote: m.quote } : {};
+    const attached = m.files && m.files.length ? { files: m.files } : {};
     if (m.images && m.images.length) {
       const parts = [];
       if (m.content) parts.push({ type: "text", text: m.content });
       for (const url of m.images) parts.push({ type: "image_url", image_url: { url } });
-      return { role: m.role, content: parts, ...quoted };
+      return { role: m.role, content: parts, ...quoted, ...attached };
     }
-    return { role: m.role, content: m.content, ...quoted };
+    return { role: m.role, content: m.content, ...quoted, ...attached };
   });
 }
 
@@ -437,9 +468,11 @@ async function send(text, regen = false, quote = "") {
     ErisSidebar.setActive(activeId);
   }
   let images = [];
+  let files = [];
 
   if (!regen) {
     images = ErisAttach.images();
+    files = ErisAttach.files();
     ErisAttach.clear();
   }
 
@@ -447,15 +480,16 @@ async function send(text, regen = false, quote = "") {
   refresh();
 
   if (!regen) {
-    addMessage("user", text, images, quote);
+    addMessage("user", text, images, quote, files);
     s.messages.push({
       role: "user",
       content: text,
       ...(images.length ? { images } : {}),
+      ...(files.length ? { files } : {}),
       ...(quote ? { quote } : {}),
     });
     if (s.messages.length === 1) {
-      s.title = (text || quote).slice(0, 40) || (images.length ? "Image" : "New chat");
+      s.title = (text || quote).slice(0, 40) || (files[0]?.name || (images.length ? "Image" : "New chat"));
       els.chatTitle.textContent = s.title;
       ErisSidebar.setChats(sessions);
     }
@@ -501,22 +535,45 @@ async function send(text, regen = false, quote = "") {
     const el = document.createElement("div");
     el.className = "status";
     el.setAttribute("role", "status");
-    el.textContent = label;
+    const line = document.createElement("span");
+    line.className = "status-line on";
+    line.textContent = label;
+    el.append(line);
     body.append(el);
     waitEl = el;
   };
   // The line already on screen is not replaced by its own repeat, so the
-  // sequence reads as movement rather than a stutter. The element stays put and
-  // only its text changes, which is also what a screen reader hears.
+  // sequence reads as movement rather than a stutter. The new line arrives
+  // under the old one and the two cross-fade, so the swap is a transition
+  // rather than a flicker. One role="status" element holds them both, which is
+  // what keeps the announcement to a single line while two are on screen.
   const nextWait = () => {
     let i = waitLast;
     while (i === waitLast) i = Math.floor(Math.random() * WAITING.length);
     waitLast = i;
-    if (!waitEl) setStatus(WAITING[i]);
-    else waitEl.textContent = WAITING[i];
+    if (!waitEl) {
+      setStatus(WAITING[i]);
+      return;
+    }
+    const prev = waitEl.querySelector(".status-line.on");
+    // Whatever left last time is fully faded by now, so it goes before the next
+    // one arrives and the cell never holds more than the pair mid-swap.
+    waitEl.querySelectorAll(".status-line:not(.on)").forEach((n) => n.remove());
+    const line = document.createElement("span");
+    line.className = "status-line";
+    line.textContent = WAITING[i];
+    waitEl.append(line);
+    // The outgoing line leaves the accessibility tree with its opacity, so the
+    // region still reads as one line.
+    if (prev) prev.setAttribute("aria-hidden", "true");
+    // Commits the arrived-at opacity before the classes flip, so the cross-fade
+    // has a starting frame instead of resolving within the one that added it.
+    void line.offsetHeight;
+    prev?.classList.remove("on");
+    line.classList.add("on");
   };
   nextWait();
-  waitTimer = setInterval(nextWait, 2400);
+  waitTimer = setInterval(nextWait, 5000);
   let raw = "";
   let aborted = false;
   let thinkRounds = [];
@@ -791,7 +848,7 @@ els.form.addEventListener("submit", (e) => {
   }
   const text = els.input.value.trim();
   if (els.input.value.length > MAX) return;
-  const hasImg = ErisAttach.hasImage();
+  const hasImg = ErisAttach.hasImage() || ErisAttach.hasFile();
   if (!text && !hasImg && !pendingQuote) return;
   const quote = pendingQuote;
   setQuote("");
@@ -838,19 +895,23 @@ els.input.addEventListener("paste", (e) => {
   }
 });
 
+// The attachment row sits above the box now, so the whole form is the target:
+// dropping on a chip lands where the drop on the box does. dragleave fires
+// again for every child the pointer crosses, so it only clears when the pointer
+// has actually left the form.
 for (const ev of ["dragover", "dragenter"]) {
-  els.box.addEventListener(ev, (e) => {
+  els.form.addEventListener(ev, (e) => {
     e.preventDefault();
     els.box.classList.add("drag");
   });
 }
-for (const ev of ["dragleave", "drop"]) {
-  els.box.addEventListener(ev, (e) => {
-    e.preventDefault();
-    els.box.classList.remove("drag");
-  });
-}
-els.box.addEventListener("drop", (e) => {
+els.form.addEventListener("dragleave", (e) => {
+  if (els.form.contains(e.relatedTarget)) return;
+  els.box.classList.remove("drag");
+});
+els.form.addEventListener("drop", (e) => {
+  e.preventDefault();
+  els.box.classList.remove("drag");
   const files = e.dataTransfer?.files;
   if (files?.length) ErisAttach.add(files);
 });

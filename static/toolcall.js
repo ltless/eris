@@ -77,8 +77,7 @@ const ErisToolCall = (() => {
       I.alert +
       '<span class="tc-label" aria-live="polite">' +
       labelText +
-      '</span><span class="tc-meta"></span>' +
-      I.chev +
+      '</span>' + I.chev + '<span class="tc-meta"></span>' +
       '</button><div class="tc-body" id="' +
       id +
       '"><div class="tc-inner"><div class="tc-panel"></div></div></div>';

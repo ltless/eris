@@ -5,9 +5,9 @@ handlers that need run context and wraps results with render text for the model
 and source lists for the UI.
 """
 
-from . import calc, fetch, search
-from ..security import EXTERNAL, READ_ONLY
-from ..runtime.errors import INVALID_ARGUMENTS, TOOL_ERROR
+from . import fetch, search
+from ..security import EXTERNAL
+from ..runtime.errors import TOOL_ERROR
 from .registry import Tool, ToolResult, registry
 
 CHAT_TAGS = ("chat",)
@@ -36,16 +36,6 @@ async def _fetch(args, ctx):
         # model; the metadata keeps it for the reader.
         metadata={"reason": reason},
         error=None if ok else {"code": TOOL_ERROR, "message": text, "retryable": False},
-    )
-
-
-def _calc(args, ctx):
-    ok, text = calc.compute(args)
-    return ToolResult(
-        success=ok,
-        data={"expression": str((args or {}).get("expression", "") or "")},
-        text=text,
-        error=None if ok else {"code": INVALID_ARGUMENTS, "message": text, "retryable": False},
     )
 
 
@@ -88,16 +78,6 @@ def register_builtins():
             timeout=30.0,
             tags=CHAT_TAGS + ("research",),
             side_effect="network_read",
-        )
-    )
-    registry.add(
-        _tool(
-            calc.TOOL,
-            handler=_calc,
-            permission=READ_ONLY,
-            timeout=10.0,
-            tags=CHAT_TAGS + ("research",),
-            side_effect="none",
         )
     )
 

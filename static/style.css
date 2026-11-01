@@ -394,6 +394,233 @@ body.app {
   cursor: zoom-in;
 }
 
+/* Files a turn carried, above the question where the quote sits and pushed to
+   the same edge. They wrap sideways rather than stacking: a turn can carry
+   eight, and a column of them would push the question down the page. The right
+   edge stays flush either way, so the row reads as one band with the bubble. */
+.msg .files {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-1);
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 var(--sp-1) auto;
+}
+
+.msg .file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  /* Capped below the row, so two chips share a line instead of one long name
+     taking the whole band and pushing the rest under it. */
+  max-width: min(100%, 240px);
+  height: var(--ctl-icon);
+  padding: 0 var(--sp-2);
+  /* Strong border: the hairline one is 1.2:1 here and the chip would have no
+     edge of its own. */
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-soft);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--mo-fast) var(--mo-ease);
+}
+
+.msg .file-chip > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  color: var(--muted);
+}
+
+.msg .file-chip .chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg .file-chip:hover {
+  background: var(--hover);
+}
+
+.msg .file-chip:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .msg .file-chip {
+    height: var(--ctl-hit);
+  }
+}
+
+/* The file viewer. Same layer as the lightbox: the chat it was opened from is
+   inert, so nothing else on the page can be reached while it shows. */
+.fv {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-5);
+}
+
+.fv[hidden] {
+  display: none;
+}
+
+.fv-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.fv-sheet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(880px, 100%);
+  max-height: min(84vh, 760px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.fv-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.fv-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.fv-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  margin-left: auto;
+  width: var(--ctl-sm);
+  height: var(--ctl-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.fv-close svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.fv-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.fv-close:focus-visible,
+.fv-body:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* The text is shown as it was read: wrapped, not one long scroll line, since
+   this is prose a reader is scanning rather than code they will copy. */
+.fv-body {
+  flex: 1;
+  margin: 0;
+  padding: var(--sp-4);
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.fv:not([hidden]) .fv-scrim {
+  animation: mo-fade var(--mo-base) var(--mo-ease) both;
+}
+
+.fv:not([hidden]) .fv-sheet {
+  animation: mo-pop var(--mo-open) var(--mo-ease) both;
+}
+
+/* The attachment viewer. Fixed above the dialog layer: the chat it was opened
+   from is inert, so nothing else on the page can be reached while it shows. */
+.lb {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: var(--sp-5);
+}
+
+.lb[hidden] {
+  display: none;
+}
+
+.lb-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.lb-img {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius);
+  cursor: zoom-out;
+}
+
+/* The scrim and the photo arrive together on open; closing is the instant
+   flip [hidden] already is. */
+.lb:not([hidden]) .lb-scrim {
+  animation: mo-fade var(--mo-base) var(--mo-ease) both;
+}
+
+.lb:not([hidden]) .lb-img {
+  animation: mo-pop var(--mo-open) var(--mo-ease) both;
+}
+
+/* The scrim is dark in both themes, so the ring is a fixed light one. */
+.lb-img:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: var(--sp-1);
+}
+
 /* Markdown Typography */
 .msg.user {
   flex-direction: row-reverse;
@@ -401,7 +628,9 @@ body.app {
 }
 
 .msg.user .body {
-  flex: none;
+  /* Shrinks rather than none, so a file chip beside the avatar never pushes
+     the question past the row. */
+  flex: 0 1 auto;
   max-width: 75%;
   padding-top: 0;
   font-weight: 400;
@@ -595,12 +824,24 @@ body.app {
 }
 
 .status {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
+  display: grid;
+  place-items: start;
   font-size: var(--fs-sm);
   color: var(--muted);
   padding: 0 0 var(--sp-hair);
+}
+
+/* The waiting lines share one cell and cross-fade, so a new line arrives under
+   the old rather than replacing it in a flicker. The cell is as tall as the
+   tallest line and does not resize between them. */
+.status-line {
+  grid-area: 1 / 1;
+  opacity: 0;
+  transition: opacity var(--mo-open) var(--mo-ease);
+}
+
+.status-line.on {
+  opacity: 1;
 }
 
 /* Error text is danger ink behind the page's own hairline: no fill, matching
@@ -621,16 +862,16 @@ body.app {
   flex-shrink: 0;
 }
 
-/* Attachment chips */
-/* Attachments strip: image tiles, hairline divider under */
+/* Attachments waiting to be sent, on a row of their own above the field for
+   the same reason the quote has one: the box is the question, and these are
+   what rides along with it. */
 .atts {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) 0 var(--sp-2);
-  margin: 0 0 var(--sp-2);
-  border-bottom: 1px solid var(--border);
+  max-width: 820px;
+  margin: 0 auto var(--sp-2);
 }
 
 .atts[hidden] {
@@ -1111,7 +1352,19 @@ textarea:focus-visible {
   .chip-x,
   .cp,
   .regen,
-  .quote-btn {
+  .quote-btn,
+  .status-line {
+    transition: none;
+  }
+
+  .lb-scrim,
+  .lb-img,
+  .fv-scrim,
+  .fv-sheet {
+    animation: none;
+  }
+
+  .msg .file-chip {
     transition: none;
   }
 }

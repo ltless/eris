@@ -2,9 +2,9 @@
 
 This layer holds no execution logic. `/api/chat` builds a RunRequest, drives
 the shared engine, and hands its events to `sse`; the engine does the rest.
-Who the caller is comes from `deps`, the MCP endpoint from `mcp`, and the model
-transports from `app/models`, re-exported here because the routes and the
-existing tests still refer to them by these names.
+Who the caller is comes from `deps`, and the model transports from `app/models`,
+re-exported here because the routes and the existing tests still refer to them
+by these names.
 """
 
 from datetime import date
@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, chats, encoding, mcp, tokens
+from . import auth, chats, encoding, tokens
 from .config import settings
 from .deps import db_user, require_session, require_user
 from .models import (
@@ -60,16 +60,20 @@ STATIC_DIR = encoding.STATIC_DIR
 MEDIA_DIR = encoding.MEDIA_DIR
 
 builtin_tools.register_builtins()
-app.include_router(mcp.router)
 
 
 # Request models.
 
 
+class AttachedFile(BaseModel):
+    name: str = "file"
+    text: str
+
 class Message(BaseModel):
     role: str
     content: str | list
     quote: str | None = None
+    files: list[AttachedFile] | None = None
 
 
 class ProfileRequest(BaseModel):
@@ -144,6 +148,100 @@ def _with_quote(content, quote):
     return content
 
 
+MAX_FILE_CHARS = 40_000
+MAX_FILES_CHARS = 60_000
+MAX_FILES = 8
+
+
+def _clean_files(files):
+    """The files of one turn as they will be stored and shown, or `None`.
+
+    The caps are here rather than in the client, because the client is not the
+    only caller. A file past the per-file cap is cut with a note the model can
+    read, so it knows it is looking at a fragment rather than at the end of the
+    file.
+    """
+    kept = []
+    spent = 0
+    for f in files or []:
+        text = f.text if isinstance(f, AttachedFile) else f.get("text")
+        text = text if isinstance(text, str) else ""
+        if len(text) > MAX_FILE_CHARS:
+            text = text[:MAX_FILE_CHARS].rstrip() + "\n[... truncated]"
+        if spent + len(text) > MAX_FILES_CHARS:
+            break
+        raw_name = f.name if isinstance(f, AttachedFile) else f.get("name")
+        name = (raw_name or "file").strip()[:120] or "file"
+        kept.append({"name": name, "text": text})
+        spent += len(text)
+        if len(kept) >= MAX_FILES:
+            break
+    return kept or None
+
+
+def _with_files(content, files):
+    """The turn as the model reads it: each file under its own name, in a fence
+    that keeps its code out of the markdown, then the question. The client keeps
+    them apart so a long file does not fill the bubble."""
+    if not files:
+        return content
+    blocks = []
+    for f in files:
+        lang = f["name"].rsplit(".", 1)[-1].lower() if "." in f["name"] else ""
+        # Only a plain word goes in the fence's info string; a name with a space
+        # in it would end it.
+        lang = lang if lang.isalnum() and len(lang) <= 12 else ""
+        blocks.append(f"### File: {f['name']}\n```{lang}\n{f['text']}\n```")
+    text = "\n\n".join(blocks)
+    if isinstance(content, str):
+        return f"{text}\n\n{content}" if content else text
+    if isinstance(content, list):
+        parts = [dict(p) for p in content]
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "text":
+                p["text"] = f"{text}\n\n{p.get('text', '')}"
+                return parts
+        return [{"type": "text", "text": text}, *parts]
+    return content
+
+
+def _last_user_files(messages):
+    """What was attached to the question being asked, in the order it was
+    attached. Only the newest user turn: older files come back from storage
+    when the chat is reopened."""
+    for m in reversed(messages):
+        # The caller passes the request models on one path and plain dicts on
+        # the other, so the field is read either way.
+        role = m.get("role") if isinstance(m, dict) else m.role
+        if role == "user":
+            return _clean_files(m.get("files") if isinstance(m, dict) else m.files)
+    return None
+
+
+def _last_user_images(messages):
+    """What the reader attached to the question being asked.
+
+    The bytes are taken from the same content parts the model was given, so the
+    turn that is stored is the turn that was run. Only the newest user message
+    is read: an image belongs to the turn it was attached to, and the older ones
+    come back from storage when the chat is reopened.
+    """
+    for m in reversed(messages):
+        if m.get("role") != "user":
+            continue
+        content = m.get("content")
+        if not isinstance(content, list):
+            return []
+        raws = [
+            chats.decode_data_url(p["image_url"]["url"])
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "image_url"
+            and isinstance(p.get("image_url"), dict)
+        ]
+        return [raw for raw in raws if raw]
+    return []
+
+
 def _build_request(req: ChatRequest, u, messages):
     prefs = u.get("prefs") or {}
     base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
@@ -193,8 +291,15 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
     # A reply can be nothing but a selection, with no words typed under it. The
     # quote is what was said, then, and it names the chat when the question is
     # empty.
-    subject = query or quoted
-    messages = [{"role": m.role, "content": _with_quote(m.content, m.quote)} for m in req.messages]
+    # A file alone is a question too, so it can name the chat like a quote can.
+    files = _last_user_files(req.messages)
+    subject = query or quoted or (files[0]["name"] if files else "")
+    messages = [
+        {"role": m.role,
+         "content": _with_quote(_with_files(m.content, _clean_files(m.files)), m.quote)}
+        for m in req.messages
+    ]
+    attached = _last_user_images([{"role": m.role, "content": m.content} for m in req.messages])
     request = _build_request(req, u, messages)
     engine = Engine(request, emitter=Emitter())
 
@@ -213,9 +318,10 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         async def remember():
             if not req.chat_id:
                 return
-            if (query or quoted) and not req.regenerate:
-                chats.save_turn(u["id"], req.chat_id, "user", query, quote=quoted)
-                chats.touch_title(req.chat_id, query or quoted)
+            if (query or quoted or attached or files) and not req.regenerate:
+                chats.save_turn(u["id"], req.chat_id, "user", query, quote=quoted,
+                                images=attached or None, files=files)
+                chats.touch_title(req.chat_id, query or quoted or subject)
             answer = engine.result.answer
             if answer:
                 chats.save_turn(
@@ -472,7 +578,9 @@ async def server_stats(model: str | None = None, u: dict = Depends(require_user)
 async def update_prefs(req: PrefsRequest, u: dict = Depends(require_session)):
     prefs = dict(u.get("prefs") or {})
     if req.model is not None:
-        prefs["model"] = req.model[:80]
+        # A Hugging Face GGUF id runs past 80 characters, and a cut one is an id
+        # the server does not have: 404 on the next question.
+        prefs["model"] = req.model[:200]
     if req.effort is not None:
         prefs["effort"] = max(0, int(req.effort))
     if req.ctx is not None:
@@ -538,11 +646,7 @@ async def logout(session: str | None = Cookie(None)):
 
 @app.get("/api/auth/me")
 async def me(u: dict = Depends(require_user)):
-    """Who this call is, by cookie or by token.
-
-    It reads rather than writes, so a token is enough: this is the route an MCP
-    client uses to confirm its token before it starts speaking.
-    """
+    """Who this call is, by cookie or by token."""
     return u
 
 

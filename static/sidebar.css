@@ -20,12 +20,17 @@
   --row: 30px;
   --side-radius: var(--radius-sm);
 
-  /* Motion, used only by the rail toggle. These three describe one gesture —
-     the rail changing size — so they stay together here rather than joining the
-     body-motion durations in style.css. The curve is the shared one. */
+  /* Motion, used only by the rail toggle. These describe the two gestures the
+     header makes — the rail changing size, and the art giving way to the icon
+     on hover — so they stay together here rather than joining the body-motion
+     durations in style.css. The curve is the shared one. */
   --mo-rail: 260ms;  /* the rail changing size */
   --mo-fade: 160ms;  /* labels leaving or arriving with it */
   --mo-flip: 140ms;  /* the toggle icon swap */
+  /* The art-to-icon swap is a hover, so it is the one gesture here the pointer
+     sets the pace of. Longer than the flip, with a scale, so the two marks read
+     as one turning into the other instead of one blinking out. */
+  --mo-swap: 220ms;
 }
 
 .layout {
@@ -106,6 +111,7 @@
    of the accessibility tree, which is what display: none was doing. */
 .side.collapsed .lbl,
 .side.collapsed .side-brand,
+.side.collapsed .side-min,
 .side.collapsed .side-title,
 .side.collapsed .side-empty {
   opacity: 0;
@@ -143,6 +149,7 @@
 
 .side.anim .lbl,
 .side.anim .side-brand,
+.side.anim .side-min,
 .side.anim .side-title,
 .side.anim .side-empty,
 .side.anim .side-history {
@@ -154,15 +161,29 @@
   .side.anim,
   .side.anim .lbl,
   .side.anim .side-brand,
+  .side.anim .side-min,
   .side.anim .side-title,
   .side.anim .side-empty,
   .side.anim .side-history,
-  .side.anim .side-toggle .ic svg {
+  .side.anim .side-logo .ic svg,
+  .side.anim .side-min .ic svg,
+  .side-mark,
+  .side-logo .ic {
     transition: none;
+  }
+
+  /* The scale is the movement, and it goes with the transition. The opacity
+     swap stays: it is what says the cell changed, and without it the art and
+     the icon would both be visible. */
+  .side-logo .ic,
+  .side.collapsed .side-logo:hover .side-mark,
+  .side.collapsed .side-logo:focus-visible .side-mark {
+    transform: none;
   }
 
   .side.collapsed .lbl,
   .side.collapsed .side-brand,
+  .side.collapsed .side-min,
   .side.collapsed .side-title,
   .side.collapsed .side-empty {
     transform: none;
@@ -210,7 +231,7 @@
   outline-offset: -2px;
 }
 
-/* Header: the toggle and the brand. */
+/* Header: the logo, the brand, and the rail toggle. */
 .side-top {
   display: flex;
   align-items: center;
@@ -221,53 +242,165 @@
   margin-bottom: var(--sp-4);
 }
 
-.side-toggle {
+/* The logo cell holds both faces: the picture, and the rail icon it swaps to.
+   They share the cell and cross-fade rather than flipping through display. */
+.side-logo {
   width: var(--gut);
   height: var(--row);
   padding: 0;
   border: none;
   background: transparent;
   color: var(--muted);
-  cursor: pointer;
+  cursor: default;
   border-radius: var(--side-radius);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  flex: none;
+  display: inline-grid;
+  grid-template-areas: "cell";
+  place-items: center;
 }
 
-.side-toggle:hover {
+.side-logo > * {
+  grid-area: cell;
+}
+
+.side-mark {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  transition: opacity var(--mo-swap) var(--mo-ease),
+    transform var(--mo-swap) var(--mo-ease);
+}
+
+/* The artwork is dark ink on transparent, so it needs the light page it was
+   drawn for. Reversed rather than plated, so the mark keeps its own edges and
+   the sidebar keeps its background. */
+[data-theme="dark"] .side-mark {
+  filter: invert(1);
+}
+
+.side-logo .ic {
+  opacity: 0;
+  /* The icon grows into place as the art fades, so the swap reads as the mark
+     turning into the control rather than one glyph replaced by another. The
+     scale is on the icon alone: the art leaves at the size it was drawn at. */
+  transform: scale(0.82);
+  transition: opacity var(--mo-swap) var(--mo-ease),
+    transform var(--mo-swap) var(--mo-ease);
+}
+
+/* The swap belongs to the rail. Expanded there is a second control at the far
+   end of the row, so the art stays the art; collapsed the art is the only cell
+   that fits, and it becomes the control on hover or focus. */
+.side.collapsed .side-logo:hover .side-mark,
+.side.collapsed .side-logo:focus-visible .side-mark {
+  opacity: 0;
+  transform: scale(0.82);
+}
+
+.side.collapsed .side-logo:hover .ic,
+.side.collapsed .side-logo:focus-visible .ic {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* The hover fill is part of being the control, so it only lands in the rail.
+   Expanded the logo is the mark alone; the button at the end of the row is the
+   one that answers a click. */
+.side.collapsed .side-logo {
+  cursor: pointer;
+}
+
+.side.collapsed .side-logo:hover,
+.side.collapsed .side-logo:focus-visible {
   background: var(--hover);
   color: var(--text);
 }
 
-/* Both toggle icons share one cell so the swap cross-fades rather than flipping
-   through display. */
-.side-toggle .ic {
+/* .ic carries its own ink, so the button's hover color never reaches the
+   glyph. The icon cell is told directly. */
+.side.collapsed .side-logo:hover .ic,
+.side.collapsed .side-logo:focus-visible .ic,
+.side-min:hover .ic {
+  color: var(--text);
+}
+
+/* Both toggle icons share one cell so the swap cross-fades. */
+.side-logo .ic,
+.side-min .ic {
   display: inline-grid;
   place-items: center;
 }
 
-.side-toggle .ic svg {
+.side-logo .ic svg,
+.side-min .ic svg {
   grid-area: 1 / 1;
 }
 
-.side-toggle .icon-expand {
+.side-logo .icon-expand,
+.side-min .icon-expand {
   opacity: 0;
 }
 
-.side.collapsed .side-toggle .icon-collapse {
+.side.collapsed .side-logo .icon-collapse,
+.side.collapsed .side-min .icon-collapse {
   opacity: 0;
 }
 
-.side.collapsed .side-toggle .icon-expand {
+.side.collapsed .side-logo .icon-expand,
+.side.collapsed .side-min .icon-expand {
   opacity: 1;
 }
 
-.side.anim .side-toggle .ic svg {
+.side.anim .side-logo .ic svg,
+.side.anim .side-min .ic svg {
   transition: opacity var(--mo-flip) var(--mo-ease);
 }
 
+/* The second toggle sits at the far end of the expanded header, where there is
+   room for it. It leaves with the brand: the logo above is the one control the
+   rail keeps, so this copy is a mouse affordance only and stays out of the tab
+   order and the accessibility tree. */
+.side-min {
+  margin-left: auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--side-radius);
+  color: var(--muted);
+  cursor: pointer;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+}
+
+.side-min .ic {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+}
+
+.side-min .ic svg {
+  width: 16px;
+  height: 16px;
+}
+
+.side-min:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* The rail's content box is exactly the logo cell, so the header's trailing
+   copy has nowhere to sit. It is clipped there anyway; taking it out of the
+   flex row keeps it from widening the row it cannot be seen in. */
+.side.collapsed .side-min {
+  display: none;
+}
+
 .side-brand {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   font-size: var(--fs-lg);
   font-weight: 700;
@@ -586,12 +719,41 @@
      readable here, so the rail-only clipping of the label is undone too. */
   .side.collapsed .lbl,
   .side.collapsed .side-brand,
+  .side.collapsed .side-min,
   .side.collapsed .side-title,
   .side.collapsed .side-empty,
   .side.collapsed .side-history {
     opacity: 1;
     visibility: visible;
     transform: none;
+  }
+
+  .side.collapsed .side-min {
+    display: inline-grid;
+  }
+
+  /* The drawer ignores the rail, so the logo stays the mark here: it is the
+     control only where the row is 56px wide. */
+  .side.collapsed .side-logo {
+    cursor: default;
+  }
+
+  .side.collapsed .side-logo:hover,
+  .side.collapsed .side-logo:focus-visible {
+    background: transparent;
+    color: var(--muted);
+  }
+
+  .side.collapsed .side-logo:hover .side-mark,
+  .side.collapsed .side-logo:focus-visible .side-mark {
+    opacity: 1;
+    /* The art never leaves in the drawer, so it never shrinks either. */
+    transform: none;
+  }
+
+  .side.collapsed .side-logo:hover .ic,
+  .side.collapsed .side-logo:focus-visible .ic {
+    opacity: 0;
   }
 
   .side.collapsed .lbl {

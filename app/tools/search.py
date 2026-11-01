@@ -29,18 +29,20 @@ TOOL = {
                     "type": "string",
                     "description": "Short English search query, no date.",
                 },
+                # Both are free strings on purpose. A small model writes
+                # "generalnews" or "\"day\"", and an enum turns that slip into a
+                # refused call instead of a search with the argument dropped.
                 "time_range": {
                     "type": "string",
-                    "enum": ["day", "week", "month", "year"],
                     "description": (
-                        "Only recent results. Use day or week for prices and "
-                        "news, month or year for releases and versions."
+                        "Only recent results: one of day, week, month, year. Use "
+                        "day or week for prices and news, month or year for "
+                        "releases and versions."
                     ),
                 },
                 "categories": {
                     "type": "string",
-                    "enum": ["general", "news"],
-                    "description": "Use news for current-events queries.",
+                    "description": "One of general, news. Use news for current events.",
                 },
             },
             "required": ["query"],
@@ -164,9 +166,23 @@ def render(results, start=0):
     return head + "\n\n".join(parts)
 
 
+def _pick(value, allowed):
+    """The one allowed word a small model meant.
+
+    It writes "\\"day\\"" with the quotes still on it, or runs two options
+    together as "generalnews". An exact miss is not a reason to fail the call:
+    the last allowed word found inside the text is the one it reached for, and
+    nothing found leaves the parameter off entirely.
+    """
+    text = str(value or "").strip().strip("\"'`").strip().lower()
+    if text in allowed:
+        return text
+    return max((a for a in allowed if a in text), key=text.rfind, default="")
+
+
 def time_range_for(args, query):
-    tr = str(args.get("time_range", "") or "")
-    if tr in ("day", "week", "month", "year"):
+    tr = _pick(args.get("time_range"), ("day", "week", "month", "year"))
+    if tr:
         return tr
     if FRESH_RE.search(query):
         return "week"
@@ -184,8 +200,8 @@ async def run(args):
         "format": "json",
         "language": settings.searxng_language,
     }
-    cat = str(args.get("categories", "") or "")
-    if cat in ("general", "news"):
+    cat = _pick(args.get("categories"), ("general", "news"))
+    if cat:
         params["categories"] = cat
     if tr:
         params["time_range"] = tr
