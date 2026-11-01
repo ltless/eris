@@ -95,11 +95,8 @@ def extract_text(raw, max_chars):
 
 
 async def fetch_page(client, url, max_chars):
-    """Return `(text, reason)`. `text` is None when the page could not be read.
-
-    `reason` is a short phrase naming what stopped it, so the caller can say
-    which of the several failures happened. Never raises.
-    """
+    """Return `(text, reason)`. `text` is None when the page could not be read;
+    `reason` names which failure stopped it. Never raises."""
     url = str(url)
     for _ in range(MAX_REDIRECTS + 1):
         if not await asyncio.to_thread(is_public_url, url):
@@ -181,11 +178,8 @@ TOOL = {
 
 
 async def read(args):
-    """`(ok, text, reason)` for one URL. `reason` is empty on success.
-
-    The reason is returned apart from the text so the card can say what happened
-    without the URL it is already showing.
-    """
+    """`(ok, text, reason)` for one URL. `reason` is empty on success, and comes
+    back apart from the text so the card can name the failure alone."""
     args = as_args(args)
     url = str(args.get("url", "") or "").strip()
     if not url:

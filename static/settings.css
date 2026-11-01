@@ -6,7 +6,7 @@
 
 /* The rail, the panel box, and the close control come from dialog.css. */
 
-/* ---- Profile header: cover and avatar are the pickers ---- */
+/* Profile header: cover and avatar are the pickers. */
 
 .s-ident {
   position: relative;
@@ -48,7 +48,7 @@
   margin: calc(var(--sp-5) * -1) 0 0 var(--sp-4);
 }
 
-/* ---- Model picture ---- */
+/* Model picture. */
 
 .s-ai {
   display: flex;
@@ -130,7 +130,7 @@
   outline-offset: 2px;
 }
 
-/* ---- Forms ---- */
+/* Forms. */
 
 .s-field,
 .s-grid {
@@ -172,7 +172,7 @@
 .set-modal input,
 .set-modal select,
 .set-modal textarea {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   padding: 0 var(--sp-3);
   font: inherit;
@@ -220,11 +220,11 @@
   width: auto;
 }
 
-/* ---- Segmented control (theme) ---- */
+/* Segmented control (theme). */
 
 .s-seg {
   display: inline-flex;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   overflow: hidden;
 }
@@ -271,7 +271,7 @@
   outline-offset: -2px;
 }
 
-/* ---- System prompt block ---- */
+/* System prompt block. */
 
 .s-prompt {
   grid-column: 1 / -1;
@@ -296,12 +296,12 @@
   padding: 0 var(--sp-1);
 }
 
-/* ---- Buttons ---- */
+/* Buttons. */
 
 .s-btn {
   height: var(--ctl-sm);
   padding: 0 var(--sp-3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg);
   color: var(--text);
@@ -372,7 +372,7 @@
   outline-offset: 2px;
 }
 
-/* ---- Notes and messages ---- */
+/* Notes and messages. */
 
 .s-note {
   margin: var(--sp-2) 0 0;
@@ -399,7 +399,7 @@
   color: var(--muted);
 }
 
-/* ---- API tokens ---- */
+/* API tokens. */
 
 /* The one showing of a token's plaintext. It is set apart from the form that
    created it, because it is not another thing to fill in — it is the single
@@ -432,7 +432,7 @@
   padding: var(--sp-4);
 }
 
-/* ---- Mobile: the grid drops to one column; the rail itself is dialog.css ---- */
+/* Mobile: the grid drops to one column; the rail itself is dialog.css. */
 
 @media (max-width: 768px) {
   .s-grid {

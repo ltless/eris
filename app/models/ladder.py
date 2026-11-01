@@ -1,14 +1,9 @@
 """Which `think` values a model takes, and what a stored index means for it.
 
-The endpoint's `think` field is not one control with a fixed scale: a model's
-own template names the levels it accepts and rejects the rest, so the set has to
-be asked for per model. Asking costs a round trip and the answer cannot change
-while the process is up, so it is asked once and kept.
-
-Asked two ways, cheapest first. `/api/show` reports the values the server
-accepts, which is the ladder itself; a server that reports nothing there is
-probed with a request per rung, which can only see accept-or-reject and so
-cannot tell "this model ignores the field" from "this model takes everything".
+The set is per model and asked once, because asking costs a round trip and the
+answer cannot change while the process is up. `/api/show` is believed when it
+states the values; otherwise each rung is probed, which cannot tell "ignores the
+field" from "takes everything" — that is what the sentinel is for.
 """
 
 import asyncio
@@ -57,11 +52,9 @@ PROBE_TIMEOUT = 25
 def _stated(values):
     """The ladder a server stated, or `None` when it stated nothing usable.
 
-    A server that names its values has already answered the question the probe
-    would ask, and answered it better: the probe sees only accept-or-reject, so
-    a model that takes every value looks the same as one that reads none of
-    them. `values` is `[false, true]` for a thinker with a plain switch and the
-    level names for one with a dial, in the server's own order.
+    A stated answer beats the probe: the probe sees only accept-or-reject, so a
+    model that takes every value looks like one that reads none of them.
+    `values` is `[false, true]` for a plain switch, level names for a dial.
     """
     if not isinstance(values, list) or not values:
         return None
@@ -96,15 +89,10 @@ async def _shown_ladder(name):
 async def _send_think(client, model, value):
     """One probe: does this model accept `think=value`?
 
-    `True`, `False`, or `None` when the server could not be asked at all. A
-    refused *value* arrives as a stated error, which is an answer; an
-    unreachable server is not, and neither is a 404 — that is the server saying
-    it does not serve this model, which is a fact about the id rather than about
-    the value, and reading it as a refusal would cache a dead control for a
-    model that may be pulled a minute later.
-
-    `num_predict` is 1 because only the accept or reject matters here: the probe
-    must not spend the model's tokens reasoning about the word "hi".
+    `True`, `False`, or `None` when the server could not be asked. A refused
+    value is a stated error and counts as an answer; a 404 is a fact about the
+    id, so reading it as a refusal would cache a dead control for a model that
+    may be pulled a minute later.
     """
     payload = {
         "model": model,
@@ -125,22 +113,11 @@ async def _send_think(client, model, value):
 async def think_ladder(model=None):
     """The `think` values this model takes, cheapest rung first.
 
-    A server that states its values on `/api/show` is believed and asked
-    nothing more: that is the ladder, already ordered, and it is the only
-    answer that can tell a single switch from a dial.
-
-    `[]` when nothing here can think: the server took the sentinel, which means
-    it never reads this field.
-
-    `None` when nothing could be asked — a server that is down, an id it does
-    not serve, or a probe that ran out of time. That is not an answer about the
-    model, so it is not cached, and the caller falls back to FALLBACK_LADDER
-    rather than losing the toggle. A probe that times out is deliberately not
-    read as a refusal: a cold model takes longer to load than it does to say no
-    to a value, and half a ladder would hide the rungs it does have.
-
-    The candidates are asked at once, so a cold model pays one round trip
-    rather than six.
+    `[]` when the server took the sentinel, so it never reads the field. `None`
+    when nothing could be asked; that is not an answer about the model, so it is
+    not cached and the caller falls back to FALLBACK_LADDER. A probe that times
+    out counts as unasked, not refused: a cold model loads slower than it says
+    no, and half a ladder would hide the rungs it has.
     """
     name = model or settings.model_name
     if name in _LADDERS:
@@ -187,11 +164,8 @@ async def think_ladder(model=None):
 def cached_ladder(model=None):
     """The ladder for a model if it has already been asked for, else `None`.
 
-    A chat must not wait on a probe: asking costs a round trip, and on a model
-    that is not loaded it costs the load as well. The answer is only needed to
-    turn an index into a value, and `think_value` already has an honest answer
-    for the unknown case, so the call site that would have to wait uses this and
-    leaves the asking to the panel that shows the ladder.
+    A chat must not wait on a probe: on a model that is not loaded it costs the
+    load too. This call site leaves the asking to the panel that shows it.
     """
     return _LADDERS.get(model or settings.model_name)
 
@@ -199,13 +173,8 @@ def cached_ladder(model=None):
 def rung_index(stored, ladder):
     """Where a stored `effort` index lands on this model's ladder.
 
-    A choice remembered against one model is read against another's, so the
-    index is clamped rather than trusted: a step this model does not have
-    lands on the nearest rung it does.
-
-    Nothing stored means the user has not chosen, and the model's own default
-    is the honest answer — the rung that is plain `true` when the ladder has
-    one, and the top rung otherwise.
+    The index is clamped, not trusted: a step this model lacks lands on the
+    nearest rung it has. Nothing stored means the model's own default.
     """
     rungs = FALLBACK_LADDER if ladder is None else ladder
     if not rungs:
@@ -237,18 +206,11 @@ def effort_label(value):
 def think_for_request(thinking, model, tools):
     """The `think` value a request should actually carry.
 
-    On some templates `false` does not mean "think less": it takes the tool
-    list with it, and the model answers from memory — inventing presidents,
-    inventing prices — while the search it would have run never happens. So a
-    model that names levels is kept off `false` on a tool round: it sends the
-    lowest level it names instead, which is the nearest thing to off that does
-    not cost the tools.
-
-    A model whose ladder is only the plain switch has no such rung, and there
-    `false` is the honest value: it was tried against both shapes here and the
-    tools still arrive. The field is never dropped to stand in for it — a
-    missing `think` is the server's own default, which on a thinker is on, and
-    that is the opposite of what this control was just asked for.
+    On some templates `false` takes the tool list with it, so the model answers
+    from memory and the search never runs. A model that names levels therefore
+    sends its lowest rung on a tool round. A plain-switch model has no such rung
+    and keeps `false`; the field is never dropped, since a missing `think` is
+    the server default, which on a thinker is on.
     """
     if thinking is not False or not tools:
         return thinking

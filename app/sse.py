@@ -19,10 +19,13 @@ def sse_frame(event):
     use for it."""
     d = event.data or {}
     t = event.type
+    # `r` on the prose frames too, not just the tool ones: the browser needs it
+    # to tell one round's answer from the next, and otherwise the only place a
+    # round boundary shows up is where a tool call happens to sit.
     if t == ev.MODEL_DELTA:
-        return {"type": "delta", "text": d.get("text", "")}
+        return {"type": "delta", "r": d.get("round", 0), "text": d.get("text", "")}
     if t == ev.MODEL_THINKING:
-        return {"type": "thinking", "text": d.get("text", "")}
+        return {"type": "thinking", "r": d.get("round", 0), "text": d.get("text", "")}
     if t == ev.SOURCE_FOUND:
         # `r` rides along so the browser can file a result under the round that
         # found it without guessing from arrival order, which is what lets a
@@ -53,8 +56,6 @@ def sse_frame(event):
                 "reason": d.get("reason", "")}
     if t == ev.MODEL_METRICS:
         return {"type": "metrics", **{k: v for k, v in d.items() if k != "round"}}
-    if t == ev.APPROVAL_REQUIRED:
-        return {"type": "approval", "tool": d.get("tool", ""), "message": d.get("message", "")}
     if t in (ev.TASK_FAILED, ev.TASK_CANCELLED):
         return {"type": "error", "message": d.get("message") or d.get("reason") or t}
     return None

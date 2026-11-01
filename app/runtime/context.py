@@ -1,9 +1,8 @@
 """Assembling what the model gets to see.
 
-Three kinds of material compete for the same context window: session
-(conversation and current instruction), knowledge (retrieved passages), and
-evidence (what search tools fetched). The rules: keep the current instruction,
-stop when the budget is full, and drop the least relevant passage first.
+Session, knowledge, and evidence compete for one window. Keep the current
+instruction, stop when the budget is full, and drop the least relevant passage
+first.
 """
 
 from dataclasses import dataclass
@@ -28,10 +27,9 @@ def assemble(budget, *, base_prompt, today, session="",
              knowledge=(), evidence=(), instruction=""):
     """The system prompt and the context blocks, within budget.
 
-    Order matters more than it looks: the base prompt and the current
-    instruction go first because a truncation that drops them is a broken
-    request, and the optional material is appended longest-first so the least
-    relevant passage is the one that falls off the end.
+    The base prompt and the instruction go first, since a truncation that drops
+    them is a broken request; optional material is appended so the least
+    relevant passage is what falls off.
     """
     parts = [budget.slice(base_prompt, 8_000)]
     if today:
@@ -63,11 +61,8 @@ def assemble(budget, *, base_prompt, today, session="",
 def recent(messages, limit=None, budget=None):
     """The newest whole turns that fit, oldest first.
 
-    A reopened chat replays every turn it stored, and a long one would be sent
-    whole without this. Turns are kept or dropped as a unit — half a message
-    is worse than none — and the window opens on a user turn, because an
-    answer whose question fell off the end reads as the model talking to
-    itself.
+    Turns are kept or dropped as a unit, and the window opens on a user turn:
+    an answer whose question fell off reads as the model talking to itself.
     """
     budget = budget or ContextBudget()
     room = limit or budget.session

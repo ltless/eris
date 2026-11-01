@@ -16,21 +16,25 @@
   <main class="auth">
     <div class="auth-card">
       <h1 class="auth-brand">Eris</h1>
-      <div class="auth-tabs" role="tablist">
-        <button type="button" id="tabLogin" class="on" role="tab">Login</button>
-        <button type="button" id="tabReg" role="tab">Register</button>
+      <div class="auth-tabs" role="tablist" aria-label="Account access">
+        <button type="button" id="tabLogin" class="on" role="tab" aria-selected="true"
+          aria-controls="fLogin">Login</button>
+        <button type="button" id="tabReg" role="tab" aria-selected="false"
+          aria-controls="fReg">Register</button>
       </div>
-      <form id="fLogin">
-        <input id="liEmail" type="email" placeholder="Email" autocomplete="email" required />
-        <input id="liPw" type="password" placeholder="Password" autocomplete="current-password" required />
-        <div class="err" id="liErr" hidden></div>
+      <form id="fLogin" role="tabpanel" aria-labelledby="tabLogin">
+        <input id="liEmail" type="email" placeholder="Email" aria-label="Email" autocomplete="email" required />
+        <input id="liPw" type="password" placeholder="Password" aria-label="Password" autocomplete="current-password"
+          required />
+        <div class="err" id="liErr" role="alert" hidden></div>
         <button class="auth-go" type="submit">Login</button>
       </form>
-      <form id="fReg" hidden>
-        <input id="rgName" type="text" placeholder="Name" autocomplete="name" required />
-        <input id="rgEmail" type="email" placeholder="Email" autocomplete="email" required />
-        <input id="rgPw" type="password" placeholder="Password (min 6)" autocomplete="new-password" required />
-        <div class="err" id="rgErr" hidden></div>
+      <form id="fReg" role="tabpanel" aria-labelledby="tabReg" hidden>
+        <input id="rgName" type="text" placeholder="Name" aria-label="Name" autocomplete="name" required />
+        <input id="rgEmail" type="email" placeholder="Email" aria-label="Email" autocomplete="email" required />
+        <input id="rgPw" type="password" placeholder="Password (min 6)" aria-label="Password, at least 6 characters"
+          autocomplete="new-password" required />
+        <div class="err" id="rgErr" role="alert" hidden></div>
         <button class="auth-go" type="submit">Create account</button>
       </form>
     </div>

@@ -20,7 +20,6 @@ from ..runtime.errors import INVALID_ARGUMENTS, TIMEOUT, TOOL_ERROR, UNKNOWN_TOO
 @dataclass
 class ToolContext:
     user_id: int | None = None
-    approved: set = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -161,17 +160,9 @@ class Registry:
         return ToolResult.ok(_as_text(result), items=result)
 
     def specs_for(self, ctx):
-        """The tools this context may actually use.
-
-        Approval-gated tools are offered: the model can ask, and the ask is
-        what the user is shown.
-        """
-        out = []
-        for t in self.all():
-            d = authorize(t, ctx)
-            if d.allowed or d.code == "approval_required":
-                out.append(t.spec())
-        return out
+        """The tools this context may actually use, so the model is never
+        offered a schema it would only be refused for."""
+        return [t.spec() for t in self.all() if authorize(t, ctx).allowed]
 
 
 async def _invoke(tool, args, ctx):

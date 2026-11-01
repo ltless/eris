@@ -13,7 +13,6 @@ UNKNOWN_TOOL = "unknown_tool"
 INVALID_ARGUMENTS = "invalid_arguments"
 TOOL_ERROR = "tool_error"
 TIMEOUT = "timeout"
-APPROVAL_REQUIRED = "approval_required"
 BUDGET_EXCEEDED = "budget_exceeded"
 MODEL_ERROR = "model_error"
 

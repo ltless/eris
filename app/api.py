@@ -63,12 +63,13 @@ builtin_tools.register_builtins()
 app.include_router(mcp.router)
 
 
-# --- request models ---
+# Request models.
 
 
 class Message(BaseModel):
     role: str
     content: str | list
+    quote: str | None = None
 
 
 class ProfileRequest(BaseModel):
@@ -105,7 +106,7 @@ class LoginRequest(BaseModel):
     password: str
 
 
-# --- chat ---
+# Chat.
 
 
 def _last_user_text(messages):
@@ -123,6 +124,26 @@ def _last_user_text(messages):
     return ""
 
 
+def _with_quote(content, quote):
+    """One turn as the model reads it: the quoted words as markdown, then the
+    question. The client keeps the two apart so the bubble can show them
+    separately; they are joined here, on the way in."""
+    quote = (quote or "").strip()
+    if not quote:
+        return content
+    block = "\n".join("> " + line for line in quote.splitlines())
+    if isinstance(content, str):
+        return f"{block}\n\n{content}" if content else block
+    if isinstance(content, list):
+        parts = [dict(p) for p in content]
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") == "text":
+                p["text"] = f"{block}\n\n{p.get('text', '')}"
+                return parts
+        return [{"type": "text", "text": block}, *parts]
+    return content
+
+
 def _build_request(req: ChatRequest, u, messages):
     prefs = u.get("prefs") or {}
     base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
@@ -135,10 +156,7 @@ def _build_request(req: ChatRequest, u, messages):
             "receive, never from training memory."
         ),
     )
-    tool_ctx = ToolContext(
-        user_id=u["id"],
-        approved=set(prefs.get("approved") or ()),
-    )
+    tool_ctx = ToolContext(user_id=u["id"])
     model = req.model or prefs.get("model") or None
     # The stored effort is an index, and which value it means belongs to the
     # model being asked: a ladder is per model, so it is resolved here, against
@@ -166,8 +184,17 @@ def _build_request(req: ChatRequest, u, messages):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, u: dict = Depends(require_user)):
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    query = _last_user_text(messages)
+    # The question is what was typed, the quote is what it answers. They are
+    # stored apart so a reload can draw them as two things, and joined only for
+    # the model, which reads a quoted line as the reader's own words.
+    query = _last_user_text([{"role": m.role, "content": m.content} for m in req.messages])
+    quoted = next((m.quote for m in reversed(req.messages)
+                   if m.role == "user" and m.quote), None)
+    # A reply can be nothing but a selection, with no words typed under it. The
+    # quote is what was said, then, and it names the chat when the question is
+    # empty.
+    subject = query or quoted
+    messages = [{"role": m.role, "content": _with_quote(m.content, m.quote)} for m in req.messages]
     request = _build_request(req, u, messages)
     engine = Engine(request, emitter=Emitter())
 
@@ -177,7 +204,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         # Asked before the run, because the run's own turns rename the chat:
         # the model-written title only ever replaces the placeholder the first
         # user message wrote, never a name someone chose.
-        name_this = bool(req.chat_id and query and not req.regenerate
+        name_this = bool(req.chat_id and subject and not req.regenerate
                          and chats.untitled(req.chat_id))
         web_groups = []
         fetch_rows = []
@@ -186,9 +213,9 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         async def remember():
             if not req.chat_id:
                 return
-            if query and not req.regenerate:
-                chats.save_turn(u["id"], req.chat_id, "user", query)
-                chats.touch_title(req.chat_id, query)
+            if (query or quoted) and not req.regenerate:
+                chats.save_turn(u["id"], req.chat_id, "user", query, quote=quoted)
+                chats.touch_title(req.chat_id, query or quoted)
             answer = engine.result.answer
             if answer:
                 chats.save_turn(
@@ -197,6 +224,9 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                     sources=_number_sources(engine.sources),
                     web=[g for g in web_groups if g["items"]],
                     fetches=fetch_rows or None,
+                    # Only worth storing when a turn has more than one: with one
+                    # round the stored text is already exactly what was drawn.
+                    answers=engine.result.answers if len(engine.result.answers) > 1 else None,
                 )
 
         try:
@@ -246,7 +276,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         # while the chat is still the placeholder the first message wrote. An
         # empty title is the failure case, and the opening words stand.
         if name_this:
-            title = await title_for(query, model=request.model)
+            title = await title_for(subject, model=request.model)
             if title:
                 chats.set_meta(u["id"], req.chat_id, title=title)
                 yield sse({"type": "title", "chat_id": req.chat_id, "title": title})
@@ -263,7 +293,7 @@ def _number_sources(sources):
     return out
 
 
-# --- chats ---
+# Stored chats.
 
 
 @app.get("/api/chats")
@@ -295,7 +325,7 @@ async def chat_delete(chat_id: str, u: dict = Depends(require_session)):
     return {"ok": True}
 
 
-# --- tokens ---
+# API tokens.
 
 
 class TokenNew(BaseModel):
@@ -328,7 +358,7 @@ async def revoke_token(token_id: str, u: dict = Depends(require_session)):
     return {"ok": True}
 
 
-# --- auth ---
+# Auth.
 
 
 @app.post("/api/auth/register")
@@ -403,12 +433,9 @@ async def models(u: dict = Depends(require_user)):
 async def effort(model: str | None = None, u: dict = Depends(require_user)):
     """The effort steps this model offers, for the control to draw.
 
-    Probed here rather than carried on `/api/models`, because a probe is a
-    round trip and the model list must not wait on one. The answer is cached
-    per model, so this is slow once per model and free afterwards.
-
-    The list is never empty: a model with no rungs gets the single fixed step
-    the control can still show, and `always` says it cannot be moved.
+    Probed here rather than on `/api/models`, because the model list must not
+    wait on a round trip; the answer is cached per model. The list is never
+    empty, and `always` marks a model with one rung.
     """
     prefs = u.get("prefs") or {}
     mid = model or prefs.get("model") or settings.model_name
@@ -432,13 +459,9 @@ async def effort(model: str | None = None, u: dict = Depends(require_user)):
 async def server_stats(model: str | None = None, u: dict = Depends(require_user)):
     """What the model server is holding, for the panel in the composer.
 
-    Read-only and cheap: the endpoint is asked what it has loaded, not asked to
-    generate anything, so this can be polled while a chat runs without loading
-    a model or spending a token.
-
-    `ctx` is the context this account would ask for, and it is passed rather
-    than assumed, because the KV figure is sized against it whenever the model
-    is not loaded yet.
+    Nothing is generated, so this can be polled mid-chat without spending a
+    token. `ctx` is passed because the KV figure is sized against it when the
+    model is not loaded yet.
     """
     prefs = u.get("prefs") or {}
     mid = model or prefs.get("model") or settings.model_name
@@ -523,7 +546,7 @@ async def me(u: dict = Depends(require_user)):
     return u
 
 
-# --- health ---
+# Health.
 
 
 @app.get("/api/health")
@@ -540,7 +563,7 @@ async def health():
     return out
 
 
-# --- pages ---
+# Pages.
 
 
 @app.get("/", include_in_schema=False)

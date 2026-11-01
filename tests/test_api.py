@@ -227,10 +227,13 @@ class ChatStreamChecks(unittest.TestCase):
         self.assertEqual(sources["type"], "sources")
         self.assertEqual(sources["items"][0]["source"], "https://a.com")
 
-        self.assertEqual(api.sse_frame(emitter.emit(ev.MODEL_DELTA, text="hi")),
-                         {"type": "delta", "text": "hi"})
+        self.assertEqual(api.sse_frame(emitter.emit(ev.MODEL_DELTA, text="hi", round=2)),
+                         {"type": "delta", "r": 2, "text": "hi"})
+        self.assertEqual(api.sse_frame(emitter.emit(ev.MODEL_THINKING, text="hmm", round=2)),
+                         {"type": "thinking", "r": 2, "text": "hmm"})
+        # No round stated still has to give the browser one to key on.
         self.assertEqual(api.sse_frame(emitter.emit(ev.MODEL_THINKING, text="hmm")),
-                         {"type": "thinking", "text": "hmm"})
+                         {"type": "thinking", "r": 0, "text": "hmm"})
 
     def test_a_tool_failure_reaches_the_browser(self):
         from app.runtime.events import Emitter
@@ -570,8 +573,9 @@ class McpChecks(unittest.TestCase):
         anon.close()
 
     def test_a_gated_tool_refuses_rather_than_running(self):
-        """An approval is a decision a token cannot make, so the call comes back
-        as a tool error the client can read rather than as a silent run."""
+        """Nothing behind a token can answer "may I?", so a tool that changes
+        state comes back as a tool error the client can read rather than as a
+        silent run."""
         from app.tools.registry import Tool, ToolContext, registry
         from app.security import permissions
 
@@ -590,7 +594,7 @@ class McpChecks(unittest.TestCase):
             r = self.rpc("tools/call", {"name": "write_thing", "arguments": {}})
             result = r.json()["result"]
             self.assertTrue(result["isError"])
-            self.assertEqual(called, [], "an unapproved tool ran")
+            self.assertEqual(called, [], "a refused tool ran")
         finally:
             registry.remove("write_thing")
 

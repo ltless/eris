@@ -62,7 +62,7 @@
 
 .auth input {
   height: var(--ctl);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   padding: 0 var(--sp-3);
   font: inherit;

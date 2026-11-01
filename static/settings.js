@@ -103,7 +103,7 @@ function paintProfile(u) {
   paintModel((u.prefs || {}).model_avatar || "");
 }
 
-/* ---------- theme ---------- */
+/* Theme. */
 
 function bindTheme() {
   const mode = window.ErisTheme ? window.ErisTheme.mode : "system";
@@ -116,7 +116,7 @@ function bindTheme() {
   }
 }
 
-/* ---------- API tokens ---------- */
+/* API tokens. */
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 

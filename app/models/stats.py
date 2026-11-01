@@ -1,14 +1,9 @@
 """What the model server is doing with memory, and what it would need.
 
-The endpoint says which context it allocated and how much of a prompt filled.
-The KV cache is different: the endpoint never reports it, so it is derived from
-the model's own metadata, which the endpoint does report, and the arithmetic is
-written out in `kv_bytes` where it can be checked against a measurement.
-
-Nothing here is inferred from a model's name. A model that hides its
-architecture gets a size and no KV figure, which is less than a guess.
-
-The operating system's own answer about video memory lives in `gpu`.
+The endpoint never reports KV cache use, so it is derived from the model
+metadata in `kv_bytes` rather than guessed. Nothing here is inferred from a
+name: a model that hides its architecture gets no KV figure. Video memory comes
+from `gpu` instead.
 """
 
 import asyncio

@@ -16,8 +16,8 @@ def path_from_env(var, default):
 def open_db(existing, path, schema, migrate=None):
     """Return `existing` if it is open, else open `path` and prepare the schema.
 
-    `schema` runs only on a file that did not exist yet; an existing file goes
-    to `migrate`, so a column added later lands without a rebuild.
+    `schema` runs only on a new file; an existing one goes to `migrate`, so a
+    column added later lands without a rebuild.
     """
     if existing is not None:
         return existing

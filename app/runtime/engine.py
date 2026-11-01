@@ -42,6 +42,10 @@ class RunResult:
 
     answer: str = ""
     thinking: list = field(default_factory=list)
+    # The prose of each round, keyed by round number. `answer` is the last
+    # round's text alone; a run that answered, searched, then answered again
+    # has two entries here and only a reload needs them.
+    answers: list = field(default_factory=list)
     sources: list = field(default_factory=list)
     tool_runs: list = field(default_factory=list)
     model_calls: int = 0
@@ -74,11 +78,8 @@ def tool_message(call, content):
 
 
 def _drop_old_tool_messages(messages):
-    """Keep the conversation bounded without losing the turns that matter.
-
-    The system prompt, the original user turn, and the newest tool exchanges
-    stay; the middle of a long tool history is what goes.
-    """
+    """Keep the conversation bounded without losing the turns that matter: the
+    system prompt, the first user turn, and the newest tool exchanges stay."""
     if len(messages) <= MAX_TOOL_MESSAGES:
         return messages
     head = messages[:2]
@@ -102,7 +103,6 @@ class Engine:
         self._seen_sources: set = set()
         self._new_sources = 0
         self._cancelled = False
-        self._awaiting_approval = False
         self._allowed_tool_names = {s["function"]["name"] for s in registry.specs_for(self.ctx)}
         # The offered list is the same every round: the registry is fixed for the
         # life of a run, and only the final pass withholds it.
@@ -228,6 +228,7 @@ class Engine:
             text = "".join(text_parts)
             if text:
                 self.result.answer = text
+                self.result.answers.append({"r": round_no, "text": text})
 
             if final:
                 self.result.stop_reason = "answered"
@@ -249,13 +250,6 @@ class Engine:
             self.thinking.append("")
             async for event in self._run_calls(runnable, messages, round_no):
                 yield event
-
-            # A call needing approval ends the run: carrying on would let the
-            # final pass overwrite `approval_required` with a plain answer,
-            # hiding what the model wanted to do from the user.
-            if self._awaiting_approval:
-                self.result.stop_reason = "approval_required"
-                break
 
             round_no += 1
 
@@ -330,13 +324,6 @@ class Engine:
                     events.TOOL_COMPLETED, tool=name, round=round_no, chars=len(text or ""),
                     sources=len((result.metadata or {}).get("sources", []) or []),
                 )
-            elif result.error and result.error.get("code") == "approval_required":
-                self._awaiting_approval = True
-                yield self.emitter.emit(
-                    events.APPROVAL_REQUIRED, tool=name, round=round_no, args=args,
-                    message=result.error["message"],
-                )
-                self.result.stop_reason = "approval_required"
             else:
                 # `reason` is the tool's own short phrase for what stopped it,
                 # which is what the card replays; `message` is the sentence the

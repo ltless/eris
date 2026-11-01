@@ -368,6 +368,43 @@ def check_chats_sqlite():
     os.unlink(path)
 
 
+def check_quote_roundtrip():
+    import os
+    import tempfile
+    from app import chats
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    os.unlink(path)
+    os.environ["CHAT_DB"] = path
+    chats._db = None
+
+    chats.save_turn(1, "c1", "user", "apa ini", quote="kalimat yang dipilih")
+    # A reply can be the selection alone, with nothing typed under it.
+    chats.save_turn(1, "c1", "user", "", quote="cuma kutipan")
+    chats.save_turn(1, "c1", "user", "tanpa kutipan")
+
+    turns = chats.turns(1, "c1")
+    assert turns[0]["quote"] == "kalimat yang dipilih", turns[0]
+    assert turns[0]["content"] == "apa ini"
+    assert turns[1]["quote"] == "cuma kutipan", turns[1]
+    assert turns[1]["content"] == ""
+    assert "quote" not in turns[2], turns[2]
+
+    # The model reads the quote as markdown above the question, never as its own
+    # field, and a quote with no question still reaches it.
+    assert api._with_quote("apa ini", "kalimat yang dipilih") == (
+        "> kalimat yang dipilih\n\napa ini"
+    )
+    assert api._with_quote("", "cuma kutipan") == "> cuma kutipan"
+    assert api._with_quote("apa ini", "") == "apa ini"
+
+    chats._db.close()
+    chats._db = None
+    del os.environ["CHAT_DB"]
+    os.unlink(path)
+
+
 def check_chats_ownership():
     import os
     import tempfile

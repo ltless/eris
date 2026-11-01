@@ -1,5 +1,4 @@
-/* ==========================================================================
-   Eris sidebar: slim, monochrome, 1px hairlines, ink #111113.
+/* Eris sidebar: slim, monochrome, 1px hairlines, ink #111113.
    The icon axis is locked at 28px (pad 8 + half of the 40px slot) in both the
    expanded and collapsed states, so rows never shift when the rail toggles.
    Rhythm values come from the spacing scale in style.css.
@@ -11,7 +10,7 @@
    between groups. Every row is --row tall.
 
    Motion belongs to the rail and nowhere else in the product. See .side.anim.
-   ========================================================================== */
+*/
 
 :root {
   --sw: 240px;
@@ -32,11 +31,14 @@
 .layout {
   display: flex;
   height: 100vh;
+  /* On a phone, 100vh keeps the height the URL bar hides behind. dvh follows
+     it, so the composer stays on screen while the bar collapses. */
+  height: 100dvh;
   width: 100vw;
   overflow: hidden;
 }
 
-/* --- Container Sidebar --- */
+/* Container. */
 .side {
   width: var(--sw);
   height: 100%;
@@ -63,7 +65,7 @@
   width: var(--rail);
 }
 
-/* --- Icon Cell & Label --- */
+/* Icon cell and label. */
 .ic {
   width: var(--gut);
   min-width: var(--gut);
@@ -167,8 +169,7 @@
   }
 }
 
-/* --- Rows ---
-   Every row in the sidebar is one shape: a 30px line, a 40px icon cell, then
+/* Rows. Every row in the sidebar is one shape: a 30px line, a 40px icon cell,
    the label column. New chat, the destinations, the chat list, and the account
    all inherit this block, so a change to the row rhythm is made once.
 
@@ -209,7 +210,7 @@
   outline-offset: -2px;
 }
 
-/* --- 1. Header (Toggle & Brand) --- */
+/* Header: the toggle and the brand. */
 .side-top {
   display: flex;
   align-items: center;
@@ -277,7 +278,7 @@
   text-overflow: ellipsis;
 }
 
-/* --- 2. Actions: New chat, then the destinations --- */
+/* Actions: new chat, then the destinations. */
 /* Ink by role: the actions and the account are the operator's own entries, so
    they rest at --text; the chat list is content and rests at --muted, coming up
    to --text on hover and when it is the open chat. */
@@ -310,7 +311,7 @@
   color: var(--text);
 }
 
-/* --- 3. Chat History --- */
+/* Chat history. */
 
 /* The section label starts at the label column, not at zero, so "History"
    sits over the names it introduces rather than hanging off to their left. */
@@ -459,8 +460,8 @@
   text-overflow: ellipsis;
 }
 
-/* --- 4. Footer & Profile --- */
-/* The account is the last thing in the column and the only one pinned to the
+/* Footer and profile. The account is the last thing in the column and the only
+   one pinned to the
    bottom. A hairline above it is the sidebar's only divider, and it is what
    keeps the profile from reading as one more chat row. */
 .side-foot {
@@ -502,9 +503,8 @@
   justify-content: center;
 }
 
-/* --- Mobile Drawer (≤ 768px) --- */
-/* The drawer arrives from its own edge while the scrim fades behind it; the
-   close is the instant flip display:none already is. */
+/* Mobile drawer (≤ 768px). The drawer arrives from its own edge while the scrim
+   fades behind it; the close is the instant flip display:none already is. */
 @keyframes side-drawer {
   from {
     transform: translateX(-100%);

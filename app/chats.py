@@ -15,8 +15,8 @@ SCHEMA = (
     "pinned INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);"
     "CREATE TABLE turns("
     "chat_id TEXT NOT NULL, role TEXT NOT NULL, "
-    "content TEXT NOT NULL, thinking TEXT, sources TEXT, "
-    "web TEXT, fetches TEXT, ts INTEGER NOT NULL);"
+    "content TEXT NOT NULL, quote TEXT, thinking TEXT, sources TEXT, "
+    "web TEXT, fetches TEXT, answers TEXT, ts INTEGER NOT NULL);"
     "CREATE INDEX turns_chat ON turns(chat_id);"
 )
 
@@ -29,10 +29,14 @@ def db_path():
 
 def _migrate(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(turns)")}
+    if "quote" not in cols:
+        conn.execute("ALTER TABLE turns ADD COLUMN quote TEXT")
     if "web" not in cols:
         conn.execute("ALTER TABLE turns ADD COLUMN web TEXT")
     if "fetches" not in cols:
         conn.execute("ALTER TABLE turns ADD COLUMN fetches TEXT")
+    if "answers" not in cols:
+        conn.execute("ALTER TABLE turns ADD COLUMN answers TEXT")
 
 
 def db():
@@ -41,8 +45,11 @@ def db():
     return _db
 
 
-def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=None, fetches=None):
-    if not chat_id or not text.strip():
+def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=None, web=None,
+              fetches=None, answers=None):
+    # A reply to a selection can carry a quote with nothing typed under it, so
+    # the quote alone is enough to make a turn worth keeping.
+    if not chat_id or not (text.strip() or (quote or "").strip()):
         return
     # chat_id comes from the client, so a turn may only land in a chat the
     # caller owns. A missing row means this is the first turn of a new chat.
@@ -67,10 +74,11 @@ def save_turn(user_id, chat_id, role, text, thinking=None, sources=None, web=Non
         thinking = thinking[:MAX_THINKING]
     webj = json.dumps(web) if web else None
     fetchj = json.dumps(fetches) if fetches else None
+    ansj = json.dumps(answers) if answers else None
     db().execute(
-        "INSERT INTO turns(chat_id,role,content,thinking,sources,web,fetches,ts) "
-        "VALUES(?,?,?,?,?,?,?,?)",
-        (chat_id, role, text, thinking or None, meta, webj, fetchj, now),
+        "INSERT INTO turns(chat_id,role,content,quote,thinking,sources,web,fetches,answers,ts) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (chat_id, role, text, quote or None, thinking or None, meta, webj, fetchj, ansj, now),
     )
     db().execute(
         "INSERT INTO chats(id,user_id,ts) VALUES(?,?,?) "
@@ -108,7 +116,7 @@ def turns(user_id, chat_id, limit=100):
     # Newest window, then flipped back to reading order: a long chat has to
     # open on its latest exchange, not its first one.
     rows = db().execute(
-        "SELECT role,content,thinking,sources,web,fetches FROM turns "
+        "SELECT role,content,quote,thinking,sources,web,fetches,answers FROM turns "
         "WHERE chat_id=(SELECT id FROM chats WHERE id=? AND user_id=?) "
         "ORDER BY rowid DESC LIMIT ?",
         (chat_id, user_id, limit),
@@ -116,6 +124,8 @@ def turns(user_id, chat_id, limit=100):
     out = []
     for r in rows:
         t = {"role": r["role"], "content": r["content"]}
+        if r["quote"]:
+            t["quote"] = r["quote"]
         if r["thinking"]:
             raw = r["thinking"]
             if raw.startswith("["):
@@ -132,6 +142,8 @@ def turns(user_id, chat_id, limit=100):
             t["web"] = json.loads(r["web"])
         if r["fetches"]:
             t["fetches"] = json.loads(r["fetches"])
+        if r["answers"]:
+            t["answers"] = json.loads(r["answers"])
         out.append(t)
     return out
 

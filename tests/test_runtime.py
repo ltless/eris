@@ -136,22 +136,12 @@ class PolicyChecks(unittest.TestCase):
                     permission=perms.READ_ONLY)
         self.assertTrue(perms.authorize(tool, ToolContext()).allowed)
 
-    def test_a_write_needs_an_approval_for_these_arguments(self):
+    def test_a_write_is_refused_for_want_of_a_way_to_ask(self):
         tool = Tool(name="w", description="d", parameters={}, handler=lambda a: "",
                     permission=perms.WRITE)
-        ctx = ToolContext()
-        decision = perms.authorize(tool, ctx, {"proposal_id": "abc"})
+        decision = perms.authorize(tool, ToolContext(), {"proposal_id": "abc"})
         self.assertFalse(decision.allowed)
-        self.assertEqual(decision.code, "approval_required")
-
-    def test_an_approval_is_bound_to_the_arguments(self):
-        tool = Tool(name="w", description="d", parameters={}, handler=lambda a: "",
-                    permission=perms.WRITE)
-        token = perms.approval_token("w", {"proposal_id": "abc"})
-        ctx = ToolContext(approved={token})
-        self.assertTrue(perms.authorize(tool, ctx, {"proposal_id": "abc"}).allowed)
-        # The same tool with different arguments is a different operation.
-        self.assertFalse(perms.authorize(tool, ctx, {"proposal_id": "def"}).allowed)
+        self.assertEqual(decision.code, "denied")
 
     def test_an_unknown_permission_is_refused(self):
         tool = Tool(name="x", description="d", parameters={}, handler=lambda a: "",
@@ -160,13 +150,6 @@ class PolicyChecks(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("unknown permission", decision.reason)
 
-    def test_approval_tokens_are_stable_and_distinct(self):
-        a = perms.approval_token("t", {"b": 2, "a": 1})
-        b = perms.approval_token("t", {"a": 1, "b": 2})
-        c = perms.approval_token("t", {"a": 1, "b": 3})
-        self.assertEqual(a, b, "key order changed the token")
-        self.assertNotEqual(a, c)
-
     def test_specs_offer_what_can_be_asked_for_and_withhold_the_rest(self):
         reg = Registry()
         reg.add(Tool(name="read", description="d", parameters={"type": "object"},
@@ -174,10 +157,10 @@ class PolicyChecks(unittest.TestCase):
         reg.add(Tool(name="write", description="d", parameters={"type": "object"},
                      handler=lambda a: "", permission=perms.WRITE, tags=("chat",)))
 
-        # Both are offered: a write is unapproved, and asking is what puts the
-        # approval in front of the user.
+        # Only the read is offered: a write would come back refused, so putting
+        # it in front of the model spends a round on a schema it cannot use.
         names = {s["function"]["name"] for s in reg.specs_for(ToolContext())}
-        self.assertEqual(names, {"read", "write"})
+        self.assertEqual(names, {"read"})
 
 
 # --- budgets ---
@@ -509,9 +492,10 @@ class LoopChecks(unittest.TestCase):
         self.assertEqual(result.stop_reason, "cancelled")
         self.assertIn(ev.TASK_CANCELLED, kinds)
 
-    def test_a_required_approval_stops_the_run(self):
-        """A gated call must surface as `approval_required`, not be smoothed
-        over by a later answer: the operation is the thing the user has to see."""
+    def test_a_state_changing_tool_is_refused_and_the_run_carries_on(self):
+        """The tool is not offered, and naming it anyway does not get it run:
+        the registry says no, the model is told, and the round ends in an
+        answer. Nothing here can ask the user, so there is nothing to wait on."""
         from app.tools.registry import Tool, registry as shared
 
         shared.add(Tool(name="gated", description="d",
@@ -521,8 +505,6 @@ class LoopChecks(unittest.TestCase):
 
         class Gated(StubModel):
             def reply(self, payload):
-                if not payload.get("tools"):
-                    return [json.dumps({"message": {"content": "I did the thing."}})]
                 return [json.dumps({"message": {"content": "", "tool_calls": [{
                     "id": "g1", "function": {"name": "gated", "arguments": {}},
                 }]}})]
@@ -537,11 +519,10 @@ class LoopChecks(unittest.TestCase):
             # The registry is process-wide, so a fixture tool registered here
             # would otherwise show up in every later test.
             shared.remove("gated")
-        self.assertEqual(result.stop_reason, "approval_required")
-        self.assertTrue(any(e.type == ev.APPROVAL_REQUIRED for e in events))
-        # No second call: the run stopped rather than asking the model to keep
-        # going without the thing it asked for.
-        self.assertEqual(len(self.stub.payloads), 1)
+        self.assertEqual(result.stop_reason, "answered")
+        self.assertNotIn("gated", json.dumps(self.stub.payloads[0].get("tools") or []),
+                         "a write was offered to the model")
+        self.assertTrue(any(e.type == ev.TOOL_FAILED for e in events))
         self.assertFalse([r for r in result.tool_runs if r.get("ok")])
 
     def test_events_carry_increasing_sequence_numbers(self):

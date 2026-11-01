@@ -77,7 +77,7 @@
   transform-origin: bottom left;
 }
 
-/* --- the model menu --- */
+/* The model menu. */
 
 #modelMenu {
   width: 200px;
@@ -153,7 +153,7 @@
   transition: top var(--mo-fast) var(--mo-ease), height var(--mo-fast) var(--mo-ease);
 }
 
-/* --- the effort slider --- */
+/* The effort slider. */
 
 /* The panel is a small sheet of its own: the rail spans the full width with
    the thumb's radius of margin at each end, and the two words that name the

@@ -140,7 +140,9 @@ try {
 
     # 5. app
     Write-Host "> Eris on http://localhost:$Port"
-    & $venvPython -m uvicorn app.api:app --host 0.0.0.0 --port $Port
+    # Watching `app` rather than the whole tree: the default scan includes
+    # .venv, where every installed package is a file to stat on each save.
+    & $venvPython -m uvicorn app.api:app --host 0.0.0.0 --port $Port --reload --reload-dir app
 }
 finally {
     if ($llamaProc -and -not $llamaProc.HasExited) {

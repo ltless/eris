@@ -9,6 +9,7 @@ const els = {
   fileInput: document.getElementById("fileInput"),
   box: document.getElementById("box"),
   count: document.getElementById("count"),
+  quotes: document.getElementById("quotes"),
 };
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -39,6 +40,116 @@ function autoScroll() {
 }
 
 els.messages.addEventListener("scroll", syncScrollBtn, { passive: true });
+
+/* Reply to a selection. Selecting text inside a turn offers one action, and the
+   result waits above the field as its own chip rather than as lines in the
+   textarea: quoted words and typed words are different things, and once they
+   share one box there is no telling them apart. The action chip is fixed rather
+   than absolute, because the messages pane clips its own overflow and would cut
+   off a child reaching past its edge. */
+const QUOTE_MAX = 1000;
+const QUOTE_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17l-5-5 5-5"/><path d="M4 12h11a5 5 0 0 1 5 5v3"/></svg>';
+const X_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+
+const quoteBtn = document.createElement("button");
+quoteBtn.type = "button";
+quoteBtn.className = "quote-btn";
+quoteBtn.hidden = true;
+quoteBtn.setAttribute("aria-label", "Quote the selected text");
+quoteBtn.innerHTML = QUOTE_ICON + "Ask";
+document.body.append(quoteBtn);
+
+let quotedText = "";
+let pendingQuote = "";
+
+function hideQuote() {
+  quotedText = "";
+  quoteBtn.hidden = true;
+}
+
+// The quote chip carries an X rather than relying on the textarea's own undo:
+// it is removable on its own, leaving whatever was typed untouched.
+function setQuote(text) {
+  pendingQuote = text;
+  els.quotes.hidden = !text;
+  els.quotes.innerHTML = "";
+  if (text) els.quotes.append(quoteChip(text));
+  refresh();
+}
+
+function quoteChip(text) {
+  const chip = document.createElement("span");
+  chip.className = "quote-chip";
+  chip.title = text;
+  chip.insertAdjacentHTML("afterbegin", QUOTE_ICON);
+  const name = document.createElement("span");
+  name.className = "chip-name";
+  name.textContent = text.replace(/\s+/g, " ").trim();
+  chip.append(name);
+
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "chip-x";
+  x.title = "Remove quote";
+  x.setAttribute("aria-label", "Remove quoted text");
+  x.innerHTML = X_ICON;
+  x.addEventListener("click", () => {
+    setQuote("");
+    els.input.focus();
+  });
+  chip.append(x);
+  return chip;
+}
+
+function showQuote() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return hideQuote();
+  const range = sel.getRangeAt(0);
+  const anchor = range.commonAncestorContainer;
+  const el = anchor.nodeType === 1 ? anchor : anchor.parentElement;
+  // Only a turn's own prose is quotable: the empty state and the toolbar that
+  // sits beside a message are not things anyone replies to.
+  if (!el || !el.closest(".msg .body")) return hideQuote();
+  const text = sel.toString().trim();
+  if (!text) return hideQuote();
+  quotedText = text.length > QUOTE_MAX ? text.slice(0, QUOTE_MAX) + "…" : text;
+
+  // Placed after it is shown, because a hidden element has no size to measure
+  // against. The chip prefers to sit under the selection and flips above it
+  // when the messages pane runs out of room, so it never covers the composer.
+  quoteBtn.hidden = false;
+  const pane = els.messages.getBoundingClientRect();
+  const box = range.getBoundingClientRect();
+  const w = quoteBtn.offsetWidth;
+  const h = quoteBtn.offsetHeight;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+  quoteBtn.style.left = clamp(box.left + box.width / 2 - w / 2,
+                              pane.left + 8, pane.right - w - 8) + "px";
+  let top = box.bottom + 6;
+  if (top + h > pane.bottom - 8) top = box.top - h - 6;
+  quoteBtn.style.top = clamp(top, pane.top + 8, pane.bottom - h - 8) + "px";
+}
+
+quoteBtn.addEventListener("mousedown", (e) => e.preventDefault());
+quoteBtn.addEventListener("click", () => {
+  setQuote(quotedText);
+  hideQuote();
+  window.getSelection().removeAllRanges();
+  els.input.focus();
+});
+
+// The quote rides beside the question, never inside it: they are sent as two
+// fields and the server joins them into one message for the model, so a
+// reopened chat can still draw the quoted words as something nobody typed.
+
+document.addEventListener("selectionchange", showQuote);
+// The chip is fixed to the viewport, so it stays put while the text under it
+// moves. Any scroll or resize drops it rather than leaving it pointing at
+// something the reader can no longer see.
+els.messages.addEventListener("scroll", hideQuote, { passive: true });
+window.addEventListener("resize", hideQuote);
 
 const MAX = 4000;
 
@@ -78,6 +189,7 @@ function showEmpty() {
 // innerHTML wipes destroy the sticky scroll button; every message-area reset
 // goes through here so it stays attached and its visibility state stays fresh.
 function resetMessages(html = "") {
+  hideQuote();
   els.messages.innerHTML = html;
   els.messages.append(scrollBtn);
   syncScrollBtn();
@@ -110,7 +222,7 @@ function paintRole(el) {
   el.textContent = "AI";
 }
 
-function addMessage(role, text, images) {
+function addMessage(role, text, images, quote) {
   document.getElementById("empty")?.remove();
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
@@ -132,10 +244,21 @@ function addMessage(role, text, images) {
     body.append(imgs);
   }
   if (role === "user") {
-    const t = document.createElement("div");
-    t.className = "bubble";
-    t.textContent = text;
-    body.append(t);
+    // Two surfaces, not one: the quote is text the reader picked out of an
+    // earlier answer and the bubble is what they typed, so the quote keeps its
+    // own smaller chip instead of riding inside the question.
+    if (quote) {
+      const q = document.createElement("div");
+      q.className = "quoted";
+      q.textContent = quote;
+      body.append(q);
+    }
+    if (text) {
+      const t = document.createElement("div");
+      t.className = "bubble";
+      t.textContent = text;
+      body.append(t);
+    }
     const av = document.createElement("div");
     av.className = "avatar";
     paintAvatar(av);
@@ -153,7 +276,8 @@ function addMessage(role, text, images) {
 
 function refresh() {
   const len = els.input.value.length;
-  const has = els.input.value.trim().length > 0 || ErisAttach.hasImage();
+  const has =
+    els.input.value.trim().length > 0 || ErisAttach.hasImage() || !!pendingQuote;
   const over = len > MAX;
   els.send.disabled = !sending && (!has || over);
   els.count.textContent = len + " / " + MAX;
@@ -167,13 +291,14 @@ function syncInput() {
   refresh();
 }
 
-/* ---------- sessions ---------- */
+/* Sessions. */
 
 function blankChat() {
   activeId = null;
   ErisSidebar.setActive(null);
   els.chatTitle.textContent = "New chat";
   ErisAttach.clear();
+  setQuote("");
   resetMessages();
   showEmpty();
   els.input.value = "";
@@ -188,14 +313,21 @@ function loadSession(id) {
   ErisSidebar.setActive(id);
   els.chatTitle.textContent = s.title;
   ErisAttach.clear();
+  setQuote("");
   resetMessages();
   const paint = () => {
     if (!s.messages.length) {
       showEmpty();
     } else {
       s.messages.forEach((m) => {
-        const body = addMessage(m.role, m.content, m.images);
         const thinkRounds = Array.isArray(m.thinking) ? m.thinking : m.thinking ? [m.thinking] : [];
+        // A turn that answered between two searches was drawn as several
+        // blocks, so the stored rounds are what rebuilds that order; the flat
+        // text is only the fallback for a turn saved before that was recorded.
+        const answerRows = new Map(
+          (Array.isArray(m.answers) ? m.answers : []).map((a) => [a.r ?? 0, a.text])
+        );
+        const body = addMessage(m.role, answerRows.size ? "" : m.content, m.images, m.quote);
         const web = (m.sources || []).filter((x) => x.kind === "web");
         const groups = (m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [])
           .map((g) => ({ r: g.r ?? 0, query: g.query, items: g.items }));
@@ -219,8 +351,9 @@ function loadSession(id) {
           anchor = el;
         };
         // A round's searches and its reads are replayed in the same order the
-        // round drew them: the search that prompted a read comes first.
-        const roundNums = new Set([...rows.keys(), ...readRows.keys()]);
+        // round drew them: the search that prompted a read comes first, and the
+        // answer the round produced comes after both.
+        const roundNums = new Set([...rows.keys(), ...readRows.keys(), ...answerRows.keys()]);
         const rounds = Math.max(thinkRounds.length, ...[...roundNums].map((r) => r + 1), 0);
         for (let i = 0; i < rounds; i++) {
           if (i < thinkRounds.length) {
@@ -243,6 +376,13 @@ function loadSession(id) {
             if (f.ok === false) fc.fail(f.reason);
             else fc.done(f.chars);
           }
+          const text = answerRows.get(i);
+          if (text) {
+            const a = document.createElement("div");
+            a.className = "ans";
+            a.innerHTML = ErisMarkdown.render(text);
+            put(a);
+          }
         }
         if (m.role === "assistant") {
           ErisMarkdown.highlight(body);
@@ -254,7 +394,7 @@ function loadSession(id) {
   };
   if (!s.messages.length && s.remote) {
     fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
-      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches }));
+      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, quote: m.quote, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, answers: m.answers }));
       s.remote = false;
       paint();
     }).catch(paint);
@@ -268,13 +408,16 @@ function toPayload(s) {
   // The server stores them but never replays them into a request, so leaving
   // them out here is what made a reopened chat start over from nothing.
   return s.messages.map((m) => {
+    // Sent as its own field so the server can keep the two apart on disk; it is
+    // the server that joins them again into what the model reads.
+    const quoted = m.quote ? { quote: m.quote } : {};
     if (m.images && m.images.length) {
       const parts = [];
       if (m.content) parts.push({ type: "text", text: m.content });
       for (const url of m.images) parts.push({ type: "image_url", image_url: { url } });
-      return { role: m.role, content: parts };
+      return { role: m.role, content: parts, ...quoted };
     }
-    return { role: m.role, content: m.content };
+    return { role: m.role, content: m.content, ...quoted };
   });
 }
 
@@ -285,7 +428,7 @@ function setStreaming(on) {
   refresh();
 }
 
-async function send(text, regen = false) {
+async function send(text, regen = false, quote = "") {
   let s = current();
   if (!s) {
     s = { id: crypto.randomUUID(), title: "New chat", messages: [] };
@@ -304,10 +447,15 @@ async function send(text, regen = false) {
   refresh();
 
   if (!regen) {
-    addMessage("user", text, images);
-    s.messages.push({ role: "user", content: text, ...(images.length ? { images } : {}) });
+    addMessage("user", text, images, quote);
+    s.messages.push({
+      role: "user",
+      content: text,
+      ...(images.length ? { images } : {}),
+      ...(quote ? { quote } : {}),
+    });
     if (s.messages.length === 1) {
-      s.title = text.slice(0, 40) || (images.length ? "Image" : "New chat");
+      s.title = (text || quote).slice(0, 40) || (images.length ? "Image" : "New chat");
       els.chatTitle.textContent = s.title;
       ErisSidebar.setChats(sessions);
     }
@@ -318,14 +466,57 @@ async function send(text, regen = false) {
   }
 
   const body = addMessage("assistant", "");
+
+  // The wait before the first frame has no shape of its own, so it says what it
+  // is doing in Eris's own voice and moves on to another line while it waits.
+  // It never outlives the wait: the first real frame clears it.
+  const WAITING = [
+    "Waking Eris up…",
+    "Bonking Eris…",
+    "Rubbing the sleep out of her eyes…",
+    "Brewing a thought…",
+    "Dusting off the brain cells…",
+    "Poking Eris awake…",
+    "Shuffling some ideas around…",
+    "Tuning the antennas…",
+    "Sharpening a pencil…",
+    "Warming up the neurons…",
+    "Consulting the void…",
+    "Straightening her headphones…",
+  ];
+  let waitTimer = null;
+  let waitLast = -1;
+  let waitEl = null;
+  const stopWait = () => {
+    clearInterval(waitTimer);
+    waitTimer = null;
+  };
+  const clearStatus = () => {
+    stopWait();
+    waitEl?.remove();
+    waitEl = null;
+  };
   const setStatus = (label) => {
-    body.querySelector(".status")?.remove();
+    clearStatus();
     const el = document.createElement("div");
     el.className = "status";
-    el.innerHTML = `<span class="dot"></span>${label}`;
+    el.setAttribute("role", "status");
+    el.textContent = label;
     body.append(el);
+    waitEl = el;
   };
-  setStatus("Sending...");
+  // The line already on screen is not replaced by its own repeat, so the
+  // sequence reads as movement rather than a stutter. The element stays put and
+  // only its text changes, which is also what a screen reader hears.
+  const nextWait = () => {
+    let i = waitLast;
+    while (i === waitLast) i = Math.floor(Math.random() * WAITING.length);
+    waitLast = i;
+    if (!waitEl) setStatus(WAITING[i]);
+    else waitEl.textContent = WAITING[i];
+  };
+  nextWait();
+  waitTimer = setInterval(nextWait, 2400);
   let raw = "";
   let aborted = false;
   let thinkRounds = [];
@@ -341,6 +532,16 @@ async function send(text, regen = false) {
   let sources = [];
   let webGroups = [];
   let fetchGroups = [];
+  // What each round's answer said, for the turn this session pushes back into
+  // `s.messages`: without it a reopen falls back to the flat text and loses the
+  // order the round logic just established on screen.
+  let answerRounds = [];
+  // The answer is drawn one block per round, not one per turn. A later round's
+  // reasoning can only sit between two pieces of prose if those pieces are
+  // separate nodes; with a single block it had nowhere to go but above it.
+  let ans = null;
+  let ansRound = -1;
+  let ansText = "";
 
   const finishThink = () => {
     if (!thinkCtl) return;
@@ -369,14 +570,25 @@ async function send(text, regen = false) {
     for (const f of fetchQ) f.ctl.done(f.g.chars);
     fetchQ = [];
   };
-  // Process cards belong above the answer whatever order the server sends
-  // them in. A model that narrates before it searches has already given the
-  // answer element a home, and appending the search card after that would
-  // put the process underneath prose it happened before.
-  const aboveAnswer = (el) => {
-    const ans = body.querySelector(".ans");
-    if (ans) body.insertBefore(el, ans);
-    return el;
+  // Ends the block currently being written so whatever arrives next lands
+  // after it. Cards are appended, never hoisted across rounds: the stream is
+  // already in the order things happened, and the old insert-before-the-answer
+  // rule is what put a new round's thinking on top of the previous round's prose.
+  //
+  // Keyed by round: a model that reasons mid-round is still writing the same
+  // answer, and closing on that would split one answer into two blocks.
+  const closeAnswer = (r) => {
+    if (!ans || ansRound === r) return;
+    ans = null;
+    ansRound = -1;
+    ansText = "";
+  };
+  // A card raised while the same round is still writing its prose goes above
+  // that prose, as it always has; one from a later round closes the block and
+  // lands underneath it.
+  const placeCard = (ctl, r) => {
+    if (ans && ansRound === r) body.insertBefore(ctl.el, ans);
+    else closeAnswer(r);
   };
 
   controller = new AbortController();
@@ -420,20 +632,20 @@ async function send(text, regen = false) {
           finishThink();
           if (webCtl && evt.r !== webR) finishWeb();
           if (!webCtl) {
-            body.querySelector(".status")?.remove();
+            clearStatus();
             webCtl = ErisToolCall.webSearch(body);
-            aboveAnswer(webCtl.el);
+            placeCard(webCtl, evt.r);
             webR = evt.r;
           }
           webCtl.addQuery(evt.query || "Search");
           webGroups.push({ r: evt.r, query: evt.query || "", items: [] });
         } else if (evt.type === "fetch") {
           finishThink();
-          body.querySelector(".status")?.remove();
+          clearStatus();
           const g = { r: evt.r, url: evt.url, chars: 0 };
           const ctl = ErisToolCall.fetchPage(body);
           ctl.setUrl(evt.url);
-          aboveAnswer(ctl.el);
+          placeCard(ctl, evt.r);
           fetchQ.push({ ctl, g });
           fetchGroups.push(g);
         } else if (evt.type === "fetch_done") {
@@ -474,11 +686,9 @@ async function send(text, regen = false) {
           }
         } else if (evt.type === "thinking") {
           if (!thinkCtl) {
-            body.querySelector(".status")?.remove();
+            clearStatus();
             thinkCtl = ErisToolCall.thinking(body);
-            // Same rule as the search card: a later round's reasoning is still
-            // process, and process stays above whatever has been written.
-            aboveAnswer(thinkCtl.el);
+            placeCard(thinkCtl, evt.r);
           }
           thinkAll += evt.text;
           thinkRound += evt.text;
@@ -495,29 +705,32 @@ async function send(text, regen = false) {
           if (s.id === activeId) els.chatTitle.textContent = s.title;
           ErisSidebar.setChats(sessions);
         } else if (evt.type === "delta") {
-          raw += evt.text;
-          let ans = body.querySelector(".ans");
-          if (!ans) {
+          // Keyed by round, and rendered from this block's own text rather than
+          // from `raw`: `raw` spans the whole turn, so a second round drawing
+          // from it would repeat the first round's answer above its own cards.
+          if (evt.r !== ansRound) {
             finishThink();
             finishWeb();
-            body.querySelector(".status")?.remove();
+            clearStatus();
             ans = document.createElement("div");
             ans.className = "ans";
             body.append(ans);
+            ansRound = evt.r;
+            ansText = "";
+            // One block per round on screen, one string in the stored turn; the
+            // blank line is what keeps a reload from running them together.
+            if (raw) raw += "\n\n";
           }
-          ans.innerHTML = ErisMarkdown.render(raw) + '<span class="cursor">&#9613;</span>';
+          raw += evt.text;
+          ansText += evt.text;
+          if (answerRounds.at(-1)?.r === evt.r) answerRounds.at(-1).text = ansText;
+          else answerRounds.push({ r: evt.r, text: ansText });
+          ans.innerHTML = ErisMarkdown.render(ansText);
           autoScroll();
-        } else if (evt.type === "approval") {
-          finishThink();
-          finishWeb();
-          body.querySelector(".status")?.remove();
-          const msg = document.createElement("div");
-          msg.className = "err";
-          msg.textContent = `Approval needed: ${evt.tool} — ${evt.message || "this tool requires approval to run"}`;
-          body.append(msg);
         } else if (evt.type === "error") {
           const err = document.createElement("div");
           err.className = "err";
+          err.setAttribute("role", "alert");
           err.textContent = evt.message;
           body.append(err);
         }
@@ -530,6 +743,7 @@ async function send(text, regen = false) {
     } else {
       const err = document.createElement("div");
       err.className = "err";
+      err.setAttribute("role", "alert");
       err.textContent = e.message;
       body.append(err);
     }
@@ -538,8 +752,7 @@ async function send(text, regen = false) {
     sending = false;
     setStreaming(false);
     els.input.focus();
-    body.querySelector(".cursor")?.remove();
-    body.querySelector(".status")?.remove();
+    clearStatus();
     if (!aborted && !raw && !body.querySelector(".err")) {
       // Thinking rows and search rows are not an answer, so they no longer
       // suppress this. Silence after a run of tool calls is what the user reads
@@ -560,6 +773,7 @@ async function send(text, regen = false) {
         ...(sources.length ? { sources } : {}),
         ...(groups.length ? { web: groups } : {}),
         ...(fetchGroups.length ? { fetches: fetchGroups } : {}),
+        ...(answerRounds.length > 1 ? { answers: answerRounds } : {}),
       });
       addRegen(body, s);
     }
@@ -567,7 +781,7 @@ async function send(text, regen = false) {
 }
 
 
-/* ---------- events ---------- */
+/* The stream's frame handlers. */
 
 els.form.addEventListener("submit", (e) => {
   e.preventDefault();
@@ -578,10 +792,12 @@ els.form.addEventListener("submit", (e) => {
   const text = els.input.value.trim();
   if (els.input.value.length > MAX) return;
   const hasImg = ErisAttach.hasImage();
-  if (!text && !hasImg) return;
+  if (!text && !hasImg && !pendingQuote) return;
+  const quote = pendingQuote;
+  setQuote("");
   els.input.value = "";
   syncInput();
-  send(text);
+  send(text, false, quote);
 });
 
 els.input.addEventListener("keydown", (e) => {
@@ -592,6 +808,17 @@ els.input.addEventListener("keydown", (e) => {
 });
 
 els.input.addEventListener("input", syncInput);
+
+// The on-screen keyboard shrinks the visual viewport without resizing the
+// layout, so a fixed-height app leaves the composer underneath it.
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", () => {
+    if (document.activeElement === els.input) {
+      els.messages.scrollTop = els.messages.scrollHeight;
+    }
+  });
+}
+
 ErisAttach.onChange(refresh);
 
 els.menuBtn.addEventListener("click", () => ErisSidebar.open());

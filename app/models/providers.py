@@ -1,11 +1,8 @@
 """Provider transport: speaks to the model server.
 
-The endpoint's URL shape lives in `endpoint`, and the `think` ladder in
-`ladder`; this module is the request itself — the NDJSON framing, the tool
-call shapes, and the error the runtime catches.
-
-The endpoint is the llama.cpp native `/api/chat` route; the OpenAI-shaped
-`/v1/...` set is used only for the model list.
+This is the request itself: NDJSON framing, tool call shapes, and the error the
+runtime catches. The endpoint is llama.cpp's native `/api/chat`; the
+OpenAI-shaped `/v1/...` set is used only for the model list.
 """
 
 import json
@@ -231,13 +228,10 @@ SIZE = re.compile(r"^(\d+(?:\.\d+)?)B$", re.I)
 def model_label(mid):
     """A model id as a person would read it.
 
-    The registry path, the GGUF suffix and a `latest` tag all name the file
-    rather than the model, so they are dropped: `huggingface.co/XHToken/
-    Spark-X2.6-4B-GGUF:latest` becomes `Spark X2.6:4B`. Nothing here changes
-    what is stored or sent — the id stays the only handle the endpoint accepts.
-
-    A tag that is not `latest` is kept, because in Ollama it is the variant
-    (`:Q4_K_M`, `:14b`) and dropping it would give two entries one name.
+    Display only; the stored id stays the handle the endpoint accepts. The
+    registry path, the GGUF suffix and a `latest` tag name the file, so they go.
+    Any other tag stays: in Ollama it is the variant, and dropping it would give
+    two entries one name.
     """
     name = mid.rsplit("/", 1)[-1]
     # The tag comes off before the suffix, because a `.gguf` in the tag's

@@ -28,9 +28,6 @@ TOOL_FAILED = "tool.failed"
 # Sources a tool or the retrieval pass put in front of the model.
 SOURCE_FOUND = "source.found"
 
-# Approvals.
-APPROVAL_REQUIRED = "approval.required"
-
 # How a run ended.
 TASK_COMPLETED = "task.completed"
 TASK_FAILED = "task.failed"

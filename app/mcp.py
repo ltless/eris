@@ -88,7 +88,7 @@ async def _mcp_call(user, params):
         return None, "Arguments must be an object"
     if registry.get(name) is None:
         return None, f"Unknown tool: {name}"
-    ctx = ToolContext(user_id=user["id"], approved=set())
+    ctx = ToolContext(user_id=user["id"])
     result = await registry.call(name, args, ctx)
     return {"content": _mcp_content(result), "isError": not result.success,
             "structuredContent": result.data if result.data else None}, None
@@ -119,8 +119,8 @@ async def _mcp_handle(user, body):
             "serverInfo": {"name": "eris", "version": "1.0"},
             "instructions": (
                 "These are Eris's own tools, running as the account that owns this "
-                "token. A tool that changes state needs an approval the token cannot "
-                "give, so it will refuse; reads and searches run."
+                "token. A tool that changes state is refused, because nothing here "
+                "can ask the account for permission; reads and searches run."
             ),
         }), 200
     if method == "ping":

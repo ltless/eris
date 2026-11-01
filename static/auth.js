@@ -7,11 +7,27 @@ if (fetch("/api/auth/me").then((r) => { if (r.ok) location.href = "/"; })) {}
 function tab(login) {
   tabLogin.classList.toggle("on", login);
   tabReg.classList.toggle("on", !login);
+  tabLogin.setAttribute("aria-selected", String(login));
+  tabReg.setAttribute("aria-selected", String(!login));
+  tabLogin.tabIndex = login ? 0 : -1;
+  tabReg.tabIndex = login ? -1 : 0;
   fLogin.hidden = !login;
   fReg.hidden = login;
 }
 tabLogin.onclick = () => tab(true);
 tabReg.onclick = () => tab(false);
+tab(true);
+
+// One tab stop for the pair, arrows to move between them.
+for (const el of [tabLogin, tabReg]) {
+  el.addEventListener("keydown", (e) => {
+    const next = { ArrowLeft: true, ArrowRight: false, Home: true, End: false }[e.key];
+    if (next === undefined) return;
+    e.preventDefault();
+    tab(next);
+    (next ? tabLogin : tabReg).focus();
+  });
+}
 
 async function go(url, body, errEl) {
   errEl.hidden = true;

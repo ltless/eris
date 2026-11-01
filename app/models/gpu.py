@@ -77,10 +77,8 @@ def _read_gpu_total():
 
 def _run_gpu_script():
     """One spawn for every live figure, and `None` where the machine can't say.
-
-    The counters reach the driver, so they answer in well under a second; the
-    process spawn is the expensive part, which is why they share one.
-    """
+    The counters answer in well under a second; the spawn is the expensive part,
+    which is why they share one."""
     if not shutil.which("powershell"):
         return None
     try:

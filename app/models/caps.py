@@ -1,16 +1,9 @@
 """What a model can do, as the endpoint declares it.
 
-Three things here are per model and none of them can be read off a name: the
-model list reports one set of ids and the same endpoint can serve a model that
-calls tools beside one that ignores the tool list entirely. The endpoint states
-this, so it is asked rather than guessed, and the answer cannot change while
-the process is up — a different capability set is a different model id.
-
-Asked of `/api/tags`, which answers for the whole list in one request. A server
-that does not report capabilities there (llama.cpp's own `/v1/models` does not)
-answers `None` for everything, and every caller reads `None` as "unknown, offer
-it": a tool list the model ignores costs tokens, but a tool list withheld from a
-model that could use it costs the answer.
+Capabilities cannot be read off a name, so `/api/tags` is asked once and the
+answer kept. A server that reports nothing answers `None`, which every caller
+reads as "unknown, offer it": a tool list the model ignores costs tokens, but
+one withheld from a model that could use it costs the answer.
 """
 
 import httpx

@@ -120,7 +120,7 @@
   outline-offset: 2px;
 }
 
-/* ---- Layout: rail + panel. The panel is the scroll container. ---- */
+/* Layout: rail and panel. The panel is the scroll container. */
 
 .dlg-layout {
   display: grid;
@@ -204,8 +204,8 @@
   color: var(--accent-ink);
 }
 
-/* ---- Narrow: the sheet takes the screen and the rail becomes a chip row ----
-   The breakpoint matches the sidebar drawer and the composer in style.css, so
+/* Narrow: the sheet takes the screen and the rail becomes a chip row. The
+   breakpoint matches the sidebar drawer and the composer in style.css, so
    there is no band where the sheet is fullscreen but the rail is still open. */
 
 @media (max-width: 768px) {

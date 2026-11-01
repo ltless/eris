@@ -45,41 +45,47 @@ const ErisMarkdown = (() => {
   // "[3]" in the answer points at the third source of this turn. Text inside a
   // code block or an existing link is skipped, and a number the turn did not
   // produce is marked rather than linked, so it reads as a dangling reference.
+  //
+  // Every answer block, not just the first: a turn that searched between two
+  // answers has one block per round, and the citations of a later round are in
+  // a later block.
   function linkCitations(body, items) {
-    const ans = body.querySelector(".ans");
-    if (!ans) return;
+    const blocks = body.querySelectorAll(".ans");
+    if (!blocks.length) return;
     const byN = new Map((items || []).filter((x) => x.n).map((x) => [x.n, x]));
-    const walker = document.createTreeWalker(ans, NodeFilter.SHOW_TEXT);
-    const targets = [];
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (node.parentElement.closest("pre, code, a")) continue;
-      if (/\[\d{1,3}\]/.test(node.textContent)) targets.push(node);
-    }
-    for (const node of targets) {
-      const frag = document.createDocumentFragment();
-      let last = 0;
-      for (const hit of node.textContent.matchAll(/\[(\d{1,3})\]/g)) {
-        frag.append(document.createTextNode(node.textContent.slice(last, hit.index)));
-        const a = document.createElement("a");
-        a.className = "cite";
-        a.textContent = `[${hit[1]}]`;
-        const src = byN.get(parseInt(hit[1], 10));
-        if (src && src.kind === "web" && /^https?:\/\//i.test(src.source)) {
-          a.href = src.source;
-          a.target = "_blank";
-          a.rel = "noopener noreferrer";
-          a.title = src.source;
-        } else if (src) {
-          a.title = src.source;
-        } else {
-          a.className = "cite cite-x";
-          a.title = "source not in this answer";
-        }
-        frag.append(a);
-        last = hit.index + hit[0].length;
+    for (const ans of blocks) {
+      const walker = document.createTreeWalker(ans, NodeFilter.SHOW_TEXT);
+      const targets = [];
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (node.parentElement.closest("pre, code, a")) continue;
+        if (/\[\d{1,3}\]/.test(node.textContent)) targets.push(node);
       }
-      frag.append(document.createTextNode(node.textContent.slice(last)));
-      node.replaceWith(frag);
+      for (const node of targets) {
+        const frag = document.createDocumentFragment();
+        let last = 0;
+        for (const hit of node.textContent.matchAll(/\[(\d{1,3})\]/g)) {
+          frag.append(document.createTextNode(node.textContent.slice(last, hit.index)));
+          const a = document.createElement("a");
+          a.className = "cite";
+          a.textContent = `[${hit[1]}]`;
+          const src = byN.get(parseInt(hit[1], 10));
+          if (src && src.kind === "web" && /^https?:\/\//i.test(src.source)) {
+            a.href = src.source;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.title = src.source;
+          } else if (src) {
+            a.title = src.source;
+          } else {
+            a.className = "cite cite-x";
+            a.title = "source not in this answer";
+          }
+          frag.append(a);
+          last = hit.index + hit[0].length;
+        }
+        frag.append(document.createTextNode(node.textContent.slice(last)));
+        node.replaceWith(frag);
+      }
     }
   }
 

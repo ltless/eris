@@ -104,8 +104,9 @@ docker compose up -d
   and SearXNG.
 - Tests: `.venv\Scripts\python.exe tests/run_all.py` runs every suite and
   prints one total. None of them need Docker or a model.
-- A tool that changes something needs an approval bound to that exact call,
-  and a run that hits one stops there rather than answering around it.
+- A tool that changes state is refused, and never offered to the model in the
+  first place: nothing in this app can stop and ask the person whether they
+  meant it, so the answer stays no rather than becoming yes by default.
 - API tokens (`TOKENS_DB`) let a script, an editor, or an MCP client act as the
   account without a cookie. Only the hash is stored; the plaintext is returned
   once and has no read-back route. A token is **read scope**: `require_user`
@@ -118,5 +119,5 @@ docker compose up -d
   `tools/call` over the tools already registered, with `notifications/*` answered
   `202` and `GET` answered `405` because this server never pushes. Tool execution
   failures come back as `isError: true`; a malformed call or an unknown tool is a
-  JSON-RPC error. A tool that needs an approval refuses, because a token cannot
-  give one.
+  JSON-RPC error. A tool that changes state refuses, because a token has no way
+  to be asked.
