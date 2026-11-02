@@ -115,7 +115,7 @@ try {
                 '--model', $ModelPath,
                 '--host', '0.0.0.0',
                 '--port', '8080',
-                '--ctx-size', '8192',
+                '--ctx-size', '16384',
                 '--n-gpu-layers', '99',
                 '--reasoning-format', 'deepseek'
             )

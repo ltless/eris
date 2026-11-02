@@ -3,7 +3,18 @@
 // with no flash of the wrong palette. Choice lives in localStorage because it
 // must apply on the auth page too, before any account exists.
 (function () {
-  var mode = localStorage.getItem("eris-theme") || "system";
+  // A blocked or absent store throws rather than returning null, and this runs
+  // before anything else does: an uncaught throw here leaves data-theme unset
+  // and window.ErisTheme missing for the rest of the page's life.
+  function stored() {
+    try {
+      return localStorage.getItem("eris-theme");
+    } catch {
+      return null;
+    }
+  }
+
+  var mode = stored() || "system";
   var mq = matchMedia("(prefers-color-scheme: dark)");
 
   function resolve() {
@@ -32,7 +43,9 @@
     },
     set: function (m) {
       mode = m;
-      localStorage.setItem("eris-theme", m);
+      try {
+        localStorage.setItem("eris-theme", m);
+      } catch {}
       apply();
     },
   };

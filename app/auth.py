@@ -131,24 +131,39 @@ def set_media(user_id, kind, url):
         # The model picture belongs to the account's preferences, next to the
         # model choice and the prompt, so it lives in the prefs blob. A None url
         # clears the key instead of storing a null.
-        row = db().execute("SELECT prefs FROM users WHERE id=?", (user_id,)).fetchone()
-        prefs = {}
-        if row and row["prefs"]:
-            try:
-                prefs = json.loads(row["prefs"])
-            except ValueError:
-                pass
-        if url:
-            prefs["model_avatar"] = url
-        else:
-            prefs.pop("model_avatar", None)
-        set_prefs(user_id, prefs)
+        def change(prefs):
+            if url:
+                prefs["model_avatar"] = url
+            else:
+                prefs.pop("model_avatar", None)
+
+        update_prefs(user_id, change)
         return
     column = {"avatar": "avatar", "cover": "cover"}.get(kind)
     if not column:
         raise ValueError(f"unknown media kind: {kind}")
     db().execute(f"UPDATE users SET {column}=? WHERE id=?", (url, user_id))
     db().commit()
+
+
+def update_prefs(user_id, change):
+    """Read, change, and write the prefs blob as one step.
+
+    Two callers each doing their own read around a shared blob kept erasing
+    the other's key: the last writer won with a copy taken before the other's
+    change had landed.
+    """
+    row = db().execute("SELECT prefs FROM users WHERE id=?", (user_id,)).fetchone()
+    prefs = {}
+    if row and row["prefs"]:
+        try:
+            prefs = json.loads(row["prefs"])
+        except ValueError:
+            pass
+    change(prefs)
+    db().execute("UPDATE users SET prefs=? WHERE id=?", (json.dumps(prefs), user_id))
+    db().commit()
+    return prefs
 
 
 def set_prefs(user_id, prefs):

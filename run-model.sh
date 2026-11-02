@@ -10,6 +10,6 @@ exec llama-server \
   --model "$MODEL" \
   --port "$PORT" \
   --host 0.0.0.0 \
-  --ctx-size 8192 \
+  --ctx-size 16384 \
   --n-gpu-layers 99 \
   --reasoning-format deepseek

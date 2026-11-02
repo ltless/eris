@@ -342,7 +342,16 @@ async function init() {
     els.selModel.append(opt);
   }
   const prefModel = (u.prefs && u.prefs.model) || (j && j.default) || "";
-  if (items.includes(prefModel)) els.selModel.value = prefModel;
+  // The endpoint adds the stored id to the list, so a miss here means the list
+  // came back without it anyway. Left as an unselected select, Save would write
+  // whatever option happened to be first over the user's own choice.
+  if (prefModel && !items.includes(prefModel)) {
+    const opt = document.createElement("option");
+    opt.value = prefModel;
+    opt.textContent = labels[prefModel] || prefModel;
+    els.selModel.append(opt);
+  }
+  if (prefModel) els.selModel.value = prefModel;
   if (u.prefs && u.prefs.ctx) els.inpCtx.value = u.prefs.ctx;
   ready = true;
   // A note from an earlier failed open no longer applies.

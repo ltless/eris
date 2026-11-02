@@ -21,7 +21,16 @@ class Settings:
 
     fetch_pages = os.getenv("FETCH_PAGES", "1") == "1"
     fetch_top = int(os.getenv("FETCH_TOP", "3"))
-    fetch_max_chars = int(os.getenv("FETCH_MAX_CHARS", "2000"))
+    fetch_max_chars = int(os.getenv("FETCH_MAX_CHARS", "6000"))
+    # What one tool call may hand the model. A search that fetched FETCH_TOP
+    # full pages is the largest single result, so this has to clear that sum
+    # plus the snippets, or the third page arrives cut.
+    tool_output_chars = int(os.getenv("TOOL_OUTPUT_CHARS", "30000"))
+    # The type the model server was started with for its KV cache. Ollama
+    # accepts this only as a server-wide setting and never reports it back, so
+    # this has to mirror it by hand: set the same value here and in
+    # OLLAMA_KV_CACHE_TYPE, or the panel's KV figure is off by the ratio.
+    kv_cache_type = os.getenv("KV_CACHE_TYPE", "f16")
     max_tool_rounds = int(os.getenv("MAX_TOOL_ROUNDS", "3"))
     # Rounds the model may earn past the allowance by finding new sources.
     extra_tool_rounds = int(os.getenv("EXTRA_TOOL_ROUNDS", "4"))

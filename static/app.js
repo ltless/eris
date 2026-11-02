@@ -284,6 +284,9 @@ function addMessage(role, text, images, quote, files) {
       const t = document.createElement("div");
       t.className = "bubble";
       t.textContent = text;
+      // The question is plain text on purpose, so the URL is wrapped after the
+      // fact rather than by inserting HTML into it.
+      ErisMarkdown.autolink(t);
       body.append(t);
     }
     const av = document.createElement("div");
@@ -346,6 +349,7 @@ function loadSession(id) {
   setQuote("");
   resetMessages();
   const paint = () => {
+    if (activeId !== id) return;
     if (!s.messages.length) {
       showEmpty();
     } else {
@@ -386,7 +390,7 @@ function loadSession(id) {
         const roundNums = new Set([...rows.keys(), ...readRows.keys(), ...answerRows.keys()]);
         const rounds = Math.max(thinkRounds.length, ...[...roundNums].map((r) => r + 1), 0);
         for (let i = 0; i < rounds; i++) {
-          if (i < thinkRounds.length) {
+          if (thinkRounds[i]) {
             const th = ErisToolCall.thinking(body);
             put(th.el);
             th.append(thinkRounds[i]);
@@ -424,6 +428,9 @@ function loadSession(id) {
   };
   if (!s.messages.length && s.remote) {
     fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
+      // The answer can arrive after the reader moved to another chat; writing
+      // it into this session and painting would redraw the chat they left.
+      if (activeId !== id) return;
       s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, quote: m.quote, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, answers: m.answers, images: m.images, files: m.files }));
       s.remote = false;
       paint();
@@ -580,6 +587,7 @@ async function send(text, regen = false, quote = "") {
   let thinkAll = "";
   let thinkCtl = null;
   let thinkRound = "";
+  let thinkR = -1;
   let webCtl = null;
   let webR = -1;
   // Fetch cards, oldest first. The engine runs one round's calls in order, so
@@ -604,7 +612,11 @@ async function send(text, regen = false, quote = "") {
     if (!thinkCtl) return;
     if (thinkRound) {
       thinkCtl.done();
-      thinkRounds.push(thinkRound);
+      // Filed by round number, not by arrival: a turn whose second round
+      // reasoned and whose first did not still has to draw that card on the
+      // second round's cards on reload, which only the index keeps.
+      for (let i = thinkRounds.length; i < thinkR; i++) thinkRounds[i] = "";
+      thinkRounds[thinkR] = thinkRound;
     } else {
       // done() clears the label timer; a detached node would keep ticking.
       thinkCtl.done();
@@ -746,6 +758,7 @@ async function send(text, regen = false, quote = "") {
             clearStatus();
             thinkCtl = ErisToolCall.thinking(body);
             placeCard(thinkCtl, evt.r);
+            thinkR = evt.r;
           }
           thinkAll += evt.text;
           thinkRound += evt.text;
@@ -1030,12 +1043,10 @@ fetch("/api/chats").then((r) => r.json()).then((j) => {
   if (!sessions.length) {
     blankChat();
   } else {
-    const first = sessions[0];
-    activeId = first.id;
-    ErisSidebar.setChats(sessions);
-    ErisSidebar.setActive(activeId);
-    els.chatTitle.textContent = first.title || "New chat";
-    showEmpty();
+    // Opening the first chat is what fetches its turns. Naming it here instead
+    // left the session marked remote with no messages, so the first question
+    // after a reload went out with no history.
+    loadSession(sessions[0].id);
   }
 });
 syncInput();

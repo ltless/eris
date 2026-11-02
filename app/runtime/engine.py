@@ -84,6 +84,11 @@ def _drop_old_tool_messages(messages):
         return messages
     head = messages[:2]
     tail = messages[-(MAX_TOOL_MESSAGES - 2):]
+    # The cut can land inside a round. A `tool` message whose parent assistant
+    # call went over the edge is an orphan, and a server that pairs them by id
+    # rejects the whole request rather than the one message.
+    while tail and tail[0].get("role") == "tool":
+        tail = tail[1:]
     return head + tail
 
 
@@ -146,7 +151,10 @@ class Engine:
             )
         self.result.budget = self.budget.used()
         self.result.sources = self.sources
-        self.result.thinking = [t for t in self.thinking if t.strip()]
+        # One entry per round, empty where a round thought nothing. The browser
+        # places a card by its round number, so dropping the empty slots would
+        # shift every later round's thinking onto an earlier round's cards.
+        self.result.thinking = list(self.thinking)
 
     async def _loop(self):
         messages = _drop_old_tool_messages(list(self.req.messages))
@@ -187,29 +195,33 @@ class Engine:
             # sees as an answer hidden in a thinking card. Every other pass
             # carries the rung exactly as it was resolved, which may be
             # `True`, `False`, or a level name the model itself accepts.
+            seen = {}
             try:
-                async for kind, value in stream_completion(
-                    messages,
-                    model=self.req.model,
-                    thinking=False if final else self.req.thinking,
-                    tools=specs,
-                    ctx=self.req.ctx_tokens,
+                async for event in self._stream_round(
+                    messages, specs, False if final else self.req.thinking,
+                    round_no, calls, text_parts, seen,
                 ):
-                    if kind == "tool_calls":
-                        merge_tool_calls(calls, value)
-                    elif kind == "delta":
-                        text_parts.append(value)
-                        yield self.emitter.emit(events.MODEL_DELTA, text=value, round=round_no)
-                    elif kind == "thinking":
-                        self.thinking[-1] += value
-                        yield self.emitter.emit(events.MODEL_THINKING, text=value, round=round_no)
-                    elif kind == "metrics":
-                        # Kept per round and overwritten, because the last call
-                        # is the one whose prompt held the whole conversation:
-                        # it is the only one whose count describes the context
-                        # in use, and that is what a reader wants to see.
-                        self.result.metrics = value
-                        yield self.emitter.emit(events.MODEL_METRICS, round=round_no, **value)
+                    yield event
+                # A round that reasons its way to the end and then stops without
+                # a word leaves the turn with nothing to show. The same request
+                # with the tool list dropped and the thinking channel closed is
+                # what gets the prose out, so it is asked once more before the
+                # turn is called finished. The list goes too: a tool round keeps
+                # the lowest thinking rung on models where `false` would take the
+                # tools with it, and this pass exists to have no thinking at all.
+                if (
+                    not final
+                    and not calls
+                    and not text_parts
+                    and seen.get("thought")
+                    and self.budget.spent_models < self.budget.model_calls
+                ):
+                    self.budget.spend_model()
+                    self.result.model_calls += 1
+                    async for event in self._stream_round(
+                        messages, None, False, round_no, calls, text_parts, seen
+                    ):
+                        yield event
             except ModelError as e:
                 yield self.emitter.emit(
                     events.TASK_FAILED, reason="model_error", code=errors.MODEL_ERROR, message=str(e)
@@ -247,13 +259,44 @@ class Engine:
                 break
 
             messages.append({"role": "assistant", "content": "", "tool_calls": runnable})
-            self.thinking.append("")
             async for event in self._run_calls(runnable, messages, round_no):
                 yield event
 
             round_no += 1
 
         yield self.emitter.emit(events.TASK_COMPLETED, **self.result.as_dict())
+
+    async def _stream_round(self, messages, specs, thinking, round_no, calls, text_parts, seen):
+        """One model call, its events forwarded as they arrive.
+
+        The parts are collected into the caller's lists rather than returned,
+        because a round can be streamed twice and both halves are one answer.
+        `seen` records what came back, so the caller can tell a round that
+        thought and answered nothing from one that simply had nothing to say.
+        """
+        async for kind, value in stream_completion(
+            messages,
+            model=self.req.model,
+            thinking=thinking,
+            tools=specs,
+            ctx=self.req.ctx_tokens,
+        ):
+            if kind == "tool_calls":
+                merge_tool_calls(calls, value)
+            elif kind == "delta":
+                text_parts.append(value)
+                yield self.emitter.emit(events.MODEL_DELTA, text=value, round=round_no)
+            elif kind == "thinking":
+                seen["thought"] = seen.get("thought", 0) + len(value)
+                self.thinking[-1] += value
+                yield self.emitter.emit(events.MODEL_THINKING, text=value, round=round_no)
+            elif kind == "metrics":
+                # Kept per round and overwritten, because the last call is the
+                # one whose prompt held the whole conversation: it is the only
+                # one whose count describes the context in use, and that is
+                # what a reader wants to see.
+                self.result.metrics = value
+                yield self.emitter.emit(events.MODEL_METRICS, round=round_no, **value)
 
     def _headroom(self, rounds):
         """Extra rounds the model-call budget can afford."""

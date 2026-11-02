@@ -14,7 +14,19 @@ CHAT_TAGS = ("chat",)
 
 
 async def _search(args, ctx):
-    hits = await search.run(args)
+    hits, reason = await search.run_checked(args)
+    # A search that never reached the server is a failed call, not an empty
+    # result set: the model has to be told the difference or it answers from
+    # memory on the strength of "nothing was found". The text carries that
+    # sentence, because a failed result with no text reaches the model as
+    # "(no result)" and it learns nothing.
+    if reason:
+        message = f"Web search unavailable ({reason}). Tell the user the search did not run."
+        return ToolResult(
+            success=False,
+            error={"code": TOOL_ERROR, "message": message, "retryable": True},
+            text=message,
+        )
     data = {"hits": hits, "count": len(hits)}
     return ToolResult(
         success=True,

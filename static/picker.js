@@ -510,6 +510,10 @@ const ErisPicker = (() => {
     // is told whenever the model changes rather than asking for itself.
     if (chosen) ErisAttach?.setVision(caps[chosen] ? caps[chosen].vision !== false : true);
     if (changed) {
+      // A probe for the old model can still be in flight. Its ticket has to be
+      // spent here, or it lands against the new `chosen` and writes this model's
+      // index from the other model's ladder.
+      probe++;
       // A new model means a new ladder, so the old one is dropped rather than
       // left to label the new model's steps.
       efforts = null;

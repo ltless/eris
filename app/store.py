@@ -6,7 +6,13 @@ tests rebind the one they care about.
 
 import os
 import sqlite3
+import threading
 from pathlib import Path
+
+# Two requests can reach a store for the first time together, so the
+# existence check and the schema run inside the lock: otherwise both see a new
+# file and the second SCHEMA fails on tables the first already made.
+_open_lock = threading.Lock()
 
 
 def path_from_env(var, default):
@@ -21,12 +27,13 @@ def open_db(existing, path, schema, migrate=None):
     """
     if existing is not None:
         return existing
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fresh = not path.exists()
-    conn = sqlite3.connect(path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    if fresh:
-        conn.executescript(schema)
-    elif migrate is not None:
-        migrate(conn)
-    return conn
+    with _open_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fresh = not path.exists()
+        conn = sqlite3.connect(path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        if fresh:
+            conn.executescript(schema)
+        elif migrate is not None:
+            migrate(conn)
+        return conn

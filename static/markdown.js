@@ -89,5 +89,60 @@ const ErisMarkdown = (() => {
     }
   }
 
-  return { render, highlight, linkCitations };
+  const URL_RE = /(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+  const count = (s, ch) => s.split(ch).length - 1;
+
+  // Trailing punctuation belongs to the sentence around the link, not the link.
+  function trimUrl(u) {
+    let end = u.length;
+    for (;;) {
+      const c = u[end - 1];
+      if (end && ".,;:!?".includes(c)) {
+        end--;
+        continue;
+      }
+      // A closing bracket the URL never opened is the sentence's.
+      const open = c === ")" ? "(" : c === "]" ? "[" : null;
+      if (open && count(u.slice(0, end), c) > count(u.slice(0, end), open)) {
+        end--;
+        continue;
+      }
+      break;
+    }
+    return u.slice(0, end);
+  }
+
+  // A URL someone typed is still a URL, so it gets the link colour and a click.
+  // Text nodes only, never parsed as markdown: a sent question keeps the line
+  // breaks and the asterisks it was typed with.
+  function autolink(el) {
+    const nodes = [];
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (n.parentElement.closest("a")) continue;
+      if (URL_RE.test(n.textContent)) nodes.push(n);
+      URL_RE.lastIndex = 0;
+    }
+    for (const node of nodes) {
+      const text = node.textContent;
+      const frag = document.createDocumentFragment();
+      let last = 0;
+      for (const hit of text.matchAll(URL_RE)) {
+        const url = trimUrl(hit[0]);
+        if (!url) continue;
+        frag.append(document.createTextNode(text.slice(last, hit.index)));
+        const a = document.createElement("a");
+        a.textContent = url;
+        a.href = /^www\./i.test(url) ? "https://" + url : url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        frag.append(a);
+        last = hit.index + url.length;
+      }
+      frag.append(document.createTextNode(text.slice(last)));
+      node.replaceWith(frag);
+    }
+  }
+
+  return { render, highlight, linkCitations, autolink };
 })();

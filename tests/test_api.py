@@ -89,6 +89,14 @@ class StubModel:
         return [json.dumps({"message": {"content": self.answer}})]
 
 
+async def _no_icon(domain):
+    return None
+
+
+async def _png_icon(domain):
+    return b"\x89PNG", "image/png"
+
+
 def sse_events(resp):
     out = []
     for line in resp.text.splitlines():
@@ -172,6 +180,54 @@ class ChatStreamChecks(unittest.TestCase):
         r = self.h.ask()
         self.assertIn("[DONE]", r.text)
 
+    def test_a_new_chat_is_named_from_what_was_asked(self):
+        """The sidebar's placeholder is replaced by the model's own name.
+
+        The name is a second model call made from the first message, and it
+        reaches the browser as its own frame before the stream ends.
+        """
+        events = sse_events(self.h.ask("how do I validate an email", chat_id="c"))
+        titled = [e for e in events if e.get("type") == "title"]
+        self.assertEqual(len(titled), 1, [e.get("type") for e in events])
+        self.assertEqual(titled[0]["chat_id"], "c")
+        self.assertEqual(titled[0]["title"], "the answer")
+        # The frame is the whole point: the sidebar has to be able to read the
+        # name off the stream without going back for the chat.
+        listed = self.h.client.get("/api/chats").json()["items"]
+        self.assertEqual([c["title"] for c in listed], [titled[0]["title"]])
+
+    def test_a_name_the_user_chose_survives_the_model_s_own(self):
+        """The rename can land while the answer is still streaming."""
+        chat_id = "c"
+        sse_events(self.h.ask("how do I validate an email", chat_id=chat_id))
+        self.h.client.patch(f"/api/chats/{chat_id}", json={"title": "Nama Saya"})
+        sse_events(self.h.ask("lanjutkan", chat_id=chat_id))
+        listed = self.h.client.get("/api/chats").json()["items"]
+        self.assertEqual([c["title"] for c in listed], ["Nama Saya"])
+
+    def test_an_ongoing_chat_is_not_renamed_by_a_later_turn(self):
+        chat_id = "c"
+        sse_events(self.h.ask("how do I validate an email", chat_id=chat_id))
+        first = sse_events(self.h.ask("lanjutkan", chat_id=chat_id))
+        self.assertEqual([e for e in first if e.get("type") == "title"], [])
+
+    def test_the_naming_call_is_capped_and_asked_apart(self):
+        """A name is a phrase, so it is a short call of its own."""
+        self.h.stub.payloads.clear()
+        sse_events(self.h.ask("how do I validate an email", chat_id="c"))
+        naming = [p for p in self.h.stub.payloads
+                  if p.get("messages", [{}])[0].get("content", "").startswith("Write the title")]
+        self.assertEqual(len(naming), 1, [p.get("messages") for p in self.h.stub.payloads])
+        self.assertEqual(naming[0]["options"]["num_predict"], 24)
+        self.assertFalse(naming[0].get("tools"))
+
+    def test_an_unnamed_chat_alone_is_never_named(self):
+        """Nothing was asked, so there is nothing to name it from."""
+        events = sse_events(self.h.client.post("/api/chat", json={
+            "messages": [{"role": "user", "content": ""}], "chat_id": "c",
+        }))
+        self.assertEqual([e for e in events if e.get("type") == "title"], [])
+
     def test_a_tool_round_runs_and_feeds_back(self):
         """A tool call is executed and its result goes back to the model."""
         self.h.stub.stop()
@@ -186,7 +242,7 @@ class ChatStreamChecks(unittest.TestCase):
         fed_back = self.h.stub.calls[1]["messages"]
         self.assertTrue(any(m.get("role") == "tool" for m in fed_back),
                         "the tool result never reached the model")
-        self.assertIn("No web results were found", json.dumps(fed_back))
+        self.assertIn("Web search unavailable", json.dumps(fed_back))
 
     def test_a_model_that_keeps_asking_stops_at_the_round_budget(self):
         """The budget, not the model, decides when the tool rounds end."""
@@ -357,6 +413,29 @@ class ChatStreamChecks(unittest.TestCase):
         r = anon.post("/api/chat", json={"messages": [{"role": "user", "content": "x"}]})
         self.assertEqual(r.status_code, 401)
 
+    def test_a_missing_favicon_is_a_404_not_a_broken_row(self):
+        """The row keeps its letter chip when the site has no icon, so the
+        route answers 404 rather than an empty image the browser would try to
+        paint."""
+        from app import favicons
+
+        old = favicons.icon_for
+        favicons.icon_for = _no_icon
+        try:
+            r = self.h.client.get("/api/favicon?domain=no-icon.example")
+        finally:
+            favicons.icon_for = old
+        self.assertEqual(r.status_code, 404)
+
+        favicons.icon_for = _png_icon
+        try:
+            r = self.h.client.get("/api/favicon?domain=has-icon.example")
+        finally:
+            favicons.icon_for = old
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["content-type"], "image/png")
+        self.assertEqual(r.content, b"\x89PNG")
+
     def test_health_reports_each_dependency(self):
         got = self.h.client.get("/api/health").json()
         for key in ("model", "search"):
@@ -393,6 +472,7 @@ class AnonymousChecks(unittest.TestCase):
     def test_reads_need_a_session(self):
         for path in ("/api/chats", "/api/auth/me", "/api/models", "/api/stats"):
             self.assertEqual(self.anon.get(path).status_code, 401, path)
+        self.assertEqual(self.anon.get("/api/favicon?domain=example.com").status_code, 401)
 
     def test_writes_need_a_session(self):
         self.assertEqual(self.anon.post("/api/prefs", json={}).status_code, 401)

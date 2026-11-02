@@ -11,6 +11,11 @@ MAX_THINKING = 8000
 MAX_SOURCES = 8
 MAX_IMAGE_BYTES = 4_000_000
 
+# The title a chat carries before anyone has named it. It stands in the sidebar
+# as a readable placeholder, so it is a value rather than NULL, and every check
+# for "still unnamed" is against this string.
+UNTITLED = "New chat"
+
 # The three types a stored image may be, by the bytes it starts with. The type
 # is read off the bytes rather than taken from the data URL, so what comes back
 # out is what the bytes actually are. The browser side keeps to the same three
@@ -83,7 +88,7 @@ def decode_data_url(url):
 SCHEMA = (
     "CREATE TABLE chats("
     "id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
-    "title TEXT NOT NULL DEFAULT 'New chat', "
+    f"title TEXT NOT NULL DEFAULT '{UNTITLED}', "
     "pinned INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);"
     "CREATE TABLE turns("
     "chat_id TEXT NOT NULL, role TEXT NOT NULL, "
@@ -138,7 +143,9 @@ def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=N
     if isinstance(thinking, list):
         # Truncating the serialized JSON would leave it unparseable, so trim by
         # whole rounds and capped text until the encoding itself fits.
-        kept = [part for part in thinking if part.strip()]
+        # Slots are kept even when empty: their position is the round number the
+        # browser draws each card at.
+        kept = list(thinking)
         size = len(json.dumps(kept))
         while kept and size > MAX_THINKING:
             over = size - MAX_THINKING
@@ -168,19 +175,51 @@ def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=N
     db().commit()
 
 
-def untitled(chat_id):
+def untitled(chat_id, user_id=None):
     """True while a chat has never been named: no row yet, or still the
-    placeholder the first user message overwrites."""
-    row = db().execute("SELECT title FROM chats WHERE id=?", (chat_id,)).fetchone()
-    return row is None or row["title"] == "New chat"
+    placeholder the first user message overwrites. A chat the user emptied is
+    back to unnamed, so a later message may name it again."""
+    row = _title_row(chat_id, user_id)
+    return row is None or row["title"].strip() == UNTITLED
 
 
-def touch_title(chat_id, text):
-    """Set title from first user message."""
-    row = db().execute("SELECT title FROM chats WHERE id=?", (chat_id,)).fetchone()
-    if row and row["title"] == "New chat":
-        db().execute("UPDATE chats SET title=? WHERE id=?", (text.strip()[:40] or "New chat", chat_id))
+def short_title(text, limit=40):
+    """`text` as a one-line title of at most `limit` characters.
+
+    Cut on a word boundary where there is one, because a title that ends
+    mid-word reads as broken text rather than as a shortened one.
+    """
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    cut = flat[:limit]
+    space = cut.rfind(" ")
+    return (cut[:space] if space > limit // 2 else cut).rstrip()
+
+
+def touch_title(chat_id, text, user_id=None):
+    """Name a chat from its first user message, if nothing has named it yet."""
+    row = _title_row(chat_id, user_id)
+    if row and row["title"] == UNTITLED:
+        title = short_title(text) or UNTITLED
+        if user_id is None:
+            db().execute("UPDATE chats SET title=? WHERE id=?", (title, chat_id))
+        else:
+            db().execute(
+                "UPDATE chats SET title=? WHERE id=? AND user_id=?", (title, chat_id, user_id)
+            )
         db().commit()
+
+
+def _title_row(chat_id, user_id):
+    """The chat's title row, only if it belongs to `user_id` when one is given:
+    `chat_id` comes from the client, so a caller that names its user cannot read
+    or rename another user's chat."""
+    if user_id is None:
+        return db().execute("SELECT title FROM chats WHERE id=?", (chat_id,)).fetchone()
+    return db().execute(
+        "SELECT title FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)
+    ).fetchone()
 
 
 def list_chats(user_id, limit=50):
@@ -243,6 +282,22 @@ def drop_last_assistant(user_id, chat_id):
         db().commit()
 
 
+def name_from_model(user_id, chat_id, title, source):
+    """Write the model's name for a chat, unless a name someone chose is there.
+
+    Both that name and the one it replaces come from the first message, so the
+    write is dropped when what is stored is neither: the user can rename the
+    chat while the answer is still streaming, and that name wins.
+    """
+    cur = _title_row(chat_id, user_id)
+    if cur is None or cur["title"] not in (UNTITLED, short_title(source)):
+        return False
+    db().execute("UPDATE chats SET title=? WHERE id=? AND user_id=?",
+                 (short_title(title, 80) or UNTITLED, chat_id, user_id))
+    db().commit()
+    return True
+
+
 def set_meta(user_id, chat_id, title=None, pinned=None):
     cur = db().execute(
         "SELECT id FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)
@@ -250,7 +305,8 @@ def set_meta(user_id, chat_id, title=None, pinned=None):
     if not cur:
         return
     if title is not None:
-        db().execute("UPDATE chats SET title=? WHERE id=?", (title.strip()[:80] or "New chat", chat_id))
+        db().execute("UPDATE chats SET title=? WHERE id=?",
+                     (short_title(title, 80) or UNTITLED, chat_id))
     if pinned is not None:
         db().execute("UPDATE chats SET pinned=? WHERE id=?", (int(bool(pinned)), chat_id))
     db().commit()

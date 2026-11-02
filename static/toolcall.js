@@ -47,9 +47,10 @@ const ErisToolCall = (() => {
   };
   // Favicon chips get a quiet tint instead of the same grey for every site.
   // The hue is hashed from the domain over a fixed palette, so a site keeps
-  // its colour across reloads with no network request: a remote favicon
-  // service would hand every result domain to a third party, which the
-  // self-hosted search stack exists to avoid.
+  // its colour across reloads: a remote favicon service would hand every
+  // result domain to a third party, which the self-hosted search stack exists
+  // to avoid. The real icon comes from `/api/favicon`, which asks the site
+  // itself; the letter stays underneath and shows again if the site has none.
   const HUES = [215, 190, 152, 95, 38, 20, 358, 330, 270, 245];
   const hueOf = (d) => {
     let h = 0;
@@ -120,6 +121,17 @@ const ErisToolCall = (() => {
     fav.className = "tc-fav";
     fav.textContent = (domain || "?").charAt(0) || "?";
     fav.style.setProperty("--fav-h", String(hueOf(domain || "?")));
+    if (domain) {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.decoding = "async";
+      // The letter is what the chip is; the icon covers it once it arrives and
+      // removes itself if the site has none, so there is never an empty box.
+      img.onload = () => fav.classList.add("has-icon");
+      img.onerror = () => img.remove();
+      img.src = "/api/favicon?domain=" + encodeURIComponent(domain);
+      fav.appendChild(img);
+    }
     const title = document.createElement("span");
     title.className = "tc-title";
     title.textContent = label || domain;

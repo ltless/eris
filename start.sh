@@ -35,7 +35,7 @@ if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
   if command -v "$LLAMA_BIN" >/dev/null; then
     echo "> starting $LLAMA_BIN ($MODEL_PATH)"
     "$LLAMA_BIN" --model "$MODEL_PATH" --host 0.0.0.0 --port 8080 \
-      --ctx-size 8192 \
+      --ctx-size 16384 \
       --n-gpu-layers 99 \
       --reasoning-format deepseek &
     llama_pid=$!

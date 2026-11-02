@@ -40,6 +40,6 @@ if (-not $LlamaExe) {
     --model $Model `
     --port $Port `
     --host 0.0.0.0 `
-    --ctx-size 8192 `
+    --ctx-size 16384 `
     --n-gpu-layers 99 `
     --reasoning-format deepseek

@@ -166,14 +166,19 @@ class Registry:
 
 
 async def _invoke(tool, args, ctx):
-    """Handlers take (args, ctx) or just (args); both are supported, and a
-    sync handler runs off the event loop."""
+    """Handlers take (args, ctx) or just (args); both are supported.
+
+    A sync handler is run in a thread. Called straight from here it would block
+    the loop for every other request, and `wait_for` could not interrupt it.
+    """
     fn = tool.handler
     take_ctx = len(inspect.signature(fn).parameters) >= 2
-    out = fn(args, ctx) if take_ctx else fn(args)
-    if inspect.isawaitable(out):
-        return await out
-    return out
+    if inspect.iscoroutinefunction(fn):
+        return await fn(args, ctx) if take_ctx else await fn(args)
+    # Not a coroutine function, but it may still return one, so the result is
+    # checked rather than assumed.
+    out = await asyncio.to_thread(fn, args, ctx) if take_ctx else await asyncio.to_thread(fn, args)
+    return await out if inspect.isawaitable(out) else out
 
 
 def _as_text(value):

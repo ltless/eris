@@ -22,7 +22,16 @@ def to_native(messages):
         c = m.get("content")
         if isinstance(c, list):
             text = "".join(p.get("text", "") for p in c if p.get("type") == "text")
-            imgs = [p["image_url"]["url"].split(",", 1)[-1] for p in c if p.get("type") == "image_url"]
+            # A part can be malformed; it is dropped rather than allowed to
+            # raise here, because this runs before the request's try and the
+            # error would escape the generator instead of reaching the caller.
+            imgs = [
+                p["image_url"]["url"].split(",", 1)[-1]
+                for p in c
+                if p.get("type") == "image_url"
+                and isinstance(p.get("image_url"), dict)
+                and isinstance(p["image_url"].get("url"), str)
+            ]
             mm = {"role": m["role"], "content": text}
             if imgs:
                 mm["images"] = imgs
@@ -135,7 +144,8 @@ class ModelError(Exception):
         self.error = error
 
 
-async def stream_completion(messages, model=None, thinking=False, tools=None, ctx=None):
+async def stream_completion(messages, model=None, thinking=False, tools=None, ctx=None,
+                            limit=None):
     payload = {
         "model": model or settings.model_name,
         "messages": to_native(messages),
@@ -149,8 +159,14 @@ async def stream_completion(messages, model=None, thinking=False, tools=None, ct
     value = think_for_request(thinking, model, tools)
     if value is not None:
         payload["think"] = value
-    if ctx:
-        payload["options"] = {"num_ctx": ctx}
+    if ctx or limit:
+        # `limit` caps the answer in tokens, which is how a call that wants a
+        # phrase rather than an essay stays a phrase on a talkative model.
+        payload["options"] = {}
+        if ctx:
+            payload["options"]["num_ctx"] = ctx
+        if limit:
+            payload["options"]["num_predict"] = limit
     if tools:
         payload["tools"] = tools
     headers = {"Authorization": f"Bearer {settings.model_api_key}"}
@@ -179,6 +195,11 @@ TITLE_PROMPT = (
     "Answer in the language of the message below. Reply with the title alone."
 )
 
+# One line, no wrapping: a model that answers with a paragraph leaves the
+# first line as the title, and `num_predict` below stops it writing one.
+TITLE_LIMIT = 24
+
+
 async def title_for(prompt, model=None):
     """A short title naming what the first message is about.
 
@@ -195,17 +216,44 @@ async def title_for(prompt, model=None):
             ],
             model=model,
             thinking=False,
+            limit=TITLE_LIMIT,
         ):
             if kind == "delta":
                 text += value
     except ModelError:
         return ""
-    line = text.strip().splitlines()[0] if text.strip() else ""
-    line = line.strip("\"'“”‘’*_ `")
-    for prefix in ("title:", "judul:"):
-        if line.lower().startswith(prefix):
-            line = line[len(prefix) :].strip()
-    return line[:80]
+    for raw in text.splitlines():
+        line = clean_title(raw)
+        if line:
+            return line[:80]
+    return ""
+
+
+def clean_title(line):
+    """One line of model output as a bare title, or empty if nothing is left.
+
+    Models wrap the title in whatever the surrounding text used — a markdown
+    heading, a bullet, a number, a `Title:` label — and the label often lands
+    alone on the line before it. Each of those is peeled off, and a line that
+    is only decoration comes back empty so the caller moves on to the next.
+    """
+    line = line.strip()
+    for _ in range(3):
+        before = line
+        line = line.strip("\"'“”‘’*_`# ")
+        for prefix in ("title:", "judul:", "judul", "title"):
+            if line.lower().startswith(prefix):
+                line = line[len(prefix) :].lstrip(" :.-\t")
+                break
+        # `1.`, `2)` and `-` are list markers, not part of a name.
+        line = re.sub(r"^(?:\d+[.)]|[-–—•])\s*", "", line)
+        if line == before:
+            break
+    # A line left ending in a colon is the lead-in to the name rather than the
+    # name — `Here is the title:` — and reads as an answer to nothing.
+    if line.endswith(":"):
+        return ""
+    return line.strip("\"'“”‘’*_` ") if line else ""
 
 async def list_models():
     """Model ids the endpoint reports. Empty when it cannot be reached."""

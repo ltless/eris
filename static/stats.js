@@ -186,6 +186,11 @@ const ErisStats = (() => {
     const kv = data.kv || {};
     panel.append(group("Cache", [
       ["KV at this context", bytes(kv.bytes)],
+      // The server never reports the cache type, so this is the value eris was
+      // told to assume. It is named rather than hidden: a KV figure computed
+      // for a type the server is not using is wrong, and the reader is the one
+      // who can tell that from a number alone.
+      ["Cache type", kv.type ? kv.type.toUpperCase() : null],
       ["Weights and KV", bytes(data.size)],
       ["In video memory", bytes(data.size_vram)],
     ]));
@@ -210,6 +215,11 @@ const ErisStats = (() => {
     // The KV figure is arithmetic on the model's own metadata, not a number the
     // server publishes, and a reader is entitled to know which one they have.
     const notes = [];
+    // An unknown cache type is stated before the estimate note, because it is
+    // the reason there is no figure to call an estimate.
+    if (kv.type && kv.known === false) {
+      notes.push(`Cache type "${kv.type}" is not one this can size, so the KV figure is blank. Set KV_CACHE_TYPE to f16, q8_0, or q4_0.`);
+    }
     if (kv.bytes && kv.estimated) {
       notes.push(`KV is estimated for a ${tokens(kv.ctx)}-token window; this model is not loaded yet.`);
     }

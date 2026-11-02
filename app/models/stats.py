@@ -12,6 +12,7 @@ import httpx
 
 from .endpoint import base_url
 from .gpu import gpu_info
+from ..config import settings
 
 # The endpoint reports allocated context and residency on its runtime route;
 # `/api/show` reports the model's architecture. Both are cheap, and neither
@@ -19,11 +20,18 @@ from .gpu import gpu_info
 PS_TIMEOUT = 6
 SHOW_TIMEOUT = 30
 
-# Bytes per KV element. llama.cpp keeps the cache in f16 unless a quantized
-# cache type is set, and the arithmetic below is checked against measurement:
-# on the 4.45B Spark model this formula lands within 3% of the video memory the
-# runner actually grows by between two context sizes.
-KV_ELEMENT_BYTES = 2
+# Bytes per KV element, by the cache type the server was started with. llama.cpp
+# stores each block of 32 elements as the elements plus one scale (f32 for
+# q8_0, f16 for q4_0), so the quantized ratios are not exactly 1/2 and 1/4:
+# q8_0 is 34 bytes per 32, q4_0 is 18. The default is the unquantized f16.
+#
+# Ollama accepts this only as a server-wide `OLLAMA_KV_CACHE_TYPE` and does not
+# report it on any route, so it cannot be detected; `KV_CACHE_TYPE` mirrors it.
+KV_BYTES = {
+    "f16": 2.0,
+    "q8_0": 34 / 32,
+    "q4_0": 18 / 32,
+}
 
 # The architecture's own metadata is keyed by its prefix, so a key ending in
 # one of these names the field regardless of which model it describes.
@@ -62,7 +70,18 @@ def architecture(model_info):
     return out
 
 
-def kv_bytes(info, ctx):
+def element_bytes(cache_type=None):
+    """Bytes per KV element for a cache type name, or `None` if it is unknown.
+
+    An unrecognised name is not quietly read as f16: a typo in `KV_CACHE_TYPE`
+    would then turn into a figure that looks measured and is wrong, which is
+    worse than the panel having no figure at all.
+    """
+    name = (cache_type or settings.kv_cache_type or "f16").strip().lower()
+    return KV_BYTES.get(name)
+
+
+def kv_bytes(info, ctx, cache_type=None):
     """The KV cache this context costs, in bytes, and `None` if unknowable.
 
     The cache is two tensors per layer per head, sized by the head's own key
@@ -80,21 +99,25 @@ def kv_bytes(info, ctx):
         return None
     if not ctx:
         return None
-    per_token_per_layer = heads * (key_len + value_len) * KV_ELEMENT_BYTES
+    element = element_bytes(cache_type)
+    if element is None:
+        return None
+    per_token_per_layer = heads * (key_len + value_len) * element
     window = info.get("window")
     pattern = info.get("window_pattern")
     if not window or not pattern:
         # Every layer attends over the whole context.
-        return layers * per_token_per_layer * ctx
+        return int(round(layers * per_token_per_layer * ctx))
 
     rows = pattern if isinstance(pattern, list) else [pattern]
-    # The pattern repeats; where it doesn't divide the layer count, the model
-    # is outside what this arithmetic was checked against, so it declines.
+    # One entry per layer. A shorter pattern is not expanded to fill the layer
+    # count, because that arithmetic was never checked against a model that
+    # states its window that way, so those models get no figure.
     if len(rows) != layers or not all(isinstance(v, bool) for v in rows):
         return None
     sliding = sum(1 for v in rows if v)
     fixed = sliding * per_token_per_layer * min(ctx, window)
-    return fixed + (layers - sliding) * per_token_per_layer * ctx
+    return int(round(fixed + (layers - sliding) * per_token_per_layer * ctx))
 
 
 def _num(value):
@@ -162,6 +185,7 @@ async def model_stats(model, ctx=None, metrics=None):
     # it loads, the figure is an estimate for the context that would be asked
     # for, which is why the answer says which one it is.
     sized_ctx = allocated or ctx or _num(info.get("context"))
+    cache_type = (settings.kv_cache_type or "f16").strip().lower()
     return {
         "model": model,
         "loaded": loaded is not None,
@@ -176,10 +200,16 @@ async def model_stats(model, ctx=None, metrics=None):
             "wanted": _num(ctx),
         },
         "kv": {
-            "bytes": kv_bytes(info, sized_ctx),
+            "bytes": kv_bytes(info, sized_ctx, cache_type),
             "ctx": sized_ctx,
             # False when the figure describes a context that is not loaded yet.
             "estimated": allocated is None,
+            # The cache type this figure was computed for. The server states it
+            # nowhere, so it is named here rather than left to be assumed: a
+            # reader can then tell a figure that is out of date from one that
+            # was never claimed.
+            "type": cache_type,
+            "known": element_bytes(cache_type) is not None,
         },
         "gpu": gpu,
         "last": metrics or None,

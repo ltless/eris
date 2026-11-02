@@ -121,7 +121,7 @@ def rank(query, results, fresh=False):
         host = urlparse(r["url"]).netloc
         title_hits = sum(1 for t in terms if _word_in(title, t))
         domain = 1.5 if host.endswith(TRUSTED_SUFFIXES) or host in TRUSTED_DOMAINS else 0.0
-        penalty = 2.0 if any(host.endswith(d) or f".{d}" in f".{host}" for d in LOW_VALUE) else 0.0
+        penalty = 2.0 if any(host == d or host.endswith(f".{d}") for d in LOW_VALUE) else 0.0
         recency = 0.0
         if fresh:
             age = _age_days(r.get("published"))
@@ -189,11 +189,59 @@ def time_range_for(args, query):
     return settings.searxng_time_range
 
 
-async def run(args):
+def _down_engines(data):
+    """Engines SearXNG could not reach on this search.
+
+    A suspended engine is still a 200 with whatever the rest produced, so this
+    is only an explanation when the result set is empty; naming the engines is
+    what turns "found nothing" into "the search did not run".
+    """
+    out = []
+    for item in data.get("unresponsive_engines") or []:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, (list, tuple)) and item:
+            out.append(str(item[0]))
+        elif isinstance(item, dict) and item.get("engine"):
+            out.append(str(item["engine"]))
+    return out
+
+
+async def _query(client, params):
+    r = await client.get(f"{settings.searxng_url}/search", params=params)
+    r.raise_for_status()
+    return r.json()
+
+
+def _hits(data):
+    return [
+        {
+            "title": x.get("title") or x.get("url") or "",
+            "url": x.get("url") or "",
+            "snippet": (x.get("content") or "").strip(),
+            "published": x.get("publishedDate") or "",
+        }
+        for x in (data.get("results") or [])[: max(settings.searxng_top_k * 4, 15)]
+        if x.get("url")
+    ]
+
+
+async def run_checked(args):
+    """`(hits, reason)`. `reason` is empty unless the search itself failed.
+
+    A dead server and a query with no results both come back as no hits, so
+    the failure has to be reported apart from them or a broken SearXNG reads
+    as a successful search that found nothing. A stack whose engines are all
+    suspended answers 200 with no rows at all, and reading that as "nothing
+    found" is what made the search look useless while it was being rate
+    limited. Only an empty answer after the filters are dropped was asked of
+    every engine, so that is the one whose suspended list explains anything:
+    the engines named under `news` are news engines, not the whole stack.
+    """
     args = as_args(args)
     query = clean_query(str(args.get("query", "")).strip())
     if not query:
-        return []
+        return [], ""
     tr = time_range_for(args, query)
     params = {
         "q": query,
@@ -207,21 +255,27 @@ async def run(args):
         params["time_range"] = tr
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(f"{settings.searxng_url}/search", params=params)
-            r.raise_for_status()
-            data = r.json()
-    except Exception:
-        return []
-    hits = [
-        {
-            "title": x.get("title") or x.get("url") or "",
-            "url": x.get("url") or "",
-            "snippet": (x.get("content") or "").strip(),
-            "published": x.get("publishedDate") or "",
-        }
-        for x in (data.get("results") or [])[: max(settings.searxng_top_k * 4, 15)]
-        if x.get("url")
-    ]
+            data = await _query(c, params)
+            hits = _hits(data)
+            # A model that asked for news within a day gets a much thinner
+            # index than the one it could have had, and that pair is what most
+            # often came back with nothing. Dropping the filters costs one more
+            # request, and only when the filtered one was empty, so it is always
+            # worth trying: the engines named as unresponsive for `news` are the
+            # news ones, and the general stack behind them still answers.
+            if not hits and (cat or tr):
+                wider = {k: v for k, v in params.items() if k not in ("categories", "time_range")}
+                data = await _query(c, wider)
+                hits = _hits(data)
+    except Exception as e:
+        return [], f"search failed: {type(e).__name__}"
+    if not hits:
+        down = _down_engines(data)
+        if down:
+            # Every engine suspended still answers 200 with an empty list. That
+            # is not a search that found nothing, and saying so would have the
+            # model write a confident answer to a question nobody searched.
+            return [], f"search engines unavailable ({', '.join(down[:3])})"
     fresh = bool(tr) or bool(FRESH_RE.search(query))
     hits = rank(query, hits, fresh=fresh)[: settings.searxng_top_k]
     if settings.fetch_pages and hits:
@@ -230,4 +284,8 @@ async def run(args):
         )
         for h in hits[: settings.fetch_top]:
             h["page"] = pages.get(h["url"])
-    return hits
+    return hits, ""
+
+
+async def run(args):
+    return (await run_checked(args))[0]

@@ -7,6 +7,7 @@ re-exported here because the routes and the existing tests still refer to them
 by these names.
 """
 
+import asyncio
 from datetime import date
 
 import httpx
@@ -23,7 +24,7 @@ from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, chats, encoding, tokens
+from . import auth, chats, encoding, favicons, tokens
 from .config import settings
 from .deps import db_user, require_session, require_user
 from .models import (
@@ -152,6 +153,11 @@ MAX_FILE_CHARS = 40_000
 MAX_FILES_CHARS = 60_000
 MAX_FILES = 8
 
+# How long the stream waits for the name it started alongside the run. The
+# placeholder the first message wrote is already on screen, so a slow title is
+# dropped rather than allowed to hold `[DONE]` and the Stop button with it.
+TITLE_WAIT = 20.0
+
 
 def _clean_files(files):
     """The files of one turn as they will be stored and shown, or `None`.
@@ -274,7 +280,11 @@ def _build_request(req: ChatRequest, u, messages):
         thinking=think_value(prefs.get("effort"), ladder),
         ctx_tokens=int(prefs.get("ctx") or 0) or None,
         tags=("chat",),
-        budget=Budget(rounds=settings.max_tool_rounds, extra_rounds=settings.extra_tool_rounds),
+        budget=Budget(
+            rounds=settings.max_tool_rounds,
+            extra_rounds=settings.extra_tool_rounds,
+            tool_output_chars=settings.tool_output_chars,
+        ),
         tool_context=tool_ctx,
         system_prompt=base_prompt,
     )
@@ -306,13 +316,19 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
     async def gen():
         if req.regenerate:
             chats.drop_last_assistant(u["id"], req.chat_id)
-        # Asked before the run, because the run's own turns rename the chat:
-        # the model-written title only ever replaces the placeholder the first
-        # user message wrote, never a name someone chose.
+        # Asked before the run, because the run's own turns rename the chat: a
+        # title may only replace the placeholder the first user message wrote.
         name_this = bool(req.chat_id and subject and not req.regenerate
-                         and chats.untitled(req.chat_id))
+                         and chats.untitled(req.chat_id, u["id"]))
+        # Started with the run, not after it: the name reads the first message,
+        # so the two overlap instead of queueing one behind the other.
+        title_task = (
+            asyncio.create_task(title_for(subject, model=request.model))
+            if name_this else None
+        )
         web_groups = []
         fetch_rows = []
+        answered = False
         # Written here, not in `finally`: a client that signs out or refreshes
         # before the stream ends would otherwise lose the turn it just asked.
         async def remember():
@@ -321,7 +337,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
             if (query or quoted or attached or files) and not req.regenerate:
                 chats.save_turn(u["id"], req.chat_id, "user", query, quote=quoted,
                                 images=attached or None, files=files)
-                chats.touch_title(req.chat_id, query or quoted or subject)
+                chats.touch_title(req.chat_id, query or quoted or subject, u["id"])
             answer = engine.result.answer
             if answer:
                 chats.save_turn(
@@ -371,6 +387,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                             yield sse({"type": "sources", "r": frame["r"], "items": items})
                     if frame.get("type") != "sources":
                         yield sse(frame)
+            answered = True
         except ModelError as e:
             yield sse({"type": "error", "message": f"Cannot reach model server: {e}"})
         finally:
@@ -378,14 +395,23 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
             # and should still be there after a refresh. No yields are allowed
             # in here, which is why the sources are collected above instead.
             await remember()
-        # Named after the answer, so the stream never waits on it, and only
-        # while the chat is still the placeholder the first message wrote. An
-        # empty title is the failure case, and the opening words stand.
-        if name_this:
-            title = await title_for(subject, model=request.model)
+            if title_task is not None and not answered:
+                # The run failed or the client stopped — this is also where a
+                # disconnect lands, as GeneratorExit through the finally — and
+                # nothing is left to read the name.
+                title_task.cancel()
+        if title_task is not None and answered:
+            try:
+                title = await asyncio.wait_for(title_task, TITLE_WAIT)
+            except Exception:
+                # A name that timed out or errored is the failure case, and the
+                # opening words the first message wrote are already on screen.
+                title = ""
             if title:
-                chats.set_meta(u["id"], req.chat_id, title=title)
-                yield sse({"type": "title", "chat_id": req.chat_id, "title": title})
+                # Dropped when the stored name is no longer the opening words:
+                # a name someone chose, typed while the answer streamed, wins.
+                if chats.name_from_model(u["id"], req.chat_id, title, subject):
+                    yield sse({"type": "title", "chat_id": req.chat_id, "title": title})
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -576,23 +602,26 @@ async def server_stats(model: str | None = None, u: dict = Depends(require_user)
 
 @app.post("/api/prefs")
 async def update_prefs(req: PrefsRequest, u: dict = Depends(require_session)):
-    prefs = dict(u.get("prefs") or {})
-    if req.model is not None:
-        # A Hugging Face GGUF id runs past 80 characters, and a cut one is an id
-        # the server does not have: 404 on the next question.
-        prefs["model"] = req.model[:200]
-    if req.effort is not None:
-        prefs["effort"] = max(0, int(req.effort))
-    if req.ctx is not None:
-        prefs["ctx"] = max(0, min(int(req.ctx), 262144))
-    if req.system_prompt is not None:
-        # Empty string clears the override; chat falls back to the env prompt.
-        prompt = req.system_prompt.strip()
-        if prompt:
-            prefs["system_prompt"] = prompt[:4000]
-        else:
-            prefs.pop("system_prompt", None)
-    auth.set_prefs(u["id"], prefs)
+    def change(prefs):
+        if req.model is not None:
+            # A Hugging Face GGUF id runs past 80 characters, and a cut one is an
+            # id the server does not have: 404 on the next question.
+            prefs["model"] = req.model[:200]
+        if req.effort is not None:
+            prefs["effort"] = max(0, int(req.effort))
+        if req.ctx is not None:
+            prefs["ctx"] = max(0, min(int(req.ctx), 262144))
+        if req.system_prompt is not None:
+            # Empty string clears the override; chat falls back to the env prompt.
+            prompt = req.system_prompt.strip()
+            if prompt:
+                prefs["system_prompt"] = prompt[:4000]
+            else:
+                prefs.pop("system_prompt", None)
+
+    # The blob is shared with the media upload, so it is read and written as one
+    # step rather than from a copy this request took earlier.
+    prefs = auth.update_prefs(u["id"], change)
     return {"ok": True, "prefs": prefs}
 
 
@@ -648,6 +677,18 @@ async def logout(session: str | None = Cookie(None)):
 async def me(u: dict = Depends(require_user)):
     """Who this call is, by cookie or by token."""
     return u
+
+
+@app.get("/api/favicon")
+async def favicon(domain: str, u: dict = Depends(require_user)):
+    """A result row's site icon, proxied from the site so no third party sees
+    which results were shown. A site without one is a 404, and the row keeps
+    its letter chip."""
+    icon = await favicons.icon_for(domain)
+    if not icon:
+        raise HTTPException(404, "no icon")
+    raw, ctype = icon
+    return Response(raw, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
 
 
 # Health.

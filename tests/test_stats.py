@@ -108,6 +108,39 @@ class KvChecks(unittest.TestCase):
         self.assertLess(abs(per_token - measured) / measured, 0.06,
                         f"{per_token:.0f} B/token is not within 6% of {measured}")
 
+    def test_the_figure_scales_with_the_cache_type(self):
+        """A quantized cache is not the f16 cache. The ratio is per element.
+
+        q8_0 packs 32 elements plus one f32 scale into 34 bytes, and q4_0 packs
+        32 plus one f16 scale into 18 — so the ratios are 0.53 and 0.28, not the
+        0.5 and 0.25 a naive halving would give.
+        """
+        dense = info()
+        f16 = stats.kv_bytes(dense, 4096, "f16")
+        q8 = stats.kv_bytes(dense, 4096, "q8_0")
+        q4 = stats.kv_bytes(dense, 4096, "q4_0")
+        self.assertAlmostEqual(q8 / f16, 34 / 64, places=6)
+        self.assertAlmostEqual(q4 / f16, 18 / 64, places=6)
+
+    def test_an_unknown_cache_type_gets_no_figure(self):
+        # A typo must not read as f16: a wrong figure that looks measured is
+        # worse than a blank one that is honestly blank.
+        self.assertIsNone(stats.kv_bytes(info(), 4096, "q6_k"))
+        self.assertIsNone(stats.element_bytes("nonsense"))
+
+    def test_the_cache_type_name_is_matched_case_insensitively(self):
+        self.assertEqual(
+            stats.kv_bytes(info(), 4096, "Q8_0"),
+            stats.kv_bytes(info(), 4096, "q8_0"),
+        )
+
+    def test_a_quantized_cache_still_honours_a_window(self):
+        per_layer_q8 = 2 * 128 * (34 / 32)
+        got = stats.kv_bytes(
+            info(window=512, window_pattern=[False, True, False, True]), 4096, "q8_0"
+        )
+        self.assertEqual(got, int(round(2 * per_layer_q8 * 512 + 2 * per_layer_q8 * 4096)))
+
     def test_the_metadata_prefix_is_read_off_a_real_payload(self):
         # The same shape, as /api/show actually spells it.
         got = stats.architecture({

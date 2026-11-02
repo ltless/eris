@@ -35,16 +35,20 @@ def sse_frame(event):
             "kind": d.get("kind", "web"), "read": bool(d.get("read")),
         }]}
     if t == ev.TOOL_STARTED and d.get("tool") == "web_search":
+        # `args` is whatever the model sent, and a JSON array is valid JSON, so
+        # it is checked for shape before being read as a mapping.
+        a = d.get("args") if isinstance(d.get("args"), dict) else {}
         return {"type": "tool", "r": d.get("round", 0),
-                "query": str((d.get("args") or {}).get("query", "") or "")}
+                "query": str(a.get("query", "") or "")}
     # A fetch is its own step, not part of the search card: it is the model
     # going back for one page in depth, and it has a URL the search never
     # showed. It is announced when it starts, because the point of drawing it
     # is that the user can watch a slow page being read, and closed when the
     # tool ends rather than when the run does.
     if t == ev.TOOL_STARTED and d.get("tool") == "fetch_url":
+        a = d.get("args") if isinstance(d.get("args"), dict) else {}
         return {"type": "fetch", "r": d.get("round", 0),
-                "url": str((d.get("args") or {}).get("url", "") or "")}
+                "url": str(a.get("url", "") or "")}
     if t == ev.TOOL_COMPLETED and d.get("tool") == "fetch_url":
         return {"type": "fetch_done", "r": d.get("round", 0),
                 "ok": True, "chars": d.get("chars", 0)}
