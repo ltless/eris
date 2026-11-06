@@ -62,6 +62,13 @@ MEDIA_DIR = encoding.MEDIA_DIR
 
 builtin_tools.register_builtins()
 
+# Ladder probes started in the background, by model id. The task is referenced
+# so it is not collected mid-flight, and an id is tried once per process: a
+# probe that answered nothing is not cached, and a poll every few seconds must
+# not turn that into a probe every few seconds.
+_WARMING: dict = {}
+_WARMED: set = set()
+
 
 # Request models.
 
@@ -153,6 +160,11 @@ MAX_FILE_CHARS = 40_000
 MAX_FILES_CHARS = 60_000
 MAX_FILES = 8
 
+# A file longer than this is named in the prompt and read through `read_file`.
+# Anything inlined is sent again on every round, so a 40k file that stays
+# inline costs its tokens several times over in one turn.
+INLINE_FILE_CHARS = 2000
+
 # How long the stream waits for the name it started alongside the run. The
 # placeholder the first message wrote is already on screen, so a slow title is
 # dropped rather than allowed to hold `[DONE]` and the Stop button with it.
@@ -188,11 +200,21 @@ def _clean_files(files):
 def _with_files(content, files):
     """The turn as the model reads it: each file under its own name, in a fence
     that keeps its code out of the markdown, then the question. The client keeps
-    them apart so a long file does not fill the bubble."""
+    them apart so a long file does not fill the bubble.
+
+    A long file is named, not pasted: its text is read on demand through
+    `read_file`, which is also what a follow-up round can go back to.
+    """
     if not files:
         return content
     blocks = []
     for f in files:
+        if len(f["text"]) > INLINE_FILE_CHARS:
+            blocks.append(
+                f"### File: {f['name']} ({len(f['text'])} characters, not inlined)\n"
+                f"Call read_file with name={f['name']!r} to read it."
+            )
+            continue
         lang = f["name"].rsplit(".", 1)[-1].lower() if "." in f["name"] else ""
         # Only a plain word goes in the fence's info string; a name with a space
         # in it would end it.
@@ -224,6 +246,24 @@ def _last_user_files(messages):
     return None
 
 
+def _run_files(messages):
+    """Every file this run may read, oldest turn first, so `read_file` can find
+    any name the prompt shows. The prompt names a file from an earlier turn as
+    well, and a tool that answers "no such attachment" to a name it was just
+    given would be worse than not offering the tool at all. A name used twice
+    resolves to the newer one, which is what the model reading the prompt sees
+    last."""
+    by_name = {}
+    for m in messages:
+        role = m.get("role") if isinstance(m, dict) else m.role
+        if role != "user":
+            continue
+        raw = m.get("files") if isinstance(m, dict) else m.files
+        for f in _clean_files(raw) or ():
+            by_name[f["name"]] = f
+    return tuple(by_name.values())
+
+
 def _last_user_images(messages):
     """What the reader attached to the question being asked.
 
@@ -248,7 +288,7 @@ def _last_user_images(messages):
     return []
 
 
-def _build_request(req: ChatRequest, u, messages):
+def _build_request(req: ChatRequest, u, messages, files=None):
     prefs = u.get("prefs") or {}
     base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
     system = assemble(
@@ -260,7 +300,7 @@ def _build_request(req: ChatRequest, u, messages):
             "receive, never from training memory."
         ),
     )
-    tool_ctx = ToolContext(user_id=u["id"])
+    tool_ctx = ToolContext(user_id=u["id"], files=tuple(files or ()))
     model = req.model or prefs.get("model") or None
     # The stored effort is an index, and which value it means belongs to the
     # model being asked: a ladder is per model, so it is resolved here, against
@@ -310,7 +350,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         for m in req.messages
     ]
     attached = _last_user_images([{"role": m.role, "content": m.content} for m in req.messages])
-    request = _build_request(req, u, messages)
+    request = _build_request(req, u, messages, _run_files(req.messages))
     engine = Engine(request, emitter=Emitter())
 
     async def gen():
@@ -328,6 +368,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         )
         web_groups = []
         fetch_rows = []
+        card_rows = []
         answered = False
         # Written here, not in `finally`: a client that signs out or refreshes
         # before the stream ends would otherwise lose the turn it just asked.
@@ -346,6 +387,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                     sources=_number_sources(engine.sources),
                     web=[g for g in web_groups if g["items"]],
                     fetches=fetch_rows or None,
+                    cards=card_rows or None,
                     # Only worth storing when a turn has more than one: with one
                     # round the stored text is already exactly what was drawn.
                     answers=engine.result.answers if len(engine.result.answers) > 1 else None,
@@ -385,6 +427,23 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                                 web_groups.append(group)
                             group["items"].extend(items)
                             yield sse({"type": "sources", "r": frame["r"], "items": items})
+                    elif event.type == ev.TOOL_COMPLETED and frame.get("type") in (
+                        "weather", "wayback", "crypto", "crypto_trend",
+                        "equity", "equity_trend", "screen"
+                    ):
+                        # One row per card, in the order they were drawn, each
+                        # carrying the round it belongs to so a replay puts it
+                        # back among that round's other cards.
+                        card_rows.append({"r": frame["r"], "tool": frame["type"],
+                                          "card": frame["card"]})
+                    elif event.type == ev.TOOL_FAILED and frame.get("tool") in (
+                        "weather", "wayback", "crypto", "crypto_trend",
+                        "equity", "equity_trend", "screen"
+                    ):
+                        # A card still appears, in its failed state, so a reload
+                        # shows the failure rather than a gap where a call was.
+                        card_rows.append({"r": frame["r"], "tool": frame["tool"],
+                                          "card": None, "reason": frame.get("reason", "")})
                     if frame.get("type") != "sources":
                         yield sse(frame)
             answered = True
@@ -535,11 +594,29 @@ async def update_password(req: PasswordRequest, res: Response, u: dict = Depends
 
 @app.get("/api/models")
 async def models(u: dict = Depends(require_user)):
-    items = await list_models()
+    items, caps = await asyncio.gather(list_models(), listed_capabilities())
+    caps = caps or {}
     prefs = u.get("prefs") or {}
     default = prefs.get("model") or settings.model_name
     if default not in items:
         items.insert(0, default)
+    # The ladder is a probe, and a probe on a cold model waits for the load, so
+    # it runs after the answer instead of inside it. The effort control asks
+    # `/api/effort`, which finds the answer already cached by the time a reader
+    # opens it.
+    if default not in _WARMING and default not in _WARMED:
+        _WARMED.add(default)
+        task = asyncio.create_task(think_ladder(default))
+        _WARMING[default] = task
+
+        def _forget(t, mid=default):
+            _WARMING.pop(mid, None)
+            # A probe that raised must not surface as an unretrieved task
+            # exception; it changes nothing about the answer this route gives.
+            if not t.cancelled():
+                t.exception()
+
+        task.add_done_callback(_forget)
     # The id is what the endpoint accepts and what prefs store; the label is
     # what a person reads. Parallel rather than a list of objects, so a client
     # that only knows `items` keeps working unchanged.
@@ -550,7 +627,6 @@ async def models(u: dict = Depends(require_user)):
     # model the endpoint says nothing about is absent from the map, and the
     # client reads a missing entry the same way the engine does — unknown, so
     # nothing is hidden.
-    caps = await listed_capabilities() or {}
     return {
         "items": items,
         "labels": {mid: model_label(mid) for mid in items},

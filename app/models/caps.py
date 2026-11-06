@@ -9,6 +9,7 @@ one withheld from a model that could use it costs the answer.
 import httpx
 
 from ..config import settings
+from .client import client
 from .endpoint import base_url
 
 TAGS_TIMEOUT = 5
@@ -35,8 +36,7 @@ def _flags(entry):
 async def _read_listing():
     """The listing's flags by model id, or `None` when the server will not say."""
     try:
-        async with httpx.AsyncClient(timeout=TAGS_TIMEOUT) as c:
-            r = await c.get(base_url() + "/api/tags")
+        r = await client().get(base_url() + "/api/tags", timeout=TAGS_TIMEOUT)
     except httpx.HTTPError:
         return None
     if r.status_code >= 400:

@@ -11,6 +11,7 @@ import asyncio
 import httpx
 
 from ..config import settings
+from .client import client as http
 from .endpoint import base_url, chat_url
 
 # Every value the endpoint's `think` field accepts as a level, in the order a
@@ -32,6 +33,11 @@ FALLBACK_LADDER = [False, True]
 # and the answer cannot change while the process is up: a different template is
 # a different model id.
 _LADDERS: dict = {}
+
+# A probe already running, by model id. `/api/models` starts one in the
+# background and the effort control asks for the same answer moments later, so
+# the second caller waits on the first instead of probing beside it.
+_PENDING: dict = {}
 
 # A refused value is refused before the model is touched, so the sentinel's
 # answer comes back almost at once and is worth waiting only briefly for.
@@ -71,8 +77,8 @@ def _stated(values):
 async def _shown_ladder(name):
     """What the server says this model accepts, or `None` if it says nothing."""
     try:
-        async with httpx.AsyncClient(timeout=SHOW_TIMEOUT) as c:
-            r = await c.post(base_url() + "/api/show", json={"model": name})
+        r = await http().post(base_url() + "/api/show", json={"model": name},
+                              timeout=SHOW_TIMEOUT)
     except httpx.HTTPError:
         return None
     if r.status_code >= 400:
@@ -86,7 +92,7 @@ async def _shown_ladder(name):
     return _stated(shown.get("values"))
 
 
-async def _send_think(client, model, value):
+async def _send_think(c, model, value, timeout):
     """One probe: does this model accept `think=value`?
 
     `True`, `False`, or `None` when the server could not be asked. A refused
@@ -102,7 +108,7 @@ async def _send_think(client, model, value):
         "options": {"num_predict": 1},
     }
     try:
-        r = await client.post(chat_url(), json=payload)
+        r = await c.post(chat_url(), json=payload, timeout=timeout)
     except httpx.HTTPError:
         return None
     if r.status_code == 404:
@@ -122,6 +128,22 @@ async def think_ladder(model=None):
     name = model or settings.model_name
     if name in _LADDERS:
         return _LADDERS[name]
+    # A probe belongs to the loop that started it, so a caller on another loop
+    # starts its own rather than awaiting one that loop can no longer run.
+    pending = _PENDING.get(name)
+    if pending is not None and pending.get_loop() is asyncio.get_running_loop():
+        return await asyncio.shield(pending)
+    task = asyncio.ensure_future(_ask_ladder(name))
+    _PENDING[name] = task
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if _PENDING.get(name) is task:
+            _PENDING.pop(name, None)
+
+
+async def _ask_ladder(name):
+    """The probe itself, kept out of `think_ladder` so one is shared."""
     shown = await _shown_ladder(name)
     if shown is not None:
         _LADDERS[name] = shown
@@ -131,8 +153,7 @@ async def think_ladder(model=None):
     # server that never reads `think` would spend a generation on each rung for
     # a ladder nothing will use.
     try:
-        async with httpx.AsyncClient(timeout=SENTINEL_TIMEOUT) as c:
-            takes_sentinel = await _send_think(c, name, SENTINEL)
+        takes_sentinel = await _send_think(http(), name, SENTINEL, SENTINEL_TIMEOUT)
     except Exception:
         return None
     if takes_sentinel is None:
@@ -142,8 +163,9 @@ async def think_ladder(model=None):
         return []
     asked = (False, True) + THINK_LEVELS
     try:
-        async with httpx.AsyncClient(timeout=PROBE_TIMEOUT) as c:
-            answers = await asyncio.gather(*[_send_think(c, name, v) for v in asked])
+        answers = await asyncio.gather(
+            *[_send_think(http(), name, v, PROBE_TIMEOUT) for v in asked]
+        )
     except Exception:
         return None
     if any(a is None for a in answers):

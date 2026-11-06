@@ -321,6 +321,665 @@
   opacity: 1;
 }
 
+/* Weather: the current reading is the card's headline, so it is set large and
+   the four supporting figures sit as one row of label/value pairs under it.
+   Only the temperature takes a size step; the rest stays on the card's text
+   scale, because the eye should land on the number that answers "how warm". */
+.tc-wx-hero {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.tc-wx-temp {
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-wx-cond {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+/* The place's own clock, pushed to the far end of the hero: it is a fact about
+   the reading, not the headline, and its position keeps it out of the way of
+   the temperature's baseline. */
+.tc-wx-at {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-wx-facts {
+  display: grid;
+  /* Fixed columns, so a long label cannot push its value out of the row. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.tc-wx-facts dt {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+.tc-wx-facts dd {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Forecast rows: day, condition, range, chance. Grid rather than flex so the
+   numbers line up down the column whatever the condition text lengths are.
+   The header is the same grid, so each column names itself over the figures
+   rather than leaving a percentage to be guessed at. */
+.tc-wx-days {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-hair);
+  border-top: 1px solid var(--border);
+  padding-top: var(--sp-3);
+}
+
+/* The four columns are fixed widths, because the header row is its own grid
+   and a content-sized column would be sized by whichever of the two is wider,
+   putting the labels off the figures they name. */
+.tc-wx-hd {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 72px 40px;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-2xs);
+}
+
+/* The header cells borrow the rows' classes for their columns; the colour is
+   restated at the class that holds them so a column label never takes the
+   weight a figure in that column is meant to carry. */
+.tc-wx-hd > span {
+  color: var(--faint);
+  text-align: left;
+}
+
+/* Only the chance column is right-aligned in the row, so only its label is. */
+.tc-wx-hd > :last-child {
+  text-align: right;
+}
+
+.tc-wx-day {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) 72px 40px;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+}
+
+.tc-wx-date {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-wx-dcond {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tc-wx-range {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The chance column is the muted one: rain is what the row is scanned for, so
+   it is quieter than the range, not louder. */
+.tc-wx-chance {
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Wayback: the snapshot that was read, then the ones it was not. */
+.tc-wb-note {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.tc-wb-size {
+  color: var(--faint);
+  font-size: var(--fs-xs);
+}
+
+/* The label over the remaining snapshots. Smaller and quieter than the query
+   header it sits where, because it names a list rather than quoting a string. */
+.tc-wb-more {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+/* Crypto: the price is the headline, the move sits beside it, and the three
+   or four support figures sit under both. A move is drawn with an arrow and a
+   sign as well as a tint, so the direction survives a reader who cannot tell
+   the two greens apart, or a forced-colors mode that drops the colour. */
+.tc-cr-hero {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.tc-cr-price {
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The figure and its currency travel together as one reading, so the gap
+   inside this pair is the small one; the hero's own gap stays between it and
+   the move. */
+.tc-cr-quote {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+}
+
+.tc-cr-unit {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.tc-cr-move {
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-cr-move[data-dir="up"] {
+  color: var(--gain);
+}
+
+.tc-cr-move[data-dir="down"] {
+  color: var(--danger);
+}
+
+.tc-cr-move[data-dir="flat"] {
+  color: var(--muted);
+}
+
+.tc-cr-name {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  margin-top: var(--sp-1);
+}
+
+.tc-cr-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin: var(--sp-3) 0 0;
+}
+
+.tc-cr-facts dt {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+.tc-cr-facts dd {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-cr-scope {
+  display: block;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: normal;
+}
+
+/* The source and the time it was read: quiet, but the width of the card, so a
+   long domain does not stretch the panel. */
+.tc-cr-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  color: var(--faint);
+  font-size: var(--fs-xs);
+}
+
+.tc-cr-foot .tc-link {
+  min-width: 0;
+}
+
+/* Trend card. The verdict is the first thing read, so it is the one element
+   with weight; the colour is a second signal on top of the word itself. */
+.tc-td-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-2);
+}
+
+.tc-td-verdict {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: capitalize;
+}
+
+.tc-td-verdict[data-trend="uptrend"] { color: var(--gain); }
+.tc-td-verdict[data-trend="leaning up"] { color: var(--gain); }
+.tc-td-verdict[data-trend="downtrend"] { color: var(--danger); }
+.tc-td-verdict[data-trend="leaning down"] { color: var(--danger); }
+.tc-td-verdict[data-trend="sideways"] { color: var(--muted); }
+
+.tc-td-cond {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.tc-td-cond[data-cond="overbought"] { color: var(--danger); }
+.tc-td-cond[data-cond="oversold"] { color: var(--gain); }
+
+/* The 30-day range: a bar with one marker on it. The two ends are labelled,
+   and the position is also stated in the card's facts. */
+.tc-td-range {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.tc-td-rangebar {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.tc-td-rangebar span {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: var(--text);
+  /* A ring in the panel's own colour keeps the marker visible where it sits
+     over the bar's edge. */
+  box-shadow: 0 0 0 2px var(--bg-elev);
+}
+
+.tc-td-note {
+  margin: var(--sp-3) 0 0;
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+/* Listings: a quote row for each, and the screener's ranked list. One grid for
+   the header and the rows, with fixed columns, so a long company name is the
+   only thing that changes width down the list. A name too long for its column
+   is clipped rather than wrapped, because a row that grows to two lines stops
+   the eye reading down the figures. */
+.tc-eq-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-hair);
+}
+
+.tc-eq-row {
+  display: grid;
+  grid-template-columns: minmax(52px, auto) minmax(0, 1fr) 96px 64px;
+  align-items: baseline;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* With the rank column the same grid gains a narrow leading track. */
+.tc-eq-row.is-ranked {
+  grid-template-columns: 20px minmax(52px, auto) minmax(0, 1fr) 96px 64px;
+}
+
+.tc-eq-row.is-hd {
+  font-size: var(--fs-2xs);
+  color: var(--faint);
+}
+
+/* The header borrows the body's cell classes for its columns, so the colour
+   and weight the symbols and prices carry are undone for the label row. */
+.tc-eq-row.is-hd > span {
+  color: var(--faint);
+  font-weight: 400;
+  text-align: left;
+}
+
+.tc-eq-row.is-hd > .tc-eq-rank,
+.tc-eq-row.is-hd > .tc-eq-price,
+.tc-eq-row.is-hd > .tc-eq-move {
+  text-align: right;
+}
+
+/* The symbol is the row's handle, so it is the one part that reads as text
+   rather than as a figure, and it is what the link opens on. */
+.tc-eq-sym,
+.tc-eq-link {
+  color: var(--text);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.tc-eq-link:hover {
+  text-decoration: underline;
+}
+
+.tc-eq-link:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.tc-eq-rank {
+  color: var(--faint);
+  text-align: right;
+}
+
+/* The name sits beside the symbol and is the first thing to give way: a
+   truncated company name still identifies the row, a truncated price does not. */
+.tc-eq-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.tc-eq-price {
+  text-align: right;
+}
+
+/* The currency is a qualifier on the figure, so it takes the quiet colour and
+   a step down; the number keeps the row's size. */
+.tc-eq-unit {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+.tc-eq-move {
+  text-align: right;
+}
+
+.tc-eq-move[data-dir="up"] { color: var(--gain); }
+.tc-eq-move[data-dir="down"] { color: var(--danger); }
+.tc-eq-move[data-dir="flat"] { color: var(--muted); }
+
+/* Market chart. The plot is one SVG stretched over the card, so a bar sits at a
+   percentage of the box and nothing has to be measured on resize. Everything
+   that has to stay legible, such as the price figures, the dates and the last-price tag,
+   is HTML laid over it rather than text inside the scaled viewBox. */
+.tc-cc {
+  margin-top: var(--sp-3);
+}
+
+.tc-cc-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  min-height: 18px;
+}
+
+/* The readings for the bar under the cursor. It reserves its line so the plot
+   does not jump when the pointer enters, and it carries the direction as a sign
+   as well as a tint. */
+.tc-cc-read {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tc-cc-read[data-dir="up"] { color: var(--gain); }
+.tc-cc-read[data-dir="down"] { color: var(--danger); }
+
+.tc-cc-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  /* The price column is the plot's own height, not the whole card's. Its
+     figures are placed at the same percentage a gridline uses, and those
+     percentages are read against the plot. */
+  grid-template-areas:
+    "plot price"
+    "vol  ."
+    "time .";
+  column-gap: var(--sp-2);
+  margin-top: var(--sp-1);
+}
+
+.tc-cc-plot,
+.tc-cc-vol {
+  position: relative;
+  grid-area: plot;
+}
+
+.tc-cc-plot {
+  height: 168px;
+}
+
+.tc-cc-vol {
+  grid-area: vol;
+  height: 34px;
+  margin-top: 3px;
+}
+
+.tc-cc-plot:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* The icon base above hands every SVG in a card a 15px box. The chart's two are
+   the size of their panes instead, so they are named at a specificity that wins,
+   and they reset what they would otherwise inherit from that base. */
+.tc .tc-cc-svg,
+.tc .tc-cc-volsvg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  flex: none;
+  stroke: none;
+  fill: none;
+  stroke-width: 1;
+}
+
+.tc-cc-wick rect,
+.tc-cc-candle rect {
+  stroke: none;
+}
+
+.tc-cc-wick[data-part="up"] rect,
+.tc-cc-candle[data-part="up"] rect {
+  fill: var(--gain);
+}
+
+.tc-cc-wick[data-part="down"] rect,
+.tc-cc-candle[data-part="down"] rect {
+  fill: var(--danger);
+}
+
+.tc-cc-volbar[data-part="up"] rect {
+  fill: color-mix(in srgb, var(--gain) 55%, transparent);
+}
+
+.tc-cc-volbar[data-part="down"] rect {
+  fill: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.tc-cc-ma {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.tc-cc-ma20 {
+  stroke: var(--link);
+}
+
+.tc-cc-ma50 {
+  stroke: var(--faint);
+  stroke-dasharray: 4 3;
+}
+
+.tc-cc-lastline {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  opacity: 0.7;
+}
+
+/* Gridlines sit under the candles, so a bar is never crossed by a line it did
+   not draw. */
+.tc-cc-gridline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px solid var(--border);
+}
+
+.tc-cc-vline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--border);
+  opacity: 0.55;
+}
+
+/* The price column. The figures are placed at the same percentage as their
+   gridline, and each is translated by half its own height so the number is
+   centred on the line it names. */
+.tc-cc-price {
+  grid-area: price;
+  position: relative;
+  width: 4.5em;
+}
+
+.tc-cc-pricetag {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The last close gets a filled tag: it is the one figure the chart is about. */
+.tc-cc-lasttag {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  padding: 0 4px;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--text) 12%, var(--bg-soft));
+  color: var(--text);
+  font-size: var(--fs-2xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tc-cc-time {
+  grid-area: time;
+  position: relative;
+  height: 1.4em;
+  margin-top: var(--sp-1);
+}
+
+/* The date labels are placed at a percentage of the plot width, and are
+   translated by half their own width so they centre on their tick. */
+.tc-cc-timetag {
+  position: absolute;
+  transform: translateX(-50%);
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tc-cc-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--muted);
+  pointer-events: none;
+}
+
+/* The dot on the price column marks where the cursor's close sits. */
+.tc-cc-dot {
+  position: absolute;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  margin: -3.5px 0 0 -3.5px;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0 2px var(--bg-soft);
+  pointer-events: none;
+}
+
+.tc-chart-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--muted);
+  font-size: var(--fs-2xs);
+}
+
+.tc-chart-key {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.tc-chart-swatch {
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--faint);
+}
+
+.tc-chart-key.is-ma20 .tc-chart-swatch {
+  background: var(--link);
+}
+
+.tc-chart-key.is-ma50 .tc-chart-swatch {
+  background: var(--faint);
+  /* The dashes in the legend match the line they name. */
+  background-image: repeating-linear-gradient(
+    90deg, var(--faint) 0 3px, transparent 3px 5px
+  );
+  background-color: transparent;
+}
+
 /* Empty / error */
 .tc-empty,
 .tc-error {
@@ -352,6 +1011,55 @@
 @media (max-width: 480px) {
   .tc-domain {
     display: none;
+  }
+
+  /* Four fixed columns of figures stop fitting; the pairs wrap to two rows
+     rather than each column squeezing its value to an ellipsis. */
+  .tc-wx-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tc-cr-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The price column is the widest fixed thing in the chart, so it gives way
+     first: a shorter figure column leaves the plot room for its bars. */
+  .tc-cc-price {
+    width: 3.6em;
+  }
+
+  .tc-cc-plot {
+    height: 140px;
+  }
+
+  /* The figures keep their column and the name keeps the rest; at this width
+     the two fixed tracks give back what the name needs to stay readable. */
+  .tc-eq-row {
+    grid-template-columns: minmax(46px, auto) minmax(0, 1fr) 76px 56px;
+  }
+
+  .tc-eq-row.is-ranked {
+    grid-template-columns: 16px minmax(46px, auto) minmax(0, 1fr) 76px 56px;
+  }
+
+  /* The condition is what gives way in a forecast row, not the figures. */
+  .tc-wx-day {
+    grid-template-columns: 64px minmax(0, 1fr) auto 36px;
+  }
+
+  /* The columns are too narrow to double as labels at this width, so the
+     figures keep the row alone. The header stays in the document instead of
+     being hidden outright, so a screen reader still hears what each figure
+     in the row below it is. */
+  .tc-wx-hd {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 }
 

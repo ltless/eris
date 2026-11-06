@@ -8,12 +8,13 @@ by name (registration does), and does not write to the database directly.
 Everything is reported as an event with a sequence number for replay.
 """
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from ..models import ModelError, cached_capabilities, merge_tool_calls, stream_completion
-from ..security.permissions import READ_ONLY
+from ..security.permissions import EXTERNAL, READ_ONLY
 from ..tools.registry import ToolContext, registry
 from . import errors, events
 from .budgets import Budget, BudgetExceeded, clip
@@ -318,10 +319,21 @@ class Engine:
         return out
 
     async def _run_calls(self, calls, messages, round_no=0):
+        """Run one round's calls together, then report them in the order asked.
+
+        The tools run concurrently because the calls in a round are
+        independent: three fetches the model asked for at once should cost the
+        slowest one, not the sum. Everything that has to stay ordered does:
+        budget is spent in call order, the messages the model reads follow the
+        order it asked in, and the events are emitted the same way, because the
+        browser places a card by its round and closes the oldest first.
+        """
+        if self._cancelled:
+            yield self.emitter.emit(events.TASK_CANCELLED)
+            return
+
+        started = []
         for call in calls:
-            if self._cancelled:
-                yield self.emitter.emit(events.TASK_CANCELLED)
-                return
             fn = call.get("function") or {}
             name = fn.get("name")
             args = fn.get("arguments") or {}
@@ -336,14 +348,24 @@ class Engine:
             try:
                 self.budget.spend_tool()
             except BudgetExceeded as e:
+                started.append((call, name, args, None, e))
+                continue
+            started.append((call, name, args, self._call_with_retry(name, args), None))
+
+        running = [(i, item[3]) for i, item in enumerate(started) if item[3] is not None]
+        done = await asyncio.gather(*(job for _, job in running)) if running else []
+        results = {i: r for (i, _), r in zip(running, done)}
+
+        for i, (call, name, args, job, err) in enumerate(started):
+            if job is None:
                 yield self.emitter.emit(
                     events.TOOL_FAILED, tool=name, round=round_no,
-                    code=errors.BUDGET_EXCEEDED, message=str(e),
+                    code=errors.BUDGET_EXCEEDED, message=str(err),
                 )
-                messages.append(tool_message(call, f"{name} was not run: {e}"))
+                messages.append(tool_message(call, f"{name} was not run: {err}"))
                 continue
 
-            result = await self._call_with_retry(name, args)
+            result = results[i]
             run = {
                 "tool": name,
                 "args": scrub(args),
@@ -363,9 +385,13 @@ class Engine:
                 yield self.emitter.emit(events.SOURCE_FOUND, round=round_no, **source)
 
             if result.success:
+                # `card` is the tool's own figures for the browser to draw, and
+                # only the tools that publish one carry it; everything else
+                # reaches the cards through sources.
                 yield self.emitter.emit(
                     events.TOOL_COMPLETED, tool=name, round=round_no, chars=len(text or ""),
                     sources=len((result.metadata or {}).get("sources", []) or []),
+                    card=(result.metadata or {}).get("card"),
                 )
             else:
                 # `reason` is the tool's own short phrase for what stopped it,
@@ -387,17 +413,19 @@ class Engine:
         return True
 
     async def _call_with_retry(self, name, args):
-        """Run a tool, retrying read-only failures only.
+        """Run a tool, retrying calls that cannot have changed anything.
 
-        Writes and commands aren't retried: the runtime can't tell if the
-        first attempt took effect, and repeating could double the side effect.
+        A write or a command isn't retried: the runtime can't tell if the
+        first attempt took effect, and repeating could double the side
+        effect. `EXTERNAL` covers the network reads, which are idempotent
+        when the tool says so.
         """
         result = await registry.call(name, args, self.ctx)
         if result.success:
             return result
         tool = registry.get(name)
         retryable = bool((result.error or {}).get("retryable"))
-        safe = tool is not None and tool.permission == READ_ONLY
+        safe = tool is not None and tool.permission in (READ_ONLY, EXTERNAL)
         if retryable and safe and self.budget.allow_retry():
             return await registry.call(name, args, self.ctx)
         return result

@@ -20,6 +20,10 @@ from ..runtime.errors import INVALID_ARGUMENTS, TIMEOUT, TOOL_ERROR, UNKNOWN_TOO
 @dataclass
 class ToolContext:
     user_id: int | None = None
+    # Text of the files attached to this run. A long attachment is read through
+    # a tool rather than pasted into the prompt, where every round would pay
+    # for it again.
+    files: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,13 @@ class Tool:
     timeout: float = 30.0
     tags: tuple = ()
     side_effect: str = "none"
+    # Whether this run may use the tool at all, beyond its permission. A tool
+    # that only reads what the run was given has nothing to offer a run that
+    # was given nothing, and its schema is prompt spent on every round.
+    when: Callable | None = None
+
+    def offered(self, ctx):
+        return self.when is None or bool(self.when(ctx))
 
     def spec(self):
         return {
@@ -162,7 +173,7 @@ class Registry:
     def specs_for(self, ctx):
         """The tools this context may actually use, so the model is never
         offered a schema it would only be refused for."""
-        return [t.spec() for t in self.all() if authorize(t, ctx).allowed]
+        return [t.spec() for t in self.all() if authorize(t, ctx).allowed and t.offered(ctx)]
 
 
 async def _invoke(tool, args, ctx):

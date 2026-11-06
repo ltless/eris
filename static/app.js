@@ -378,16 +378,24 @@ function loadSession(id) {
           if (!readRows.has(f.r)) readRows.set(f.r, []);
           readRows.get(f.r).push(f);
         }
+        const cards = (m.cards || []).map((c) => ({ r: c.r ?? 0, tool: c.tool, card: c.card,
+                                                    reason: c.reason || "" }));
+        const cardRowsByRound = new Map();
+        for (const c of cards) {
+          if (!cardRowsByRound.has(c.r)) cardRowsByRound.set(c.r, []);
+          cardRowsByRound.get(c.r).push(c);
+        }
         let anchor = null;
         const put = (el) => {
           if (anchor) anchor.after(el);
           else body.prepend(el);
           anchor = el;
         };
-        // A round's searches and its reads are replayed in the same order the
-        // round drew them: the search that prompted a read comes first, and the
-        // answer the round produced comes after both.
-        const roundNums = new Set([...rows.keys(), ...readRows.keys(), ...answerRows.keys()]);
+        // A round's thinking, then the prose it wrote, then the calls it made:
+        // that is the order the round streamed in, and replay has to match it
+        // or a reloaded turn shows its cards above text they followed live.
+        const roundNums = new Set([...rows.keys(), ...readRows.keys(), ...cardRowsByRound.keys(),
+                                   ...answerRows.keys()]);
         const rounds = Math.max(thinkRounds.length, ...[...roundNums].map((r) => r + 1), 0);
         for (let i = 0; i < rounds; i++) {
           if (thinkRounds[i]) {
@@ -395,6 +403,13 @@ function loadSession(id) {
             put(th.el);
             th.append(thinkRounds[i]);
             th.done("Thought");
+          }
+          const text = answerRows.get(i);
+          if (text) {
+            const a = document.createElement("div");
+            a.className = "ans";
+            a.innerHTML = ErisMarkdown.render(text);
+            put(a);
           }
           for (const g of rows.get(i) || []) {
             const tc = ErisToolCall.webSearch(body);
@@ -410,12 +425,11 @@ function loadSession(id) {
             if (f.ok === false) fc.fail(f.reason);
             else fc.done(f.chars);
           }
-          const text = answerRows.get(i);
-          if (text) {
-            const a = document.createElement("div");
-            a.className = "ans";
-            a.innerHTML = ErisMarkdown.render(text);
-            put(a);
+          for (const c of cardRowsByRound.get(i) || []) {
+            const cc = ErisToolCall[c.tool](body);
+            put(cc.el);
+            if (c.card) cc.done(c.card);
+            else cc.fail(c.reason);
           }
         }
         if (m.role === "assistant") {
@@ -431,7 +445,7 @@ function loadSession(id) {
       // The answer can arrive after the reader moved to another chat; writing
       // it into this session and painting would redraw the chat they left.
       if (activeId !== id) return;
-      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, quote: m.quote, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, answers: m.answers, images: m.images, files: m.files }));
+      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, quote: m.quote, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, answers: m.answers, cards: m.cards, images: m.images, files: m.files }));
       s.remote = false;
       paint();
     }).catch(paint);
@@ -597,6 +611,10 @@ async function send(text, regen = false, quote = "") {
   let sources = [];
   let webGroups = [];
   let fetchGroups = [];
+  // Weather, wayback, crypto and the market card, in the order they were
+  // drawn. Kept whole rather than as a count: a reload rebuilds the card from
+  // this, and there is nothing on the page to read it back out of.
+  let cardRows = [];
   // What each round's answer said, for the turn this session pushes back into
   // `s.messages`: without it a reopen falls back to the flat text and loses the
   // order the round logic just established on screen.
@@ -640,9 +658,10 @@ async function send(text, regen = false, quote = "") {
     fetchQ = [];
   };
   // Ends the block currently being written so whatever arrives next lands
-  // after it. Cards are appended, never hoisted across rounds: the stream is
-  // already in the order things happened, and the old insert-before-the-answer
-  // rule is what put a new round's thinking on top of the previous round's prose.
+  // after it. Cards are appended, never hoisted: a round streams its prose
+  // before it makes its calls, so the card belongs underneath that prose. The
+  // old insert-before-the-answer rule lifted it above prose the reader had
+  // already scrolled past, which is what made a card look like it never came.
   //
   // Keyed by round: a model that reasons mid-round is still writing the same
   // answer, and closing on that would split one answer into two blocks.
@@ -651,13 +670,6 @@ async function send(text, regen = false, quote = "") {
     ans = null;
     ansRound = -1;
     ansText = "";
-  };
-  // A card raised while the same round is still writing its prose goes above
-  // that prose, as it always has; one from a later round closes the block and
-  // lands underneath it.
-  const placeCard = (ctl, r) => {
-    if (ans && ansRound === r) body.insertBefore(ctl.el, ans);
-    else closeAnswer(r);
   };
 
   controller = new AbortController();
@@ -702,8 +714,8 @@ async function send(text, regen = false, quote = "") {
           if (webCtl && evt.r !== webR) finishWeb();
           if (!webCtl) {
             clearStatus();
+            closeAnswer(evt.r);
             webCtl = ErisToolCall.webSearch(body);
-            placeCard(webCtl, evt.r);
             webR = evt.r;
           }
           webCtl.addQuery(evt.query || "Search");
@@ -711,10 +723,10 @@ async function send(text, regen = false, quote = "") {
         } else if (evt.type === "fetch") {
           finishThink();
           clearStatus();
+          closeAnswer(evt.r);
           const g = { r: evt.r, url: evt.url, chars: 0 };
           const ctl = ErisToolCall.fetchPage(body);
           ctl.setUrl(evt.url);
-          placeCard(ctl, evt.r);
           fetchQ.push({ ctl, g });
           fetchGroups.push(g);
         } else if (evt.type === "fetch_done") {
@@ -727,6 +739,15 @@ async function send(text, regen = false, quote = "") {
             f.g.chars = evt.chars || 0;
             f.ctl.done(f.g.chars);
           }
+        } else if (evt.type === "weather" || evt.type === "wayback" || evt.type === "crypto"
+                   || evt.type === "crypto_trend" || evt.type === "equity"
+                   || evt.type === "equity_trend" || evt.type === "screen") {
+          finishThink();
+          clearStatus();
+          closeAnswer(evt.r);
+          const ctl = ErisToolCall[evt.type](body);
+          ctl.done(evt.card);
+          cardRows.push({ r: evt.r, tool: evt.type, card: evt.card });
         } else if (evt.type === "sources") {
           sources.push(...evt.items);
           const web = evt.items.filter((x) => x.kind === "web");
@@ -748,6 +769,18 @@ async function send(text, regen = false, quote = "") {
               const [f] = fetchQ.splice(i, 1);
               f.ctl.fail(evt.reason || evt.message || evt.code);
             }
+          } else if (evt.tool === "weather" || evt.tool === "wayback" || evt.tool === "crypto"
+                    || evt.tool === "crypto_trend" || evt.tool === "equity"
+                    || evt.tool === "equity_trend" || evt.tool === "screen") {
+            // No card was drawn on start — these render their payload in one
+            // pass — so the failure is what raises it, in its failed state.
+            finishThink();
+            clearStatus();
+            closeAnswer(evt.r);
+            const ctl = ErisToolCall[evt.tool](body);
+            ctl.fail(evt.reason || evt.message || evt.code);
+            cardRows.push({ r: evt.r, tool: evt.tool, card: null,
+                            reason: evt.reason || evt.message || evt.code });
           } else if (webCtl && (!evt.tool || evt.tool === "web_search")) {
             webCtl.fail(evt.message || evt.code);
             webCtl = null;
@@ -756,8 +789,8 @@ async function send(text, regen = false, quote = "") {
         } else if (evt.type === "thinking") {
           if (!thinkCtl) {
             clearStatus();
+            closeAnswer(evt.r);
             thinkCtl = ErisToolCall.thinking(body);
-            placeCard(thinkCtl, evt.r);
             thinkR = evt.r;
           }
           thinkAll += evt.text;
@@ -843,6 +876,7 @@ async function send(text, regen = false, quote = "") {
         ...(sources.length ? { sources } : {}),
         ...(groups.length ? { web: groups } : {}),
         ...(fetchGroups.length ? { fetches: fetchGroups } : {}),
+        ...(cardRows.length ? { cards: cardRows } : {}),
         ...(answerRounds.length > 1 ? { answers: answerRounds } : {}),
       });
       addRegen(body, s);

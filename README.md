@@ -126,9 +126,41 @@ panel is in Settings.
 
 ## Tools
 
-Two built in: `web_search`, `fetch_url`. `fetch_url` reads PDFs too,
-and it refuses any address that isn't a public one, so it can't be pointed at
-your own network.
+Ten built in: `web_search`, `fetch_url`, `weather`, `wayback`, `read_file`,
+`crypto`, `crypto_trend`, `equity`, `equity_trend`, `screen`.
+`fetch_url` reads PDFs too, and it refuses any address that isn't a public one,
+so it can't be pointed at your own network. `weather` and `wayback` read the
+open web as well and go through the same guard.
+
+`weather` takes a place by name, geocodes it, and answers with the conditions
+now and a few days ahead, from open-meteo. No key and no account. The name it
+is given is what a small model happened to type, so a name the geocoder doesn't
+know is retried without its administrative prefix before the tool gives up.
+
+`wayback` picks up where `fetch_url` stops: when a page answers 404, or when the
+user asks for a version that no longer exists, it finds the snapshots the
+Internet Archive holds and reads one back through the same fetcher. Ask it for
+a year, a month, or a day and it takes the nearest snapshot to that date.
+
+`read_file` reads a file attached to the message. A file over 2000 characters
+is named in the prompt rather than pasted into it, because every round resends
+the conversation and inline text is paid for on each one; the model reads the
+part it needs, and a long file comes back a slice at a time. The tool is only
+offered to a run that has a file attached.
+
+`equity` reads a share, index or ETF from Yahoo Finance: price, today's move,
+the day and 52-week ranges, volume, market cap, P/E and dividend yield. Several
+symbols go in one call. A name is resolved through Yahoo's own search and a
+ticker is taken as written, so `IHSG`, `BBCA.JK`, `7203.T` and `^JKSE` all work.
+`equity_trend` reads the same listing's candles and reuses the arithmetic the
+crypto trend card already had. `screen` ranks one exchange by gainers, losers,
+volume or market cap.
+
+Yahoo documents none of that. Its quote and screener endpoints want a cookie
+and a crumb, fetched once and re-fetched when a call comes back 401; the chart
+endpoint needs neither, which is why a trend reading still answers when the
+handshake itself is broken. Prices are delayed by up to fifteen minutes on most
+exchanges, and the model is told to say so.
 
 A tool that changes state is refused and never offered to the model. Nothing in
 this app can stop and ask whether you meant it, so the answer stays no instead of
@@ -161,8 +193,9 @@ GET    /api/health              model server and SearXNG
 ```
 
 `/api/chat` takes `{messages}`, streams `data:` frames (`delta`, `thinking`,
-`tool`, `fetch`, `sources`, `metrics`, `title`, `error`) and ends with `[DONE]`.
-Each frame carries `r`, the round it came from.
+`tool`, `fetch`, `sources`, `metrics`, `title`, `error`, and one per carded tool:
+`weather`, `wayback`, `crypto`, `crypto_trend`, `equity`, `equity_trend`,
+`screen`) and ends with `[DONE]`. Each frame carries `r`, the round it came from.
 
 ## Front end
 
@@ -181,7 +214,10 @@ on the auth page too.
 
 Tool cards (`static/toolcall.js`) are the collapsed rows you see while the model
 works. The header hugs its label, and the panel under it is a card. Thinking uses
-the same shell.
+the same shell. A search, a page read, a weather reading and an archived page
+each get their own card; the weather and wayback ones carry the figures their
+tool computed, so they are drawn whole on the frame that ends the call rather
+than built up while it runs.
 
 ## Tests
 

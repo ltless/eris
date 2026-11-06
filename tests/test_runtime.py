@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,7 +41,9 @@ class RegistryChecks(unittest.TestCase):
     def test_registry_is_idempotent(self):
         builtin.register_builtins()
         self.assertEqual(sorted(registry.names()),
-                         ["fetch_url", "web_search"])
+                         ["crypto", "crypto_trend", "equity", "equity_trend",
+                          "fetch_url", "read_file", "screen", "wayback",
+                          "weather", "web_search"])
 
     def test_specs_carry_name_description_and_schema(self):
         spec = next(s for s in registry.specs(("chat",))
@@ -161,6 +164,24 @@ class PolicyChecks(unittest.TestCase):
         # it in front of the model spends a round on a schema it cannot use.
         names = {s["function"]["name"] for s in reg.specs_for(ToolContext())}
         self.assertEqual(names, {"read"})
+
+    def test_a_tool_that_needs_something_from_the_run_is_only_offered_with_it(self):
+        """`read_file` on a run with no files is a schema the model cannot use,
+        offered on every round; the tool says when it has anything to offer."""
+        reg = Registry()
+        reg.add(Tool(name="read_file", description="d", parameters={"type": "object"},
+                     handler=lambda a, c: "", permission=perms.READ_ONLY, tags=("chat",),
+                     when=lambda ctx: bool(getattr(ctx, "files", ()))))
+        self.assertEqual(reg.specs_for(ToolContext()), [])
+        offered = reg.specs_for(ToolContext(files=({"name": "a", "text": "b"},)))
+        self.assertEqual([s["function"]["name"] for s in offered], ["read_file"])
+
+    def test_the_builtin_file_reader_is_offered_exactly_when_a_file_is(self):
+        builtin.register_builtins()
+        self.assertNotIn("read_file",
+                         {s["function"]["name"] for s in registry.specs_for(ToolContext())})
+        with_file = registry.specs_for(ToolContext(files=({"name": "a", "text": "b"},)))
+        self.assertIn("read_file", {s["function"]["name"] for s in with_file})
 
 
 # --- budgets ---
@@ -580,6 +601,107 @@ class LoopChecks(unittest.TestCase):
         _, result = self.drive(self.request())
         self.assertEqual(result.budget["model_calls"], 3)
         self.assertGreaterEqual(result.budget["tool_calls"], 2)
+
+    # --- calls within one round ---
+
+    def tool_calls(self, calls):
+        """A stub model that asks for every name in `calls` in one round.
+
+        `calls` maps a tool name to `(handler, permission)`; each tool is
+        registered for the test and removed when it ends, because the registry
+        is process-wide.
+        """
+        from app.tools.registry import Tool, registry as shared
+
+        for name, (handler, permission) in calls.items():
+            shared.add(Tool(name=name, description="d",
+                            parameters={"type": "object", "properties": {}},
+                            handler=handler, permission=permission, tags=("chat",)))
+            self.addCleanup(shared.remove, name)
+
+        class Caller(StubModel):
+            def reply(self, payload):
+                if not payload.get("tools"):
+                    return [json.dumps({"message": {"content": "done"}})]
+                return [json.dumps({"message": {"content": "", "tool_calls": [{
+                    "id": n, "function": {"name": n, "arguments": {}},
+                }]}}) for n in calls]
+
+        self.stub.stop()
+        self.stub = Caller()
+        settings.model_base_url = self.stub.start()
+
+    def test_a_round_runs_its_calls_together_and_reports_them_in_order(self):
+        """The calls in a round are independent, so they run at once: a round
+        that asked for a fast call and a slow one should cost the slow one, not
+        the sum. What the model reads and what the browser is told must still
+        follow the order it asked in, because the cards are matched by round."""
+        order = []
+
+        async def slow(args):
+            await asyncio.sleep(0.15)
+            order.append("slow")
+            return ToolResult.ok("slow text")
+
+        async def fast(args):
+            order.append("fast")
+            return ToolResult.ok("fast text")
+
+        self.tool_calls({"slow": (slow, perms.READ_ONLY), "fast": (fast, perms.READ_ONLY)})
+        start = time.monotonic()
+        events, result = self.drive(self.request(
+            budget=Budget(rounds=1, model_calls=20, tool_calls=20, seconds=60)))
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(order, ["fast", "slow"], "the calls did not overlap")
+        self.assertLess(elapsed, 0.26, "the round cost the sum of its calls")
+        self.assertEqual([r["tool"] for r in result.tool_runs], ["slow", "fast"],
+                         "tool_runs did not follow the order asked")
+        completed = [e for e in events if e.type == ev.TOOL_COMPLETED]
+        self.assertEqual([e.data["tool"] for e in completed], ["slow", "fast"],
+                         "events did not follow the order asked")
+        # The message the model reads follows the order it asked in too, so a
+        # model that named its calls 1 and 2 is not answered 2 then 1.
+        fed = [m for m in self.stub.payloads[1]["messages"] if m.get("role") == "tool"]
+        self.assertEqual([m["content"] for m in fed], ["slow text", "fast text"], fed)
+
+    def test_an_idempotent_read_is_retried_and_a_state_change_is_not(self):
+        """A network read that failed can be asked again; a call that changes
+        something cannot, because the runtime cannot tell whether the first
+        attempt took effect. The permission is what separates them.
+
+        The write is refused by `authorize` before its handler runs, so its
+        count stays at zero: the retry gate is the second reason it is not
+        repeated, not the only one.
+        """
+        tries = {"read": 0, "write": 0, "final": 0}
+
+        async def flaky_read(args):
+            tries["read"] += 1
+            if tries["read"] == 1:
+                return ToolResult.failed(errors.TOOL_ERROR, "the server said 503", retryable=True)
+            return ToolResult.ok("read it")
+
+        async def flaky_write(args):
+            tries["write"] += 1
+            return ToolResult.failed(errors.TOOL_ERROR, "the write failed", retryable=True)
+
+        async def final_answer(args):
+            tries["final"] += 1
+            return ToolResult.failed(errors.TOOL_ERROR, "no such address", retryable=False)
+
+        self.tool_calls({
+            "final": (final_answer, perms.EXTERNAL),
+            "rd": (flaky_read, perms.EXTERNAL),
+            "wr": (flaky_write, perms.WRITE),
+        })
+        _, result = self.drive(self.request(
+            budget=Budget(rounds=1, model_calls=20, tool_calls=20, seconds=60)))
+        self.assertEqual(tries["final"], 1, "an unretryable failure was retried")
+        self.assertEqual(tries["read"], 2, "a retryable network read was not retried")
+        # The write never ran at all: `authorize` refuses it before its handler.
+        self.assertEqual(tries["write"], 0, "a state-changing call reached its handler")
+        self.assertTrue([r for r in result.tool_runs if r["tool"] == "rd" and r["ok"]])
 
 
 if __name__ == "__main__":

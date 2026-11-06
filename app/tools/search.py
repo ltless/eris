@@ -163,6 +163,11 @@ def render(results, start=0):
         elif "page" in r:
             block += "\n(the full page could not be read — snippet only)"
         parts.append(block)
+    # The top results already carry their text, and a model that re-fetches one
+    # spends a round to learn nothing. The note is sent once rather than beside
+    # every URL, where it would be most of the prompt.
+    if any(r.get("page") for r in results):
+        head += "Results under Page content are already read in full; call fetch_url only for a URL that has no page text here or one the user gave.\n\n"
     return head + "\n\n".join(parts)
 
 

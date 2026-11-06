@@ -8,17 +8,20 @@ from `gpu` instead.
 
 import asyncio
 
-import httpx
-
+from .client import client
 from .endpoint import base_url
 from .gpu import gpu_info
 from ..config import settings
 
 # The endpoint reports allocated context and residency on its runtime route;
-# `/api/show` reports the model's architecture. Both are cheap, and neither
-# costs a generation, so they are asked directly rather than cached.
+# `/api/show` reports the model's architecture. Neither costs a generation, so
+# they are asked directly. Residency moves, so it is asked every time; the
+# architecture cannot change under a model id, and the answer is 12 KB, so it
+# is kept.
 PS_TIMEOUT = 6
 SHOW_TIMEOUT = 30
+
+_SHOWN: dict = {}
 
 # Bytes per KV element, by the cache type the server was started with. llama.cpp
 # stores each block of 32 elements as the elements plus one scale (f32 for
@@ -141,8 +144,7 @@ async def runtime_status(model):
     because the loaded set is a runtime fact, not a model-list fact.
     """
     try:
-        async with httpx.AsyncClient(timeout=PS_TIMEOUT) as c:
-            r = await c.get(base_url() + "/api/ps")
+        r = await client().get(base_url() + "/api/ps", timeout=PS_TIMEOUT)
         if r.status_code >= 400:
             return None
         rows = r.json().get("models") or []
@@ -155,15 +157,23 @@ async def runtime_status(model):
 
 
 async def model_info(model):
-    """The model's own metadata, as the endpoint reports it."""
+    """The model's own metadata, kept per id.
+
+    A failed ask is not remembered: the model may be pulled a minute later, and
+    a cached `None` would then answer for a model this server can describe.
+    """
+    if model in _SHOWN:
+        return _SHOWN[model]
     try:
-        async with httpx.AsyncClient(timeout=SHOW_TIMEOUT) as c:
-            r = await c.post(base_url() + "/api/show", json={"model": model})
+        r = await client().post(base_url() + "/api/show", json={"model": model},
+                                timeout=SHOW_TIMEOUT)
         if r.status_code >= 400:
             return None
-        return r.json()
+        shown = r.json()
     except Exception:
         return None
+    _SHOWN[model] = shown
+    return shown
 
 
 async def model_stats(model, ctx=None, metrics=None):

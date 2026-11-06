@@ -9,6 +9,11 @@ import json
 
 from .runtime import events as ev
 
+# The tools whose result carries its own card payload, sent as a frame under the
+# tool's own name.
+_CARDED = {"weather", "wayback", "crypto", "crypto_trend",
+           "equity", "equity_trend", "screen"}
+
 
 def sse(obj):
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
@@ -52,6 +57,11 @@ def sse_frame(event):
     if t == ev.TOOL_COMPLETED and d.get("tool") == "fetch_url":
         return {"type": "fetch_done", "r": d.get("round", 0),
                 "ok": True, "chars": d.get("chars", 0)}
+    # These cards are drawn whole, once, when the tool ends: unlike a fetch
+    # there is nothing to watch arrive, and the payload is the figures the tool
+    # computed rather than anything the run knows.
+    if t == ev.TOOL_COMPLETED and d.get("tool") in _CARDED and d.get("card"):
+        return {"type": d["tool"], "r": d.get("round", 0), "card": d["card"]}
     if t == ev.TOOL_FAILED:
         # `reason` is the short phrase the card replays; `message` is the full
         # sentence the model got, kept for anything that shows it verbatim.

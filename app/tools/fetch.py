@@ -14,6 +14,7 @@ import io
 import ipaddress
 import re
 import socket
+import time
 from urllib.parse import urlsplit
 
 import httpx
@@ -48,6 +49,31 @@ HEADERS = {
 }
 
 _STRIP_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "form", "nav", "footer", "header")
+
+# Pages come back unchanged for minutes at a time, and one search round asks
+# for the same top results again when the model repeats a query. Only successes
+# are cached: a failure is often the site being briefly down, and the next
+# attempt should go to the network.
+TTL = 900
+MAX_CACHED = 64
+_cache: dict[tuple[str, int], tuple[float, str]] = {}
+
+
+def _cached(url, max_chars):
+    hit = _cache.get((url, max_chars))
+    if hit is None:
+        return None
+    expires, text = hit
+    if time.monotonic() >= expires:
+        _cache.pop((url, max_chars), None)
+        return None
+    return text
+
+
+def _remember(url, max_chars, text):
+    if len(_cache) >= MAX_CACHED:
+        _cache.clear()
+    _cache[(url, max_chars)] = (time.monotonic() + TTL, text)
 
 
 def _ip_blocked(ip):
@@ -98,6 +124,10 @@ async def fetch_page(client, url, max_chars):
     """Return `(text, reason)`. `text` is None when the page could not be read;
     `reason` names which failure stopped it. Never raises."""
     url = str(url)
+    hit = _cached(url, max_chars)
+    if hit is not None:
+        return hit, ""
+    asked = url
     for _ in range(MAX_REDIRECTS + 1):
         if not await asyncio.to_thread(is_public_url, url):
             return None, "not a public http(s) address"
@@ -134,10 +164,12 @@ async def fetch_page(client, url, max_chars):
                 return None, "the PDF could not be parsed"
             if not text or len(text) < MIN_READABLE:
                 return None, "the PDF held no readable text"
+            _remember(asked, max_chars, text)
             return text, ""
         text = extract_text(raw.decode("utf-8", errors="ignore"), max_chars)
         if not text or len(text) < MIN_READABLE:
             return None, "no readable text in the page (scripts, or too little prose)"
+        _remember(asked, max_chars, text)
         return text, ""
     return None, f"more than {MAX_REDIRECTS} redirects"
 

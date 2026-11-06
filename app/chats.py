@@ -93,7 +93,7 @@ SCHEMA = (
     "CREATE TABLE turns("
     "chat_id TEXT NOT NULL, role TEXT NOT NULL, "
     "content TEXT NOT NULL, quote TEXT, thinking TEXT, sources TEXT, "
-    "web TEXT, fetches TEXT, answers TEXT, images BLOB, files TEXT, ts INTEGER NOT NULL);"
+    "web TEXT, fetches TEXT, answers TEXT, images BLOB, files TEXT, cards TEXT, ts INTEGER NOT NULL);"
     "CREATE INDEX turns_chat ON turns(chat_id);"
 )
 
@@ -118,6 +118,8 @@ def _migrate(conn):
         conn.execute("ALTER TABLE turns ADD COLUMN images BLOB")
     if "files" not in cols:
         conn.execute("ALTER TABLE turns ADD COLUMN files TEXT")
+    if "cards" not in cols:
+        conn.execute("ALTER TABLE turns ADD COLUMN cards TEXT")
 
 
 def db():
@@ -127,7 +129,7 @@ def db():
 
 
 def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=None, web=None,
-              fetches=None, answers=None, images=None, files=None):
+              fetches=None, answers=None, images=None, files=None, cards=None):
     # A turn can be carried by any one of four things: the words typed under
     # it, the selection it answers, an attached image, or an attached file. Any
     # one alone is reason enough to keep the turn.
@@ -161,11 +163,12 @@ def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=N
     ansj = json.dumps(answers) if answers else None
     imgblob = pack_images(images) if images else None
     filej = json.dumps(files) if files else None
+    cardj = json.dumps(cards) if cards else None
     db().execute(
         "INSERT INTO turns(chat_id,role,content,quote,thinking,sources,web,fetches,answers,"
-        "images,files,ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        "images,files,cards,ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (chat_id, role, text, quote or None, thinking or None, meta, webj, fetchj, ansj,
-         imgblob, filej, now),
+         imgblob, filej, cardj, now),
     )
     db().execute(
         "INSERT INTO chats(id,user_id,ts) VALUES(?,?,?) "
@@ -235,7 +238,8 @@ def turns(user_id, chat_id, limit=100):
     # Newest window, then flipped back to reading order: a long chat has to
     # open on its latest exchange, not its first one.
     rows = db().execute(
-        "SELECT role,content,quote,thinking,sources,web,fetches,answers,images,files FROM turns "
+        "SELECT role,content,quote,thinking,sources,web,fetches,answers,images,files,cards "
+        "FROM turns "
         "WHERE chat_id=(SELECT id FROM chats WHERE id=? AND user_id=?) "
         "ORDER BY rowid DESC LIMIT ?",
         (chat_id, user_id, limit),
@@ -267,6 +271,8 @@ def turns(user_id, chat_id, limit=100):
             t["images"] = unpack_images(r["images"])
         if r["files"]:
             t["files"] = json.loads(r["files"])
+        if r["cards"]:
+            t["cards"] = json.loads(r["cards"])
         out.append(t)
     return out
 

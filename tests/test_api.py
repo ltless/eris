@@ -328,6 +328,74 @@ class ChatStreamChecks(unittest.TestCase):
         closed = api.sse_frame(e.emit(ev.TOOL_COMPLETED, tool="fetch_url", round=2, chars=1234))
         self.assertEqual(closed, {"type": "fetch_done", "r": 2, "ok": True, "chars": 1234})
 
+    def test_a_weather_card_travels_whole_on_the_frame_that_ends_the_tool(self):
+        """The card is drawn in one pass, so the payload it draws from rides on
+        the closing frame; without it the browser has a tool call and no card."""
+        from app.runtime.events import Emitter
+        from app.runtime import events as ev
+
+        card = {"place": "Bandung, Indonesia", "now": {"temp": 27.4},
+                "forecast": [{"date": "2026-11-03", "min": 22.0, "max": 30.0}]}
+        frame = api.sse_frame(Emitter().emit(
+            ev.TOOL_COMPLETED, tool="weather", round=1, chars=200, sources=1, card=card))
+        self.assertEqual(frame["type"], "weather")
+        self.assertEqual(frame["r"], 1)
+        self.assertEqual(frame["card"], card)
+
+    def test_a_card_lands_after_the_prose_the_same_round_already_wrote(self):
+        """A round can write a sentence and then call a tool.
+
+        The browser appends the card where it arrives, so the frame has to come
+        after that round's prose. Hoisting it above text the reader already
+        passed is what made a card look like it never showed up.
+        """
+        from app.tools import weather as weather_mod
+
+        class Preambling(StubModel):
+            def reply(self, payload):
+                rounds = sum(1 for p in self.payloads if p.get("tools"))
+                if payload.get("tools") and rounds == 1:
+                    return [
+                        json.dumps({"message": {"content": "Let me check. "}}),
+                        json.dumps({"message": {"content": "", "tool_calls": [{
+                            "id": "c1",
+                            "function": {"name": "weather",
+                                         "arguments": {"location": "Bandung"}},
+                        }]}}),
+                    ]
+                return [json.dumps({"message": {"content": "the answer"}})]
+
+        card = {"place": "Bandung", "now": {"temp": 27.0}, "forecast": []}
+
+        async def fake_read(args):
+            return True, "Weather for Bandung", "", {"card": card}
+
+        self.h.stub.stop()
+        self.h.stub = Preambling()
+        settings.model_base_url = self.h.stub.start()
+        old = weather_mod.read
+        weather_mod.read = fake_read
+        try:
+            events = sse_events(self.h.ask("cuaca bandung?"))
+        finally:
+            weather_mod.read = old
+
+        shape = [(e["type"], e["r"]) for e in events
+                 if e["type"] in ("delta", "weather")]
+        self.assertEqual(shape, [("delta", 0), ("weather", 0), ("delta", 1)])
+        weather = next(e for e in events if e["type"] == "weather")
+        self.assertEqual(weather["card"], card, "the card frame carried no payload")
+
+    def test_a_tool_with_no_card_sends_none(self):
+        """`card` is absent on every other tool's closing frame, so the mapping
+        keys off it rather than emitting an empty frame for the whole registry."""
+        from app.runtime.events import Emitter
+        from app.runtime import events as ev
+
+        frame = api.sse_frame(Emitter().emit(
+            ev.TOOL_COMPLETED, tool="read_file", round=0, chars=10, sources=0))
+        self.assertIsNone(frame)
+
     def test_a_source_states_its_round_and_whether_it_was_read(self):
         """The card files a result under the round that found it, and marks the
         few whose page text was actually pulled."""
