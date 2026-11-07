@@ -78,6 +78,117 @@ def tool_message(call, content):
     return m
 
 
+def _with_plan(messages, plan):
+    """The conversation sent this round, with the run's own plan on the end.
+
+    Appended rather than spliced in, so the prompt before it is unchanged and
+    the server's prefix cache still matches. A copy is returned; the stored
+    history stays free of the reminder.
+
+    `user`, not `system`: several chat templates, Llama 3's among them, refuse a
+    system turn anywhere but the first, and the server rejects the whole request
+    rather than ignoring it.
+    """
+    if not plan:
+        return messages
+    lines = ["The plan you recorded for this task, so far:"]
+    for i, s in enumerate(plan, 1):
+        lines.append(f"{i}. [{s['status']}] {s['step']}")
+    lines.append("Keep going through it, and call plan again when a step changes.")
+    return messages + [{"role": "user", "content": "\n".join(lines)}]
+
+
+_OPEN = "<tool_call>"
+_CLOSE = "</tool_call>"
+
+# Sent when a pass leaves nothing but a tool call written as text. The server
+# only parses calls when the request carries the tool list, so a tool-less pass
+# can turn one into prose; the answer has to be asked for again, plainly.
+_AS_TEXT = (
+    "That reply was a tool call written as text, so the reader got markup "
+    "instead of an answer. Answer in prose now, without any tool call and "
+    "without <tool_call> tags."
+)
+
+# Sent when the final pass spent itself on a `plan` call and left no prose. The
+# step is recorded and its card is kept, but a card is not an answer.
+_AFTER_PLAN = (
+    "You recorded the plan but wrote no answer, so the reader has a card and "
+    "nothing else. Answer in prose now, from what the run already found, and "
+    "do not call any tool."
+)
+
+
+def _partial_prefix(text):
+    """How many trailing characters could still turn out to open a call."""
+    for n in range(min(len(_OPEN) - 1, len(text)), 0, -1):
+        if text.endswith(_OPEN[:n]):
+            return n
+    return 0
+
+
+class _ToolCallFilter:
+    """Drops `<tool_call>` blocks from an answer as it streams.
+
+    The markup arrives in pieces, so a tail as long as the opening tag is held
+    back until it is known not to start one. A block that never closes is
+    dropped whole: it is half a call, not an answer.
+    """
+
+    def __init__(self):
+        self._buf = ""
+        self._inside = False
+        self._fed = 0
+        self._out = 0
+
+    @property
+    def dropped(self):
+        """Characters taken out of the answer as markup."""
+        return self._fed - self._out
+
+    def feed(self, piece):
+        self._fed += len(piece)
+        self._buf += piece
+        out = []
+        while True:
+            if self._inside:
+                i = self._buf.find(_CLOSE)
+                if i < 0:
+                    break
+                self._buf = self._buf[i + len(_CLOSE):]
+                self._inside = False
+                continue
+            i = self._buf.find(_OPEN)
+            if i >= 0:
+                out.append(self._buf[:i])
+                self._buf = self._buf[i + len(_OPEN):]
+                self._inside = True
+                continue
+            keep = _partial_prefix(self._buf)
+            out.append(self._buf[:-keep] if keep else self._buf)
+            self._buf = self._buf[-keep:] if keep else ""
+            break
+        text = "".join(out)
+        self._out += len(text)
+        return text
+
+    def flush(self):
+        if self._inside:
+            self._buf = ""
+            self._inside = False
+            return ""
+        keep = _partial_prefix(self._buf)
+        rest = self._buf[:-keep] if keep else self._buf
+        self._buf = ""
+        self._out += len(rest)
+        return rest
+
+
+def _answer_ask(messages, plan, note=_AS_TEXT):
+    """The conversation plus the note that sends the model back to prose."""
+    return _with_plan(messages, plan) + [{"role": "user", "content": note}]
+
+
 def _drop_old_tool_messages(messages):
     """Keep the conversation bounded without losing the turns that matter: the
     system prompt, the first user turn, and the newest tool exchanges stay."""
@@ -123,6 +234,16 @@ class Engine:
         specs = [s for s in registry.specs(request.tags)
                  if s["function"]["name"] in self._allowed_tool_names]
         self._specs = specs if offer and specs else None
+        # The final pass keeps `plan` and drops the rest. A model that still
+        # wants to record a step can call it; one that wants to keep searching
+        # has no schema to call, so the search ends where the budget says.
+        # Without any list at all a model reaches for the tool anyway and
+        # writes the call into the answer channel, which the reader then sees
+        # as markup.
+        self._answer_specs = None
+        if offer:
+            self._answer_specs = [s for s in specs
+                                  if s["function"]["name"] == "plan"] or None
 
     def cancel(self):
         """Ask the loop to stop at the next boundary. A tool already running is
@@ -178,9 +299,10 @@ class Engine:
                 extra -= 1
             self._new_sources = 0
 
-            # The final pass drops the tool list so the model answers from
-            # what it has rather than searching until the budget dies.
-            specs = None if final else self._specs
+            # The final pass keeps `plan` and drops the busier tools, so the
+            # model answers from what it has rather than searching until the
+            # budget dies.
+            specs = self._answer_specs if final else self._specs
             self.budget.spend_model()
             self.result.model_calls += 1
 
@@ -199,7 +321,8 @@ class Engine:
             seen = {}
             try:
                 async for event in self._stream_round(
-                    messages, specs, False if final else self.req.thinking,
+                    _with_plan(messages, self.ctx.plan), specs,
+                    False if final else self.req.thinking,
                     round_no, calls, text_parts, seen,
                 ):
                     yield event
@@ -220,9 +343,38 @@ class Engine:
                     self.budget.spend_model()
                     self.result.model_calls += 1
                     async for event in self._stream_round(
-                        messages, None, False, round_no, calls, text_parts, seen
+                        _with_plan(messages, self.ctx.plan), None, False,
+                        round_no, calls, text_parts, seen
                     ):
                         yield event
+                # A pass can end with a tool call written as text and no prose.
+                # The server only parses calls when the request carries the
+                # list, so this is what a tool-less pass does with a model that
+                # still wants to act. Markup is not an answer: the turn is asked
+                # once more, plainly, with nothing to call.
+                if (
+                    not calls
+                    and not text_parts
+                    and seen.get("markup")
+                    and self.budget.spent_models < self.budget.model_calls
+                ):
+                    self.budget.spend_model()
+                    self.result.model_calls += 1
+                    async for event in self._stream_round(
+                        _answer_ask(messages, self.ctx.plan), None, False,
+                        round_no, calls, text_parts, seen,
+                    ):
+                        yield event
+                # The ask did not take either. The round has no answer to show,
+                # and the markup it did produce is not one, so the reader is
+                # told what happened instead of being handed the raw markup.
+                # This fires on any round: a model that only writes markup made
+                # no calls, so the turn ends here whatever the budget says.
+                if not calls and not text_parts and seen.get("markup"):
+                    sorry = ("The model answered with a tool call instead of an "
+                             "answer, and said nothing when asked again.")
+                    text_parts.append(sorry)
+                    yield self.emitter.emit(events.MODEL_DELTA, text=sorry, round=round_no)
             except ModelError as e:
                 yield self.emitter.emit(
                     events.TASK_FAILED, reason="model_error", code=errors.MODEL_ERROR, message=str(e)
@@ -238,14 +390,53 @@ class Engine:
                 tool_calls=len(calls),
             )
             self.result.rounds = round_no + 1
-            text = "".join(text_parts)
-            if text:
-                self.result.answer = text
-                self.result.answers.append({"r": round_no, "text": text})
+
+            def record():
+                """File the round's prose as the answer. The recovery passes add
+                to `text_parts` after the first model call, so this runs once
+                the round is truly done rather than the moment it streams."""
+                text = "".join(text_parts)
+                if text:
+                    self.result.answer = text
+                    self.result.answers.append({"r": round_no, "text": text})
 
             if final:
+                # The only call the final pass can still make is `plan`, and
+                # dropping it would leave the card one step behind the answer.
+                # A tool it was not offered is not run, whatever it named.
+                offered = {s["function"]["name"] for s in (self._answer_specs or [])}
+                runnable = [c for c in calls
+                            if (c.get("function") or {}).get("name") in offered]
+                runnable = self._filter_calls(runnable)
+                if runnable:
+                    messages.append({"role": "assistant", "content": "", "tool_calls": runnable})
+                    async for event in self._run_calls(runnable, messages, round_no):
+                        yield event
+                # A model that spends the answering pass on the plan card and
+                # never reaches the prose leaves the turn with a card and no
+                # answer, which the reader sees as the run having stopped. The
+                # step is kept, and the answer is asked for once more with
+                # nothing left to call.
+                if (not text_parts
+                        and self.budget.spent_models < self.budget.model_calls):
+                    self.budget.spend_model()
+                    self.result.model_calls += 1
+                    async for event in self._stream_round(
+                        _answer_ask(messages, self.ctx.plan, _AFTER_PLAN), None, False,
+                        round_no, calls, text_parts, seen,
+                    ):
+                        yield event
+                if not text_parts:
+                    # The ask did not take. Nothing was answered, and the reader
+                    # is told that rather than left with the card alone.
+                    sorry = ("The model recorded its plan but never wrote an "
+                             "answer, and said nothing when asked again.")
+                    text_parts.append(sorry)
+                    yield self.emitter.emit(events.MODEL_DELTA, text=sorry, round=round_no)
+                record()
                 self.result.stop_reason = "answered"
                 break
+            record()
             if not calls:
                 self.result.stop_reason = "answered"
                 break
@@ -273,8 +464,17 @@ class Engine:
         The parts are collected into the caller's lists rather than returned,
         because a round can be streamed twice and both halves are one answer.
         `seen` records what came back, so the caller can tell a round that
-        thought and answered nothing from one that simply had nothing to say.
+        thought and answered nothing from one that simply had nothing to say,
+        and from one that wrote a tool call into the answer channel.
         """
+        markup = _ToolCallFilter()
+
+        def prose(piece):
+            text = markup.feed(piece)
+            if text:
+                text_parts.append(text)
+            return text
+
         async for kind, value in stream_completion(
             messages,
             model=self.req.model,
@@ -285,8 +485,9 @@ class Engine:
             if kind == "tool_calls":
                 merge_tool_calls(calls, value)
             elif kind == "delta":
-                text_parts.append(value)
-                yield self.emitter.emit(events.MODEL_DELTA, text=value, round=round_no)
+                text = prose(value)
+                if text:
+                    yield self.emitter.emit(events.MODEL_DELTA, text=text, round=round_no)
             elif kind == "thinking":
                 seen["thought"] = seen.get("thought", 0) + len(value)
                 self.thinking[-1] += value
@@ -298,6 +499,13 @@ class Engine:
                 # what a reader wants to see.
                 self.result.metrics = value
                 yield self.emitter.emit(events.MODEL_METRICS, round=round_no, **value)
+
+        tail = markup.flush()
+        if tail:
+            text_parts.append(tail)
+            yield self.emitter.emit(events.MODEL_DELTA, text=tail, round=round_no)
+        if markup.dropped:
+            seen["markup"] = seen.get("markup", 0) + markup.dropped
 
     def _headroom(self, rounds):
         """Extra rounds the model-call budget can afford."""

@@ -1054,11 +1054,75 @@ def check_wayback_refuses_a_private_address():
     assert "169.254" in text, text
 
 
+def check_plan_records_and_normalizes():
+    from app.tools import plan
+    from app.tools.registry import ToolContext
+
+    ctx = ToolContext(user_id=1)
+    ok, text, reason, meta = plan.read(
+        {"steps": [{"step": "Read the docs", "status": "done"},
+                   {"step": "Draft the answer", "status": "Doing"},
+                   {"step": "Answer"}]},
+        ctx,
+    )
+    assert ok and not reason, reason
+    # An unknown or missing status is a step nobody placed, not a refusal.
+    assert [s["status"] for s in ctx.plan] == ["done", "doing", "todo"], ctx.plan
+    assert meta["card"]["steps"] == list(ctx.plan)
+    assert "1 of 3 done" in text, text
+
+
+def check_plan_refuses_a_call_with_nothing_in_it():
+    from app.tools import plan
+    from app.tools.registry import ToolContext
+
+    ctx = ToolContext(user_id=1)
+    ok, text, reason, meta = plan.read({"steps": [{"step": "  "}, ""]}, ctx)
+    assert not ok and reason == "every step was empty", reason
+    # A call that said nothing must not wipe a plan the run already wrote down.
+    ok, _, _, _ = plan.read({"steps": [{"step": "First", "status": "todo"}]}, ctx)
+    assert ok
+    plan.read({"steps": []}, ctx)
+    assert [s["step"] for s in ctx.plan] == ["First"], ctx.plan
+
+
+def check_plan_caps_the_list():
+    from app.tools import plan
+    from app.tools.registry import ToolContext
+
+    ctx = ToolContext(user_id=1)
+    ok, text, _, _ = plan.read(
+        {"steps": [{"step": f"step {i}", "status": "todo"} for i in range(30)]}, ctx
+    )
+    assert ok and len(ctx.plan) == plan.MAX_STEPS, len(ctx.plan)
+    assert f"first {plan.MAX_STEPS}" in text, text
+
+
+def check_every_carded_tool_reaches_the_browser():
+    """The carded list lives in four places, and a tool missing from one of them
+    draws no card live, or none on a reload. This is the check that keeps them
+    together."""
+    from pathlib import Path
+    from app.sse import _CARDED
+
+    root = Path(__file__).resolve().parents[1]
+    api = (root / "app" / "api.py").read_text(encoding="utf-8")
+    app_js = (root / "static" / "app.js").read_text(encoding="utf-8")
+    toolcall = (root / "static" / "toolcall.js").read_text(encoding="utf-8")
+    for name in _CARDED:
+        # Two tuples in api.py, the live frame and the failed one.
+        assert api.count(f'"{name}"') >= 2, f"{name} is missing from an api.py tuple"
+        assert f'"{name}"' in app_js, f"{name} is missing from a static/app.js branch"
+        # The replay does ErisToolCall[tool], so the builder must be exported.
+        assert name in toolcall, f"static/toolcall.js has no {name} builder"
+
+
 def check_registry_chat_tools():
     from app.tools.registry import registry
     chat_tools = {t.name for t in registry.all() if "chat" in t.tags}
     assert chat_tools == {"web_search", "fetch_url", "read_file", "weather", "wayback",
-                          "crypto", "crypto_trend", "equity", "equity_trend", "screen"}
+                          "crypto", "crypto_trend", "equity", "equity_trend", "screen",
+                          "plan"}
 
 
 def check_native_stream():

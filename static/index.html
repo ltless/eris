@@ -115,6 +115,10 @@
       </section>
 
       <footer class="composer" id="composer">
+        <!-- The run's plan, held out of the message flow: a card inside the turn
+             scrolls away with the turn it came from, and the plan is what the
+             reader wants to keep an eye on while the run is still going. -->
+        <div class="plan-strip" id="planStrip" role="region" aria-label="Plan for the current run" hidden></div>
         <form id="form">
           <div id="quotes" class="quote-row" hidden></div>
           <!-- Attachments wait outside the box, like the quote: the box is the

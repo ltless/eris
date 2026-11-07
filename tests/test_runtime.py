@@ -42,7 +42,7 @@ class RegistryChecks(unittest.TestCase):
         builtin.register_builtins()
         self.assertEqual(sorted(registry.names()),
                          ["crypto", "crypto_trend", "equity", "equity_trend",
-                          "fetch_url", "read_file", "screen", "wayback",
+                          "fetch_url", "plan", "read_file", "screen", "wayback",
                           "weather", "web_search"])
 
     def test_specs_carry_name_description_and_schema(self):
@@ -268,6 +268,19 @@ class EventChecks(unittest.TestCase):
 # --- the loop ---
 
 
+def offered(payload):
+    """The tool names a request offered.
+
+    The answer pass keeps `plan` and drops everything else, so "offered no
+    tools" is no longer how a stub tells the answering call apart.
+    """
+    return {t.get("function", {}).get("name") for t in payload.get("tools") or []}
+
+
+def answer_pass(payload):
+    return not (offered(payload) - {"plan"})
+
+
 class StubModel:
     """llama-server's /api/chat, reduced to the replies that matter."""
 
@@ -315,9 +328,9 @@ class StubModel:
         self._thread.join(timeout=5)
 
     def reply(self, payload):
-        rounds = sum(1 for p in self.payloads if p.get("tools"))
+        rounds = sum(1 for p in self.payloads if not answer_pass(p))
         out = [json.dumps({"message": {"thinking": "considering"}})]
-        if not payload.get("tools") or self.calls_per_round == 0:
+        if answer_pass(payload) or self.calls_per_round == 0:
             out.append(json.dumps({"message": {"content": self.answer}}))
             return out
         for i in range(self.calls_per_round):
@@ -375,11 +388,35 @@ class LoopChecks(unittest.TestCase):
         self.assertEqual(result.answer.strip(), "final answer")
         self.assertEqual(result.stop_reason, "answered")
 
-    def test_the_last_call_offers_no_tools(self):
+    @staticmethod
+    def join_messages(payload):
+        return " ".join(str(m.get("content") or "") for m in payload["messages"])
+
+    def test_the_plan_comes_back_on_the_next_round(self):
+        """The run's own steps ride on the tail of the prompt, and the stored
+        history never gains the reminder, so a later round does not double it."""
+        ctx = ToolContext(user_id=1, plan=({"step": "Read the docs", "status": "done"},
+                                           {"step": "Answer", "status": "doing"}))
+        self.drive(self.request(tool_context=ctx))
+        first = self.join_messages(self.stub.payloads[0])
+        self.assertIn("Read the docs", first)
+        self.assertIn("[doing] Answer", first)
+        # Every message the engine built itself, checked on the last round: the
+        # reminder is appended per request, never stored in the list.
+        stored = [m for m in self.stub.payloads[-1]["messages"]
+                  if "The plan you recorded" in str(m.get("content") or "")]
+        self.assertEqual(len(stored), 1, stored)
+
+    def test_a_run_with_no_plan_sends_no_reminder(self):
         self.drive(self.request())
-        self.assertTrue(self.stub.payloads[0].get("tools"))
-        self.assertFalse(self.stub.payloads[-1].get("tools"),
-                         "the final call still offered tools")
+        self.assertNotIn("The plan you recorded", self.join_messages(self.stub.payloads[0]))
+
+    def test_the_last_call_keeps_only_the_plan_tool(self):
+        self.drive(self.request())
+        self.assertTrue(offered(self.stub.payloads[0]) - {"plan"},
+                        "the first call offered only the plan")
+        self.assertEqual(offered(self.stub.payloads[-1]), {"plan"},
+                         "the final call still offered the searching tools")
 
     def test_the_last_call_asks_for_no_thinking(self):
         """A reasoning model with no tools can reason to the token limit and
@@ -431,7 +468,7 @@ class LoopChecks(unittest.TestCase):
 
         class Searcher(StubModel):
             def reply(self, payload):
-                if not payload.get("tools"):
+                if answer_pass(payload):
                     return [json.dumps({"message": {"content": "done"}})]
                 return [json.dumps({"message": {"content": "", "tool_calls": [{
                     "id": f"c{len(self.payloads)}",
@@ -486,8 +523,8 @@ class LoopChecks(unittest.TestCase):
         so without a second ask the turn reaches the user as nothing at all."""
         class Silent(StubModel):
             def reply(self, payload):
-                # The second call for a round is the one with no tools.
-                if payload.get("think") is False and not payload.get("tools"):
+                # The second call for a round is the one without thinking.
+                if payload.get("think") is False and answer_pass(payload):
                     return [json.dumps({"message": {"content": "recovered answer"}})]
                 return [json.dumps({"message": {"thinking": "planning the reply"}})]
 
@@ -499,7 +536,7 @@ class LoopChecks(unittest.TestCase):
         self.assertEqual(result.stop_reason, "answered")
         self.assertEqual(len(self.stub.payloads), 2)
         self.assertFalse(self.stub.payloads[-1].get("think"))
-        self.assertFalse(self.stub.payloads[-1].get("tools"))
+        self.assertNotIn("web_search", json.dumps(self.stub.payloads[-1].get("tools") or []))
 
     def test_an_empty_round_with_no_thinking_is_not_retried(self):
         """A model that says nothing at all is not the thinking-channel bug;
@@ -515,6 +552,103 @@ class LoopChecks(unittest.TestCase):
         self.assertEqual(result.answer, "")
         self.assertEqual(len(self.stub.payloads), 1)
 
+    def test_a_tool_call_written_as_text_never_reaches_the_answer(self):
+        """A pass with no searching tools makes the model write the call as
+        prose, because the server only parses them when the list is sent. What
+        the reader gets is the prose around it, never the markup."""
+        class Markdown(StubModel):
+            def reply(self, payload):
+                out = [json.dumps({"message": {"content": "Let me check. "}})]
+                out.append(json.dumps({"message": {"content": "<tool_call>\n<function=web_search>"}}))
+                out.append(json.dumps({"message": {"content": "lost </tool_call> back to it."}}))
+                return out
+
+        self.stub.stop()
+        self.stub = Markdown(calls_per_round=0)
+        settings.model_base_url = self.stub.start()
+        events, result = self.drive(self.request())
+        text = "".join(e.data.get("text", "") for e in events if e.type == ev.MODEL_DELTA)
+        self.assertNotIn("tool_call", text)
+        self.assertEqual(result.answer, "Let me check.  back to it.")
+
+    def test_an_answer_that_is_only_markup_is_asked_for_again(self):
+        """Nothing but a call written as text is no answer at all, so the turn
+        asks once more, and only the second pass is kept."""
+        class OnlyMarkup(StubModel):
+            def reply(self, payload):
+                if "instead of an answer" in json.dumps(payload.get("messages") or []):
+                    return [json.dumps({"message": {"content": "the real answer"}})]
+                return [json.dumps({"message": {"content":
+                    "<tool_call>\n<function=plan>\n<parameter=steps>\n[]\n</parameter>\n"
+                    "</function>\n</tool_call>"}})]
+
+        self.stub.stop()
+        self.stub = OnlyMarkup(calls_per_round=0)
+        settings.model_base_url = self.stub.start()
+        _, result = self.drive(self.request())
+        self.assertEqual(result.answer, "the real answer")
+        self.assertEqual(len(self.stub.payloads), 2)
+
+    def test_a_model_that_only_writes_markup_twice_is_told_so(self):
+        """The second pass can fail the same way. An answer that is still
+        markup is not shown: the turn closes with what happened instead."""
+        class Stuck(StubModel):
+            def reply(self, payload):
+                return [json.dumps({"message": {"content":
+                    "<tool_call><function=plan><parameter=steps>[]</parameter>"
+                    "</function></tool_call>"}})]
+
+        self.stub.stop()
+        self.stub = Stuck(calls_per_round=0)
+        settings.model_base_url = self.stub.start()
+        _, result = self.drive(self.request())
+        self.assertNotIn("tool_call", result.answer)
+        self.assertIn("instead of an answer", result.answer)
+
+    def test_a_final_pass_spent_on_the_plan_still_gets_an_answer(self):
+        """The answering pass offers `plan`, and a model that records a step
+        there leaves a card and no prose. The step is kept and the answer is
+        asked for again, or the reader gets the card and "No answer came back"."""
+        class Planner(StubModel):
+            def reply(self, payload):
+                if "You recorded the plan" in json.dumps(payload.get("messages") or []):
+                    return [json.dumps({"message": {"content": "here is the answer"}})]
+                if answer_pass(payload):
+                    return [json.dumps({"message": {"content": "", "tool_calls": [{
+                        "id": "p", "function": {"name": "plan", "arguments": {
+                            "steps": [{"step": "Answer", "status": "doing"}]}},
+                    }]}})]
+                return [json.dumps({"message": {"content": "", "tool_calls": [{
+                    "id": "s", "function": {"name": "web_search", "arguments": {"query": "x"}},
+                }]}})]
+
+        self.stub.stop()
+        self.stub = Planner(calls_per_round=0)
+        settings.model_base_url = self.stub.start()
+        _, result = self.drive(self.request())
+        self.assertEqual(result.answer, "here is the answer")
+        self.assertEqual(result.stop_reason, "answered")
+
+    def test_a_final_pass_that_plans_and_never_answers_says_so(self):
+        """The second ask can fail the same way. A turn with a card and no prose
+        is still not an answer, so the reader is told that instead."""
+        class OnlyPlans(StubModel):
+            def reply(self, payload):
+                if answer_pass(payload):
+                    return [json.dumps({"message": {"content": "", "tool_calls": [{
+                        "id": "p", "function": {"name": "plan", "arguments": {
+                            "steps": [{"step": "Answer", "status": "doing"}]}},
+                    }]}})]
+                return [json.dumps({"message": {"content": "", "tool_calls": [{
+                    "id": "s", "function": {"name": "web_search", "arguments": {"query": "x"}},
+                }]}})]
+
+        self.stub.stop()
+        self.stub = OnlyPlans(calls_per_round=0)
+        settings.model_base_url = self.stub.start()
+        _, result = self.drive(self.request())
+        self.assertIn("never wrote an answer", result.answer)
+
     def test_a_model_error_is_not_a_success_shaped_answer(self):
         self.stub.fail = "boom"
         events, result = self.drive(self.request())
@@ -525,7 +659,7 @@ class LoopChecks(unittest.TestCase):
     def test_an_unknown_tool_is_reported_not_run(self):
         class Unknown(StubModel):
             def reply(self, payload):
-                if not payload.get("tools"):
+                if answer_pass(payload):
                     return [json.dumps({"message": {"content": "done"}})]
                 return [json.dumps({"message": {"content": "", "tool_calls": [{
                     "id": "x", "function": {"name": "no_such_tool", "arguments": {}},
@@ -621,7 +755,7 @@ class LoopChecks(unittest.TestCase):
 
         class Caller(StubModel):
             def reply(self, payload):
-                if not payload.get("tools"):
+                if answer_pass(payload):
                     return [json.dumps({"message": {"content": "done"}})]
                 return [json.dumps({"message": {"content": "", "tool_calls": [{
                     "id": n, "function": {"name": n, "arguments": {}},

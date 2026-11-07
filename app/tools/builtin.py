@@ -5,7 +5,7 @@ handlers that need run context and wraps results with render text for the model
 and source lists for the UI.
 """
 
-from . import crypto, equity, fetch, files, market, search, wayback, weather
+from . import crypto, equity, fetch, files, market, plan, search, wayback, weather
 from ..security import EXTERNAL, READ_ONLY
 from ..runtime.errors import TOOL_ERROR
 from .registry import Tool, ToolResult, registry
@@ -143,6 +143,17 @@ async def _screen(args, ctx):
     )
 
 
+async def _plan(args, ctx):
+    ok, text, reason, meta = plan.read(args, ctx)
+    return ToolResult(
+        success=ok,
+        data={"reason": reason},
+        text=text,
+        metadata={**meta, "reason": reason},
+        error=None if ok else {"code": TOOL_ERROR, "message": text, "retryable": False},
+    )
+
+
 def _web_sources(hits):
     return [
         {
@@ -252,6 +263,16 @@ def register_builtins():
             timeout=35.0,
             tags=CHAT_TAGS + ("research",),
             side_effect="network_read",
+        )
+    )
+    registry.add(
+        _tool(
+            plan.TOOL,
+            handler=_plan,
+            permission=READ_ONLY,
+            timeout=10.0,
+            tags=CHAT_TAGS + ("research",),
+            side_effect="none",
         )
     )
     registry.add(

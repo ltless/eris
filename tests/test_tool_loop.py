@@ -4,8 +4,8 @@ The model keeps calling web_search until the round budget runs out. These
 checks pin what the server is supposed to send the browser in that case.
 
 A stub model server stands in for llama-server. It returns a tool call for as
-long as the request offers tools, and plain text when the request offers none,
-which is exactly the shape the real server has.
+long as the request offers the searching tools, and plain text on the pass that
+offers only `plan`, which is exactly the shape the real server has.
 """
 
 import json
@@ -22,6 +22,12 @@ from fastapi.testclient import TestClient
 
 from app import api, auth, chats
 from app.config import settings
+
+
+def searches(payload):
+    """True while the request offers something to search with."""
+    names = {t.get("function", {}).get("name") for t in payload.get("tools") or []}
+    return bool(names - {"plan"})
 
 
 class StubModel:
@@ -64,9 +70,9 @@ class StubModel:
         self._thread.join(timeout=5)
 
     def reply(self, payload):
-        rounds_so_far = sum(1 for p in self.payloads if p.get("tools"))
+        rounds_so_far = sum(1 for p in self.payloads if searches(p))
         out = [json.dumps({"message": {"thinking": "weighing search results"}})]
-        if not payload.get("tools") or self.calls_per_round == 0:
+        if not searches(payload) or self.calls_per_round == 0:
             out.append(json.dumps({"message": {"content": self.answer}}))
             out.append(json.dumps({"message": {"content": ""}, "done": True}))
             return out
@@ -151,15 +157,17 @@ def check_answer_after_budget():
         h.close()
 
 
-def check_answer_request_has_no_tools():
-    """The final call must drop the tool list, or the model just searches again."""
+def check_answer_request_keeps_only_the_plan_tool():
+    """The final call keeps `plan` and drops the searching tools, or the model
+    just searches again. With no list at all it writes the call as text."""
     stub = StubModel()
     h = Harness(stub)
     try:
         h.ask()
         assert len(stub.payloads) == settings.max_tool_rounds + 1, len(stub.payloads)
-        assert "tools" in stub.payloads[0], "first call should offer tools"
-        assert not stub.payloads[-1].get("tools"), "last call should not offer tools"
+        assert searches(stub.payloads[0]), "first call should offer tools"
+        last = {t.get("function", {}).get("name") for t in stub.payloads[-1].get("tools") or []}
+        assert last == {"plan"}, f"last call offered {sorted(last)}"
     finally:
         h.close()
 

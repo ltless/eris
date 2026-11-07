@@ -355,6 +355,196 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The condition drawn as the sky it names. Line art on the icon stroke, one
+   step up from the header glyph so it reads at the size of the temperature it
+   sits beside. Every moving part lives inside the 24x24 box, so the scene can
+   never push the hero's baseline around. */
+.tc-wx-sky {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  color: var(--muted);
+}
+
+.tc-wx-sky svg {
+  width: 28px;
+  height: 28px;
+  stroke-width: 1.5;
+}
+
+/* A transform on an SVG child turns about the element's own box by default,
+   which is what keeps the sun's pulse centred on the sun. The ray group is
+   the exception: its own box is the whole frame, so it turns about the frame's
+   centre instead, which is where the sun sits. */
+.tc-wx-sky [class^="wx-"] {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.wx-rays {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  animation: wx-spin 22s linear infinite;
+}
+
+.wx-sun {
+  animation: wx-breathe 5s ease-in-out infinite;
+}
+
+.wx-cloud {
+  animation: wx-drift 9s ease-in-out infinite;
+}
+
+/* Negative delays put the staggered parts mid-cycle from the first frame, so
+   a drop is already falling instead of holding invisible until its turn. */
+.wx-drop {
+  animation: wx-fall 1.5s linear infinite;
+}
+
+.wx-drop2 {
+  animation-delay: -0.5s;
+}
+
+.wx-drop3 {
+  animation-delay: -1s;
+}
+
+.wx-drop4 {
+  animation-delay: -0.75s;
+}
+
+.wx-flake {
+  animation: wx-snowfall 3.4s linear infinite;
+}
+
+.wx-flake2 {
+  animation-delay: -1.1s;
+}
+
+.wx-flake3 {
+  animation-delay: -2.2s;
+}
+
+.wx-bolt {
+  animation: wx-flash 3.6s ease-in-out infinite;
+}
+
+.wx-fog {
+  animation: wx-fogroll 7s ease-in-out infinite;
+}
+
+.wx-fog2 {
+  animation-delay: -2.3s;
+}
+
+.wx-fog3 {
+  animation-delay: -4.6s;
+}
+
+@keyframes wx-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes wx-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.09);
+  }
+}
+
+@keyframes wx-drift {
+  0%,
+  100% {
+    transform: translateX(-0.7px);
+  }
+  50% {
+    transform: translateX(0.7px);
+  }
+}
+
+/* Fades at both ends: a drop that appears at the cloud and vanishes below it
+   reads as falling. Hard-edged loops read as blinking instead. */
+@keyframes wx-fall {
+  0% {
+    transform: translateY(-1.4px);
+    opacity: 0;
+  }
+  25%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(2.6px);
+    opacity: 0;
+  }
+}
+
+@keyframes wx-snowfall {
+  0% {
+    transform: translate(0, -1.4px);
+    opacity: 0;
+  }
+  30%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(1.2px, 2.6px);
+    opacity: 0;
+  }
+}
+
+@keyframes wx-flash {
+  0%,
+  84%,
+  100% {
+    opacity: 0.35;
+  }
+  88%,
+  92% {
+    opacity: 1;
+  }
+}
+
+@keyframes wx-fogroll {
+  0%,
+  100% {
+    transform: translateX(-1.3px);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateX(1.3px);
+    opacity: 0.9;
+  }
+}
+
+/* Frozen, not absent: an animation stopped mid-loop would leave the drops and
+   flakes at their start opacity, which is zero. Held still they read as a
+   still drawing of the same weather, which is the point of the card. */
+@media (prefers-reduced-motion: reduce) {
+  .tc-wx-sky [class^="wx-"] {
+    animation: none;
+  }
+
+  .tc-wx-sky .wx-drop,
+  .tc-wx-sky .wx-flake {
+    opacity: 1;
+  }
+
+  .tc-wx-sky .wx-bolt {
+    opacity: 0.9;
+  }
+
+  .tc-wx-sky .wx-fog {
+    opacity: 0.7;
+  }
+}
+
 .tc-wx-facts {
   display: grid;
   /* Fixed columns, so a long label cannot push its value out of the row. */
@@ -986,6 +1176,47 @@
   margin: 0;
   color: var(--muted);
   font-size: var(--fs-sm);
+}
+
+/* Plan rows. The mark carries the state in shape as well as colour, and the
+   step dims as it moves from done back to todo. --gain and --faint both clear
+   AA on the panel's --bg-soft in either theme. */
+.tc-plan-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.tc-plan-mark {
+  flex: none;
+  width: 1em;
+  text-align: center;
+  color: var(--faint);
+}
+
+.tc-plan-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tc-plan-row[data-status="done"] .tc-plan-mark {
+  color: var(--gain);
+}
+
+.tc-plan-row[data-status="done"] .tc-plan-text {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.tc-plan-row[data-status="todo"] .tc-plan-text {
+  color: var(--muted);
+}
+
+.tc-plan-row[data-status="doing"] .tc-plan-text {
+  color: var(--text);
+  font-weight: 500;
 }
 
 .tc-error {

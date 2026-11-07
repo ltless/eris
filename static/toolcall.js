@@ -53,6 +53,8 @@ const ErisToolCall = (() => {
     // a coin, so it does not borrow the coin's glyph.
     stock: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M4 20V4M4 20h16" /><path d="M7 15l4-4.5 3 2.5 5-6" /></svg>',
     rank: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></svg>',
+    // A checklist: the run's own steps, ticked as it goes.
+    plan: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M4 6l2 2 3-3M12 7h8M4 12l2 2 3-3M12 13h8M4 18l2 2 3-3M12 19h8" /></svg>',
   };
   const domainOf = (u) => {
     try {
@@ -303,6 +305,54 @@ const ErisToolCall = (() => {
     return w;
   }
 
+  // The condition the card names in words, as the shape its sky is drawn with.
+  // Severe matches come first: "thunderstorm with hail" is a storm before it is
+  // hail, and "freezing rain" is rain. An unrecognised label keeps the neutral
+  // cloud, so a code the WMO table does not list never turns into sunshine.
+  const skyKind = (text) => {
+    const t = String(text || "").toLowerCase();
+    if (/thunder|storm/.test(t)) return "storm";
+    if (/snow|sleet|hail|grains/.test(t)) return "snow";
+    if (/rain|drizzle|shower/.test(t)) return "rain";
+    if (/fog|mist|haze/.test(t)) return "fog";
+    if (/overcast/.test(t)) return "cloud";
+    if (/cloud/.test(t)) return "partly";
+    if (/clear|sun/.test(t)) return "clear";
+    return "cloud";
+  };
+
+  const RAYS =
+    '<path d="M12 2.4v2.6M12 19v2.6M2.4 12h2.6M19 12h2.6M5.2 5.2l1.8 1.8M17 17l1.8 1.8M18.8 5.2L17 7M7 17l-1.8 1.8"/>';
+  // The cloud path fills the whole 24-unit box, so it is scaled and centred by
+  // hand: the precipitation scenes shrink it to leave a band of clear space
+  // under it for what falls out, and a full-size cloud would swallow them.
+  const CLOUD =
+    "M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z";
+  const cloudAt = (scale, top) => {
+    const x = (24 - 24 * scale) / 2;
+    const y = top - 4 * scale;
+    return `<g transform="translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${scale})"><path class="wx-cloud" d="${CLOUD}"/></g>`;
+  };
+  const drop = (x, y, i) =>
+    `<path class="wx-drop wx-drop${i}" d="M${x} ${y}v3.4"/>`;
+  const flake = (y, x, i) =>
+    `<circle class="wx-flake wx-flake${i}" cx="${x}" cy="${y}" r="1.15"/>`;
+
+  // One scene per kind. Every part that moves is named here and animated in
+  // the stylesheet, so the drawing and its motion stay in separate files.
+  const SCENE = {
+    clear: `<circle class="wx-sun" cx="12" cy="12" r="4.2"/><g class="wx-rays">${RAYS}</g>`,
+    partly: `<circle class="wx-sun" cx="18.4" cy="5.6" r="2.5"/>${cloudAt(0.9, 5.4)}`,
+    cloud: cloudAt(1, 1.6),
+    rain: `${cloudAt(0.74, 0.6)}${drop(7, 14.5, 1)}${drop(10.5, 16, 2)}${drop(14, 13.8, 3)}${drop(17.5, 15.5, 4)}`,
+    snow: `${cloudAt(0.74, 0.6)}${flake(15.5, 7.5, 1)}${flake(18.6, 12, 2)}${flake(16.4, 16.5, 3)}`,
+    storm: `${cloudAt(0.74, 0.6)}<path class="wx-bolt" d="M13 13l-3.4 4.8h3l-1.8 3.6"/>`,
+    fog: '<path class="wx-fog wx-fog1" d="M4 7.5h16"/><path class="wx-fog wx-fog2" d="M6.5 12.5h13.5"/><path class="wx-fog wx-fog3" d="M4 17.5h11"/>',
+  };
+
+  const skyOf = (kind) =>
+    '<svg viewBox="0 0 24 24">' + (SCENE[kind] || SCENE.cloud) + "</svg>";
+
   // The reading now, then the forecast: two sections of one card, so the panel
   // gap separates them and the current figures stay one block.
   function weather(parent, opts = {}) {
@@ -342,13 +392,20 @@ const ErisToolCall = (() => {
 
       const hero = document.createElement("div");
       hero.className = "tc-wx-hero";
+      const kind = skyKind(now.text);
+      // Drawn only, never read: the condition already says the same thing in
+      // words right beside it, so a second copy would only repeat itself.
+      const sky = document.createElement("span");
+      sky.className = "tc-wx-sky";
+      sky.setAttribute("aria-hidden", "true");
+      sky.innerHTML = skyOf(kind);
       const big = document.createElement("span");
       big.className = "tc-wx-temp";
       big.textContent = deg(now.temp);
       const cond = document.createElement("span");
       cond.className = "tc-wx-cond";
       cond.textContent = now.text || "unknown";
-      hero.append(big, cond);
+      hero.append(sky, big, cond);
       const clock = clockOf(now.time);
       if (clock) {
         const at = document.createElement("span");
@@ -1363,6 +1420,79 @@ const ErisToolCall = (() => {
     return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
   }
 
+  // The run's own steps. A card redraws itself each time the model revises the
+  // plan, rather than adding a second card: the reader wants the plan now, not
+  // a history of it.
+  const PLAN_WORD = { done: "done", doing: "in progress", todo: "to do" };
+
+  function plan(parent, opts = {}) {
+    // Open by default: a plan folded closed is a card that says only that a plan
+    // exists, which is the one thing it should not hide.
+    const s = shell(parent, I.plan, "Writing a plan", { open: true, ...opts });
+    // The panel caps its height, so a long plan scrolls inside it; a scroll
+    // container that cannot take focus is one a keyboard cannot scroll.
+    s.panel.tabIndex = 0;
+    s.panel.setAttribute("aria-label", "Plan steps");
+
+    function fail(reason) {
+      s.el.dataset.state = "error";
+      s.label.textContent = "Could not record the plan";
+      s.meta.textContent = reason || "";
+      const e = document.createElement("div");
+      e.className = "tc-error";
+      e.textContent = reason
+        ? "The plan could not be recorded: " + reason + "."
+        : "The plan could not be recorded.";
+      s.panel.appendChild(e);
+      s.setOpen(true);
+    }
+
+    function done(card) {
+      card = card || {};
+      const steps = Array.isArray(card.steps) ? card.steps : [];
+      const finished = steps.filter((st) => st.status === "done").length;
+      s.el.dataset.state = "done";
+      s.label.textContent = "Plan";
+      s.meta.textContent = steps.length ? finished + " of " + steps.length + " done" : "";
+
+      // Drawn again in place, so a revised plan replaces the old one instead of
+      // stacking beneath it.
+      s.panel.textContent = "";
+      if (!steps.length) {
+        const e = document.createElement("p");
+        e.className = "tc-empty";
+        e.textContent = "The plan came back empty.";
+        s.panel.appendChild(e);
+        return;
+      }
+      const list = document.createElement("div");
+      list.className = "tc-list";
+      list.setAttribute("role", "list");
+      for (const st of steps) {
+        const status = st.status === "done" || st.status === "doing" ? st.status : "todo";
+        const row = document.createElement("div");
+        row.className = "tc-plan-row";
+        row.dataset.status = status;
+        row.setAttribute("role", "listitem");
+        // The mark differs in shape, not only in colour, and the state is spelled
+        // out for a screen reader that cannot see either.
+        row.setAttribute("aria-label", st.step + ", " + PLAN_WORD[status]);
+        const mark = document.createElement("span");
+        mark.className = "tc-plan-mark";
+        mark.setAttribute("aria-hidden", "true");
+        mark.textContent = status === "done" ? "✓" : status === "doing" ? "▸" : "○";
+        const text = document.createElement("span");
+        text.className = "tc-plan-text";
+        text.textContent = st.step;
+        row.append(mark, text);
+        list.appendChild(row);
+      }
+      s.panel.appendChild(list);
+    }
+
+    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+  }
+
   return {
     webSearch,
     fetchPage,
@@ -1385,5 +1515,6 @@ const ErisToolCall = (() => {
         words: true,
       }),
     screen,
+    plan,
   };
 })();

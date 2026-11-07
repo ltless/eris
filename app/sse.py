@@ -12,7 +12,7 @@ from .runtime import events as ev
 # The tools whose result carries its own card payload, sent as a frame under the
 # tool's own name.
 _CARDED = {"weather", "wayback", "crypto", "crypto_trend",
-           "equity", "equity_trend", "screen"}
+           "equity", "equity_trend", "screen", "plan"}
 
 
 def sse(obj):

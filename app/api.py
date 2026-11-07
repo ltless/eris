@@ -297,7 +297,10 @@ def _build_request(req: ChatRequest, u, messages, files=None):
         today=date.today().isoformat(),
         instruction=(
             "For anything current or recent, answer only from the search results you "
-            "receive, never from training memory."
+            "receive, never from training memory. "
+            "When a task takes more than one step, write the steps down with the plan "
+            "tool before you start, and call it again as each step finishes. Skip it "
+            "for a question you can simply answer."
         ),
     )
     tool_ctx = ToolContext(user_id=u["id"], files=tuple(files or ()))
@@ -429,7 +432,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                             yield sse({"type": "sources", "r": frame["r"], "items": items})
                     elif event.type == ev.TOOL_COMPLETED and frame.get("type") in (
                         "weather", "wayback", "crypto", "crypto_trend",
-                        "equity", "equity_trend", "screen"
+                        "equity", "equity_trend", "screen", "plan"
                     ):
                         # One row per card, in the order they were drawn, each
                         # carrying the round it belongs to so a replay puts it
@@ -438,7 +441,7 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                                           "card": frame["card"]})
                     elif event.type == ev.TOOL_FAILED and frame.get("tool") in (
                         "weather", "wayback", "crypto", "crypto_trend",
-                        "equity", "equity_trend", "screen"
+                        "equity", "equity_trend", "screen", "plan"
                     ):
                         # A card still appears, in its failed state, so a reload
                         # shows the failure rather than a gap where a call was.

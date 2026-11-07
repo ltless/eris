@@ -10,6 +10,7 @@ const els = {
   box: document.getElementById("box"),
   count: document.getElementById("count"),
   quotes: document.getElementById("quotes"),
+  planStrip: document.getElementById("planStrip"),
 };
 
 marked.setOptions({ breaks: true, gfm: true });
@@ -190,9 +191,17 @@ function showEmpty() {
 // goes through here so it stays attached and its visibility state stays fresh.
 function resetMessages(html = "") {
   hideQuote();
+  clearPlan();
   els.messages.innerHTML = html;
   els.messages.append(scrollBtn);
   syncScrollBtn();
+}
+
+// The strip above the field holds the plan of the run in flight and nothing
+// else, so it empties with the run.
+function clearPlan() {
+  els.planStrip.hidden = true;
+  els.planStrip.textContent = "";
 }
 
 // Every avatar in the app draws from the same two globals: the photo when the
@@ -378,8 +387,12 @@ function loadSession(id) {
           if (!readRows.has(f.r)) readRows.set(f.r, []);
           readRows.get(f.r).push(f);
         }
-        const cards = (m.cards || []).map((c) => ({ r: c.r ?? 0, tool: c.tool, card: c.card,
-                                                    reason: c.reason || "" }));
+        // The plan belongs to the run in flight and lives above the composer,
+        // not in the turn: a stored plan row is skipped here so a reopened chat
+        // does not show a finished run's steps as if it were still working.
+        const cards = (m.cards || [])
+          .filter((c) => c.tool !== "plan")
+          .map((c) => ({ r: c.r ?? 0, tool: c.tool, card: c.card, reason: c.reason || "" }));
         const cardRowsByRound = new Map();
         for (const c of cards) {
           if (!cardRowsByRound.has(c.r)) cardRowsByRound.set(c.r, []);
@@ -615,6 +628,10 @@ async function send(text, regen = false, quote = "") {
   // drawn. Kept whole rather than as a count: a reload rebuilds the card from
   // this, and there is nothing on the page to read it back out of.
   let cardRows = [];
+  // The plan card above the field, once the run has drawn one. A revised plan
+  // repaints this card rather than adding a second, because the reader wants
+  // the plan as it stands, not the history of it.
+  let planCtl = null;
   // What each round's answer said, for the turn this session pushes back into
   // `s.messages`: without it a reopen falls back to the flat text and loses the
   // order the round logic just established on screen.
@@ -739,6 +756,18 @@ async function send(text, regen = false, quote = "") {
             f.g.chars = evt.chars || 0;
             f.ctl.done(f.g.chars);
           }
+        } else if (evt.type === "plan") {
+          finishThink();
+          clearStatus();
+          closeAnswer(evt.r);
+          // The plan is not part of the turn it appeared in: it lives above the
+          // field so it stays on screen while the rest of the run scrolls.
+          // One card per run, repainted in place as the model revises it.
+          if (!planCtl) {
+            els.planStrip.hidden = false;
+            planCtl = ErisToolCall.plan(els.planStrip);
+          }
+          planCtl.done(evt.card);
         } else if (evt.type === "weather" || evt.type === "wayback" || evt.type === "crypto"
                    || evt.type === "crypto_trend" || evt.type === "equity"
                    || evt.type === "equity_trend" || evt.type === "screen") {
@@ -768,6 +797,15 @@ async function send(text, regen = false, quote = "") {
             if (i >= 0) {
               const [f] = fetchQ.splice(i, 1);
               f.ctl.fail(evt.reason || evt.message || evt.code);
+            }
+          } else if (evt.tool === "plan") {
+            // A failed revision leaves the plan on screen, and on the server,
+            // exactly as it was; only a run that never got a plan draws the
+            // failure, in the strip, where the plan would have gone.
+            if (!planCtl) {
+              els.planStrip.hidden = false;
+              planCtl = ErisToolCall.plan(els.planStrip);
+              planCtl.fail(evt.reason || evt.message || evt.code);
             }
           } else if (evt.tool === "weather" || evt.tool === "wayback" || evt.tool === "crypto"
                     || evt.tool === "crypto_trend" || evt.tool === "equity"
@@ -865,6 +903,11 @@ async function send(text, regen = false, quote = "") {
     finishThink();
     finishWeb();
     finishFetch();
+    // The strip carries the plan of the run in flight and nothing else, so a
+    // turn that has been saved takes it away with it. The handle goes too: the
+    // next run must draw its own card, not repaint this detached one.
+    clearPlan();
+    planCtl = null;
     ErisMarkdown.highlight(body);
     ErisMarkdown.linkCitations(body, sources);
     if (raw) {

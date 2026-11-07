@@ -864,6 +864,42 @@ body.app {
   flex-shrink: 0;
 }
 
+/* The run's plan, above the field instead of inside the turn. A card in the
+   message flow scrolls out of sight exactly when the reader wants to check how
+   far the run has got, so this one is anchored to the composer. It shares the
+   field's column so the two read as one block. */
+.plan-strip {
+  max-width: 820px;
+  margin: 0 auto var(--sp-2);
+}
+
+.plan-strip[hidden] {
+  display: none;
+}
+
+/* The card keeps its own chrome; only its outer margin belongs to the flow it
+   was built for. */
+.plan-strip .tc {
+  margin: 0;
+}
+
+/* Twenty steps would push the field off the screen, so a long plan scrolls
+   inside its own card rather than growing without limit. The viewport term
+   keeps that true on a phone, where 220px is most of the room left. */
+.plan-strip .tc-panel {
+  max-height: min(220px, 30vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* The capped panel is a scroll container, so it takes focus for the keyboard
+   and needs to show where that focus is. */
+.plan-strip .tc-panel:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
+}
+
 /* Attachments waiting to be sent, on a row of their own above the field for
    the same reason the quote has one: the box is the question, and these are
    what rides along with it. */

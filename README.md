@@ -126,8 +126,8 @@ panel is in Settings.
 
 ## Tools
 
-Ten built in: `web_search`, `fetch_url`, `weather`, `wayback`, `read_file`,
-`crypto`, `crypto_trend`, `equity`, `equity_trend`, `screen`.
+Eleven built in: `web_search`, `fetch_url`, `weather`, `wayback`, `read_file`,
+`crypto`, `crypto_trend`, `equity`, `equity_trend`, `screen`, `plan`.
 `fetch_url` reads PDFs too, and it refuses any address that isn't a public one,
 so it can't be pointed at your own network. `weather` and `wayback` read the
 open web as well and go through the same guard.
@@ -162,6 +162,13 @@ endpoint needs neither, which is why a trend reading still answers when the
 handshake itself is broken. Prices are delayed by up to fifteen minutes on most
 exchanges, and the model is told to say so.
 
+`plan` records the steps of a task and marks where each stands. The list lives
+on the run's own context rather than in the conversation, and the engine appends
+it to the tail of the prompt each round. That is what keeps a long run on its
+steps after older tool messages have been dropped to fit the window. The card
+redraws in place, so the chat shows the plan as it stands rather than every
+revision.
+
 A tool that changes state is refused and never offered to the model. Nothing in
 this app can stop and ask whether you meant it, so the answer stays no instead of
 becoming yes by default. Same reason a token cannot run one.
@@ -195,7 +202,7 @@ GET    /api/health              model server and SearXNG
 `/api/chat` takes `{messages}`, streams `data:` frames (`delta`, `thinking`,
 `tool`, `fetch`, `sources`, `metrics`, `title`, `error`, and one per carded tool:
 `weather`, `wayback`, `crypto`, `crypto_trend`, `equity`, `equity_trend`,
-`screen`) and ends with `[DONE]`. Each frame carries `r`, the round it came from.
+`screen`, `plan`) and ends with `[DONE]`. Each frame carries `r`, the round it came from.
 
 ## Front end
 

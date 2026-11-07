@@ -24,6 +24,9 @@ class ToolContext:
     # a tool rather than pasted into the prompt, where every round would pay
     # for it again.
     files: tuple = ()
+    # The steps the run wrote down for itself. It lives on the context, not in
+    # the conversation, so the engine can restate it after history is pruned.
+    plan: tuple = ()
 
 
 @dataclass(frozen=True)

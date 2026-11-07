@@ -26,6 +26,16 @@ from app import api, auth, chats, tokens
 from app.config import settings
 
 
+def searches(payload):
+    """True while the request offers something to search with.
+
+    The pass that must produce the answer keeps `plan` alone, so a stub cannot
+    tell the answering call apart by the absence of a tool list any more.
+    """
+    names = {t.get("function", {}).get("name") for t in payload.get("tools") or []}
+    return bool(names - {"plan"})
+
+
 class StubModel:
     def __init__(self, calls_per_round=0, answer="the answer"):
         self.calls_per_round = calls_per_round
@@ -81,8 +91,8 @@ class StubModel:
         return [p for p in self.payloads if p.get("stream")]
 
     def reply(self, payload):
-        rounds_with_tools = sum(1 for p in self.payloads if p.get("tools"))
-        if payload.get("tools") and self.calls_per_round and rounds_with_tools == 1:
+        rounds_with_tools = sum(1 for p in self.payloads if searches(p))
+        if searches(payload) and self.calls_per_round and rounds_with_tools == 1:
             return [json.dumps({"message": {"content": "", "tool_calls": [{
                 "id": "c1", "function": {"name": "web_search", "arguments": {"query": "eris"}},
             }]}})]
@@ -250,7 +260,7 @@ class ChatStreamChecks(unittest.TestCase):
 
         class Greedy(StubModel):
             def reply(self, payload):
-                if payload.get("tools"):
+                if searches(payload):
                     return [json.dumps({"message": {"content": "", "tool_calls": [{
                         "id": f"c{len(self.payloads)}",
                         "function": {"name": "web_search", "arguments": {"query": "eris"}},
@@ -260,10 +270,13 @@ class ChatStreamChecks(unittest.TestCase):
         self.h.stub = Greedy()
         settings.model_base_url = self.h.stub.start()
         events = sse_events(self.h.ask())
-        # Three tool rounds, then one call with no tools to get an answer.
+        # Three tool rounds, then one call with the searching tools dropped to
+        # get an answer.
         self.assertEqual(len(self.h.stub.calls), settings.max_tool_rounds + 1)
-        self.assertFalse(self.h.stub.calls[-1].get("tools"),
-                         "the final call still offered tools")
+        last = {t.get("function", {}).get("name")
+                for t in self.h.stub.calls[-1].get("tools") or []}
+        self.assertEqual(last, {"plan"},
+                         "the final call still offered the searching tools")
         deltas = "".join(e.get("text", "") for e in events if e.get("type") == "delta")
         self.assertEqual(deltas.strip(), "final")
 
@@ -353,8 +366,8 @@ class ChatStreamChecks(unittest.TestCase):
 
         class Preambling(StubModel):
             def reply(self, payload):
-                rounds = sum(1 for p in self.payloads if p.get("tools"))
-                if payload.get("tools") and rounds == 1:
+                rounds = sum(1 for p in self.payloads if searches(p))
+                if searches(payload) and rounds == 1:
                     return [
                         json.dumps({"message": {"content": "Let me check. "}}),
                         json.dumps({"message": {"content": "", "tool_calls": [{
