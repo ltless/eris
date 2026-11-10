@@ -13,7 +13,7 @@
   tc.addQuery('react 19 features');
   tc.addResults([{ title: '...', url: 'https://...', read: true }]);
   tc.done();
-  tc.toggle() / tc.setOpen(true|false)
+  tc.fail('search returned nothing');
 
   ---
 
@@ -26,12 +26,15 @@
 
   ---
 
-  ErisToolCall.weather(parentElement) / ErisToolCall.wayback(parentElement)
-  / ErisToolCall.crypto(parentElement)
+  ErisToolCall.weather / wayback / crypto / crypto_trend / equity /
+  equity_trend / screen / plan
 
   const wc = ErisToolCall.weather(messageEl);
   wc.done(card);        // the payload the tool computed, drawn in one pass
   wc.fail('the place name was not found');
+
+  Each builder returns `el`, and a replay calls `ErisToolCall[name](body)` by
+  tool name, which is what `isCard` answers.
 */
 const ErisToolCall = (() => {
   let uid = 0;
@@ -105,7 +108,6 @@ const ErisToolCall = (() => {
     const panel = root.querySelector(".tc-panel");
     const api = {
       el: root,
-      head,
       panel,
       label: root.querySelector(".tc-label"),
       meta: root.querySelector(".tc-meta"),
@@ -113,10 +115,36 @@ const ErisToolCall = (() => {
         root.dataset.open = String(v);
         head.setAttribute("aria-expanded", String(v));
       },
-      toggle: () => head.click(),
     };
     head.onclick = () => api.setOpen(root.dataset.open !== "true");
     return api;
+  }
+
+  // A failed card is the same shape everywhere: the state flips, the label names
+  // what failed, the tool's short reason ("the server answered 403") rides in the
+  // meta like the size does on a success, and one sentence goes into the panel
+  // for whoever opens the card. `sentence` builds that sentence from the reason.
+  function failCard(s, label, reason, sentence) {
+    s.el.dataset.state = "error";
+    s.label.textContent = label;
+    s.meta.textContent = reason || "";
+    const e = document.createElement("div");
+    e.className = "tc-error";
+    e.textContent = sentence(reason || "");
+    s.panel.appendChild(e);
+    s.setOpen(true);
+  }
+
+  // The sentence for a reason that is a short phrase rather than a clause.
+  const because = (stem) => (reason) =>
+    reason ? stem + ": " + reason + "." : stem + ".";
+
+  // What a finished card says about itself, stated once: a builder names the
+  // card's own label and the meta it earned.
+  function markDone(s, label, meta) {
+    s.el.dataset.state = "done";
+    s.label.textContent = label;
+    s.meta.textContent = meta || "";
   }
 
   // One result row, shared by the search list and the fetch card's own link so
@@ -204,11 +232,11 @@ const ErisToolCall = (() => {
     }
 
     function done() {
-      s.el.dataset.state = "done";
-      s.label.textContent = "Searched the web";
-      s.meta.textContent = total
-        ? plural(total) + (read ? ` · ${read} read` : "")
-        : "No results";
+      markDone(
+        s,
+        "Searched the web",
+        total ? plural(total) + (read ? ` · ${read} read` : "") : "No results"
+      );
       if (!total && !s.panel.querySelector(".tc-empty")) {
         const note = document.createElement("div");
         note.className = "tc-empty";
@@ -218,18 +246,12 @@ const ErisToolCall = (() => {
     }
 
     function fail(message) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Search failed";
-      s.meta.textContent = message || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = message || "Something went wrong while searching.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      // The search tool's own message is already a whole sentence, so it
+      // replaces the panel text rather than being appended to it.
+      failCard(s, "Search failed", message, (reason) => reason || "Something went wrong while searching.");
     }
 
-    const api = { el: s.el, addQuery, addResults, done, fail, setOpen: s.setOpen, toggle: s.toggle };
-    return api;
+    return { el: s.el, addQuery, addResults, done, fail };
   }
 
   // The model going back for one page in depth. It is drawn the moment the
@@ -251,29 +273,18 @@ const ErisToolCall = (() => {
 
     function done(n) {
       if (typeof n === "number") chars = n;
-      s.el.dataset.state = "done";
       const domain = domainOf(url) || url;
-      s.label.textContent = "Read a page";
-      s.meta.textContent = chars ? `${domain} · ${sizeText(chars)}` : domain;
+      markDone(s, "Read a page", chars ? `${domain} · ${sizeText(chars)}` : domain);
     }
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Could not read the page";
       // The reason is the tool's own short phrase ("the server answered 403"),
       // so it sits beside the label like the size does on a success, and the
       // panel states it as a sentence for the reader who opened the card.
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? "The page could not be read: " + reason + "."
-        : "The page could not be read.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(s, "Could not read the page", reason, because("The page could not be read"));
     }
 
-    return { el: s.el, setUrl, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, setUrl, done, fail };
   }
 
   // Weather and wayback draw in one pass, from figures the tool computed; there
@@ -294,6 +305,57 @@ const ErisToolCall = (() => {
   const degRound = (v) => (typeof v === "number" ? Math.round(v) + "°" : "–");
   const unit = (v, u, round) =>
     typeof v === "number" ? (round ? Math.round(v) : v.toFixed(1)) + u : "–";
+
+  // The headline of a price card. The figure and its currency travel as one
+  // reading, the move sits beside them, and the move carries the window it
+  // covers: a bare percentage next to a price leaves the reader guessing
+  // whether it is the day or the hour.
+  function priceHero(parent, q, change, window) {
+    const hero = document.createElement("div");
+    hero.className = "tc-cr-hero";
+    const quote = document.createElement("span");
+    quote.className = "tc-cr-quote";
+    const price = document.createElement("span");
+    price.className = "tc-cr-price";
+    price.textContent = money(q.price);
+    quote.appendChild(price);
+    if (q.quote) {
+      const unitEl = document.createElement("span");
+      unitEl.className = "tc-cr-unit";
+      unitEl.textContent = q.quote;
+      quote.appendChild(unitEl);
+    }
+    hero.appendChild(quote);
+    const m = move(change);
+    const chg = document.createElement("span");
+    chg.className = "tc-cr-move";
+    chg.dataset.dir = m.dir;
+    // A source that reports no change gets no window, since there is nothing
+    // to time.
+    chg.textContent = typeof change === "number" ? m.text + " " + window : m.text;
+    hero.appendChild(chg);
+    parent.appendChild(hero);
+  }
+
+  // The line under a card: when it was read, what it counted, and where it came
+  // from. A price with no time on it is a price the reader cannot judge, and
+  // the source differs by which one answered, so both are stated rather than
+  // assumed. A card with nothing to say draws no line.
+  function cardFoot(parent, ...parts) {
+    const foot = document.createElement("div");
+    foot.className = "tc-cr-foot";
+    for (const part of parts) {
+      if (!part) continue;
+      if (typeof part === "string") {
+        const span = document.createElement("span");
+        span.textContent = part;
+        foot.appendChild(span);
+      } else {
+        foot.appendChild(part);
+      }
+    }
+    if (foot.childElementCount) parent.appendChild(foot);
+  }
 
   function fact(label, value) {
     const w = document.createElement("div");
@@ -359,16 +421,7 @@ const ErisToolCall = (() => {
     const s = shell(parent, I.sun, "Checking the weather", opts);
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Could not check the weather";
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? "The weather could not be checked: " + reason + "."
-        : "The weather could not be checked.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(s, "Could not check the weather", reason, because("The weather could not be checked"));
     }
 
     // The reading is the place's own clock, so it says so: a figure with no
@@ -381,9 +434,7 @@ const ErisToolCall = (() => {
     function done(card) {
       card = card || {};
       const now = card.now || {};
-      s.el.dataset.state = "done";
-      s.label.textContent = "Checked the weather";
-      s.meta.textContent = card.place || "";
+      markDone(s, "Checked the weather", card.place);
 
       // The reading now and the forecast are the card's two sections, so the
       // panel's own gap separates them and the reading stays one block.
@@ -484,7 +535,7 @@ const ErisToolCall = (() => {
       s.panel.appendChild(list);
     }
 
-    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, done, fail };
   }
 
   // The Wayback card. A row's label is the original URL and its href is the
@@ -494,23 +545,12 @@ const ErisToolCall = (() => {
     const s = shell(parent, I.archive, "Looking in the archive", opts);
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Could not open the archive";
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? "The archive could not be reached: " + reason + "."
-        : "The archive could not be reached.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(s, "Could not open the archive", reason, because("The archive could not be reached"));
     }
 
     function done(card) {
       card = card || {};
-      s.el.dataset.state = "done";
-      s.label.textContent = "Read an archived page";
-      s.meta.textContent = card.when || "";
+      markDone(s, "Read an archived page", card.when);
 
       // The snapshot that was read, its caveat if it had one, and how much of it
       // came back: one block, so the panel's own gap only separates it from the
@@ -532,6 +572,15 @@ const ErisToolCall = (() => {
         size.textContent = sizeText(card.chars) + " read";
         first.appendChild(size);
       }
+      // The snapshot is listed but its text did not come back, and the card is
+      // the only place that says so: the tool succeeded, so no error frame
+      // follows it.
+      if (card.reason) {
+        const why = document.createElement("div");
+        why.className = "tc-wb-note";
+        why.textContent = "The snapshot could not be read: " + card.reason + ".";
+        first.appendChild(why);
+      }
       if (first.childElementCount) s.panel.appendChild(first);
       const older = card.older || [];
       if (!older.length) return;
@@ -551,7 +600,7 @@ const ErisToolCall = (() => {
       s.panel.appendChild(more);
     }
 
-    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, done, fail };
   }
 
   // The quote, its move, then the figures behind it. The price is the one
@@ -591,54 +640,16 @@ const ErisToolCall = (() => {
     const s = shell(parent, I.coin, "Checking the price", opts);
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Could not check the price";
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? "The price could not be checked: " + reason + "."
-        : "The price could not be checked.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(s, "Could not check the price", reason, because("The price could not be checked"));
     }
 
     function done(card) {
       card = card || {};
-      const m = move(card.change);
-      s.el.dataset.state = "done";
-      s.label.textContent = "Checked the price";
-      s.meta.textContent = card.symbol || "";
+      markDone(s, "Checked the price", card.symbol);
 
       const here = document.createElement("div");
       here.className = "tc-group";
-
-      const hero = document.createElement("div");
-      hero.className = "tc-cr-hero";
-      // The figure and its currency are one fact, so they sit as one unit with
-      // their own tight gap; the move is the separate fact beside them.
-      const quote = document.createElement("span");
-      quote.className = "tc-cr-quote";
-      const price = document.createElement("span");
-      price.className = "tc-cr-price";
-      price.textContent = money(card.price);
-      quote.appendChild(price);
-      if (card.quote) {
-        const unitEl = document.createElement("span");
-        unitEl.className = "tc-cr-unit";
-        unitEl.textContent = card.quote;
-        quote.appendChild(unitEl);
-      }
-      hero.appendChild(quote);
-      const chg = document.createElement("span");
-      chg.className = "tc-cr-move";
-      chg.dataset.dir = m.dir;
-      // The window is part of the fact. A bare percentage next to a price
-      // leaves the reader guessing whether it is the day or the hour. A source
-      // that reports no change gets no window, since there is nothing to time.
-      chg.textContent = typeof card.change === "number" ? m.text + " 24h" : m.text;
-      hero.appendChild(chg);
-      here.appendChild(hero);
+      priceHero(here, card, card.change, "24h");
 
       const name = document.createElement("div");
       name.className = "tc-cr-name";
@@ -670,33 +681,20 @@ const ErisToolCall = (() => {
       here.appendChild(facts);
       s.panel.appendChild(here);
 
-      // Where the figure came from and when it was read. A price with no time
-      // on it is a price the reader cannot judge, and the source differs by
-      // which one answered, so it is stated rather than assumed.
-      const foot = document.createElement("div");
-      foot.className = "tc-cr-foot";
-      const at = stamp(card.at);
-      if (at) {
-        const when = document.createElement("span");
-        when.textContent = at;
-        foot.appendChild(when);
-      }
-      if (card.url) {
-        foot.appendChild(linkEl(card.url, card.source, domainOf(card.url), false));
-      } else if (card.source) {
-        const src = document.createElement("span");
-        src.textContent = card.source;
-        foot.appendChild(src);
-      }
-      s.panel.appendChild(foot);
+      cardFoot(
+        s.panel,
+        stamp(card.at),
+        card.url
+          ? linkEl(card.url, card.source, domainOf(card.url), false)
+          : card.source
+      );
     }
 
-    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, done, fail };
   }
 
   function thinking(parent, opts = {}) {
     const s = shell(parent, I.spark, "Thinking", opts);
-    s.el.dataset.kind = "thinking";
     const box = document.createElement("div");
     box.className = "tc-think";
     s.panel.appendChild(box);
@@ -718,12 +716,10 @@ const ErisToolCall = (() => {
 
     function done(label) {
       clearInterval(timer);
-      s.el.dataset.state = "done";
-      s.label.textContent = label || "Thought for " + fmt(secs());
-      s.meta.textContent = "";
+      markDone(s, label || "Thought for " + fmt(secs()), "");
     }
 
-    return { el: s.el, append, done, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, append, done };
   }
 
   // The chart, drawn from the numbers the tool computed. Nothing here recomputes
@@ -1032,23 +1028,17 @@ const ErisToolCall = (() => {
     const rangeWord = opts.words ? "30-bar" : "30-day";
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = opts.fail || "Could not read the market";
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? (opts.error || "The market") + " could not be read: " + reason + "."
-        : (opts.error || "The market") + " could not be read.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(
+        s,
+        opts.fail || "Could not read the market",
+        reason,
+        because((opts.error || "The market") + " could not be read")
+      );
     }
 
     function done(card) {
       card = card || {};
-      s.el.dataset.state = "done";
-      s.label.textContent = doneLabel;
-      s.meta.textContent = card.symbol || "";
+      markDone(s, doneLabel, card.symbol);
 
       const head = document.createElement("div");
       head.className = "tc-td-head";
@@ -1066,6 +1056,8 @@ const ErisToolCall = (() => {
       }
       s.panel.appendChild(head);
 
+      // Not priceHero: the trend card prints the currency inside the figure, at
+      // the figure's own size, rather than in a `tc-cr-unit` beside it.
       const hero = document.createElement("div");
       hero.className = "tc-cr-hero";
       const price = document.createElement("span");
@@ -1136,18 +1128,12 @@ const ErisToolCall = (() => {
       );
       s.panel.appendChild(facts);
 
-      const foot = document.createElement("div");
-      foot.className = "tc-cr-foot";
-      const stampEl = stamp(card.at);
-      if (stampEl) {
-        const when = document.createElement("span");
-        when.textContent = stampEl + " · " + (card.bar_count || 0) + " " + barWord(card.interval);
-        foot.appendChild(when);
-      }
-      if (card.url) {
-        foot.appendChild(linkEl(card.url, card.source, domainOf(card.url), false));
-      }
-      s.panel.appendChild(foot);
+      const at = stamp(card.at);
+      cardFoot(
+        s.panel,
+        at && at + " · " + (card.bar_count || 0) + " " + barWord(card.interval),
+        card.url && linkEl(card.url, card.source, domainOf(card.url), false)
+      );
 
       // The card is a reading of the past. Said here rather than in the model's
       // prose, which can be talked out of it.
@@ -1157,7 +1143,7 @@ const ErisToolCall = (() => {
       s.panel.appendChild(note);
     }
 
-    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, done, fail };
   }
 
   // Equity quotes: one listing gets the same hero a coin does, since the
@@ -1167,24 +1153,18 @@ const ErisToolCall = (() => {
     const s = shell(parent, I.stock, "Checking the price", opts);
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Could not check the price";
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? "The quotes could not be read: " + reason + "."
-        : "The quotes could not be read.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(s, "Could not check the price", reason, because("The quotes could not be read"));
     }
 
     function done(card) {
       card = card || {};
       const rows = Array.isArray(card.quotes) ? card.quotes : [];
-      s.el.dataset.state = "done";
-      s.label.textContent = rows.length > 1 ? "Checked the prices" : "Checked the price";
-      s.meta.textContent = rows.length > 1 ? rows.length + " listings" : (rows[0]?.symbol || "");
+      const many = rows.length > 1;
+      markDone(
+        s,
+        many ? "Checked the prices" : "Checked the price",
+        many ? rows.length + " listings" : (rows[0]?.symbol || "")
+      );
 
       if (rows.length === 1) singleQuote(s.panel, rows[0]);
       else listingList(s.panel, rows, { label: "Listings" });
@@ -1196,48 +1176,20 @@ const ErisToolCall = (() => {
         s.panel.appendChild(note);
       }
 
-      const foot = document.createElement("div");
-      foot.className = "tc-cr-foot";
-      // Prices on an exchange are delayed, and a card that shows a price
-      // without saying so invites a reader to treat it as live.
-      const when = stamp(card.at);
-      if (when) {
-        const t = document.createElement("span");
-        t.textContent = when;
-        foot.appendChild(t);
-      }
-      if (card.url) {
-        foot.appendChild(linkEl(card.url, card.source, domainOf(card.url), false));
-      }
-      if (foot.childElementCount) s.panel.appendChild(foot);
+      // Prices on an exchange are delayed, and a card that shows a price without
+      // saying so invites a reader to treat it as live.
+      cardFoot(
+        s.panel,
+        stamp(card.at),
+        card.url && linkEl(card.url, card.source, domainOf(card.url), false)
+      );
     }
 
-    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, done, fail };
   }
 
   function singleQuote(panel, q) {
-    const m = move(q.change);
-    const hero = document.createElement("div");
-    hero.className = "tc-cr-hero";
-    const quote = document.createElement("span");
-    quote.className = "tc-cr-quote";
-    const price = document.createElement("span");
-    price.className = "tc-cr-price";
-    price.textContent = money(q.price);
-    quote.appendChild(price);
-    if (q.quote) {
-      const u = document.createElement("span");
-      u.className = "tc-cr-unit";
-      u.textContent = q.quote;
-      quote.appendChild(u);
-    }
-    hero.appendChild(quote);
-    const chg = document.createElement("span");
-    chg.className = "tc-cr-move";
-    chg.dataset.dir = m.dir;
-    chg.textContent = typeof q.change === "number" ? m.text + " today" : m.text;
-    hero.appendChild(chg);
-    panel.appendChild(hero);
+    priceHero(panel, q, q.change, "today");
 
     const sub = document.createElement("div");
     sub.className = "tc-cr-name";
@@ -1369,47 +1321,25 @@ const ErisToolCall = (() => {
     const s = shell(parent, I.rank, "Ranking the market", opts);
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Could not rank the market";
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? "The market could not be ranked: " + reason + "."
-        : "The market could not be ranked.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(s, "Could not rank the market", reason, because("The market could not be ranked"));
     }
 
     function done(card) {
       card = card || {};
       const rows = Array.isArray(card.rows) ? card.rows : [];
-      s.el.dataset.state = "done";
-      s.label.textContent = SORT_LABEL[card.sort] || "Ranked the market";
-      s.meta.textContent = card.market || "";
+      markDone(s, SORT_LABEL[card.sort] || "Ranked the market", card.market);
 
       listingList(s.panel, rows, {
         rank: true,
         label: (card.market || "Market") + " rankings",
       });
 
-      const foot = document.createElement("div");
-      foot.className = "tc-cr-foot";
-      const when = stamp(card.at);
-      if (when) {
-        const t = document.createElement("span");
-        t.textContent = when;
-        foot.appendChild(t);
-      }
-      if (card.total) {
-        const t = document.createElement("span");
-        t.textContent = rows.length + " of " + card.total.toLocaleString("en-US") + " listings";
-        foot.appendChild(t);
-      }
-      if (rows[0]?.url) {
-        foot.appendChild(linkEl(rows[0].url, card.source, domainOf(rows[0].url), false));
-      }
-      if (foot.childElementCount) s.panel.appendChild(foot);
+      cardFoot(
+        s.panel,
+        stamp(card.at),
+        card.total && rows.length + " of " + card.total.toLocaleString("en-US") + " listings",
+        rows[0]?.url && linkEl(rows[0].url, card.source, domainOf(rows[0].url), false)
+      );
 
       const note = document.createElement("p");
       note.className = "tc-td-note";
@@ -1417,7 +1347,7 @@ const ErisToolCall = (() => {
       s.panel.appendChild(note);
     }
 
-    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, done, fail };
   }
 
   // The run's own steps. A card redraws itself each time the model revises the
@@ -1435,25 +1365,14 @@ const ErisToolCall = (() => {
     s.panel.setAttribute("aria-label", "Plan steps");
 
     function fail(reason) {
-      s.el.dataset.state = "error";
-      s.label.textContent = "Could not record the plan";
-      s.meta.textContent = reason || "";
-      const e = document.createElement("div");
-      e.className = "tc-error";
-      e.textContent = reason
-        ? "The plan could not be recorded: " + reason + "."
-        : "The plan could not be recorded.";
-      s.panel.appendChild(e);
-      s.setOpen(true);
+      failCard(s, "Could not record the plan", reason, because("The plan could not be recorded"));
     }
 
     function done(card) {
       card = card || {};
       const steps = Array.isArray(card.steps) ? card.steps : [];
       const finished = steps.filter((st) => st.status === "done").length;
-      s.el.dataset.state = "done";
-      s.label.textContent = "Plan";
-      s.meta.textContent = steps.length ? finished + " of " + steps.length + " done" : "";
+      markDone(s, "Plan", steps.length ? finished + " of " + steps.length + " done" : "");
 
       // Drawn again in place, so a revised plan replaces the old one instead of
       // stacking beneath it.
@@ -1490,18 +1409,16 @@ const ErisToolCall = (() => {
       s.panel.appendChild(list);
     }
 
-    return { el: s.el, done, fail, setOpen: s.setOpen, toggle: s.toggle };
+    return { el: s.el, done, fail };
   }
 
-  return {
-    webSearch,
-    fetchPage,
-    thinking,
+  // The tools whose result is one card, drawn whole. Keyed by the tool name,
+  // because a replay does `ErisToolCall[tool](body)` with whatever the server
+  // stored, and the stream dispatches on the same names.
+  const cards = {
     weather,
     wayback,
     crypto,
-    // Keyed by the tool name, because a replay does `ErisToolCall[tool](body)`
-    // with whatever the server stored.
     crypto_trend: cryptoTrend,
     equity,
     equity_trend: (parent, opts = {}) =>
@@ -1516,5 +1433,14 @@ const ErisToolCall = (() => {
       }),
     screen,
     plan,
+  };
+  const isCard = (name) => typeof cards[name] === "function";
+
+  return {
+    webSearch,
+    fetchPage,
+    thinking,
+    ...cards,
+    isCard,
   };
 })();

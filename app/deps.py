@@ -11,12 +11,7 @@ from fastapi import Cookie, Header, HTTPException
 from . import auth, tokens
 
 
-def db_user(user_id):
-    row = auth.db().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-    return row
-
-
-def require_user(session: str | None = Cookie(None),
+def require_user(session: str | None = Cookie(None, alias=auth.SESSION_COOKIE),
                  authorization: str | None = Header(None)):
     """The account making this call, from a cookie or a bearer token.
 
@@ -29,13 +24,13 @@ def require_user(session: str | None = Cookie(None),
         return u
     if authorization and authorization.lower().startswith("bearer "):
         user_id = tokens.resolve(authorization.split(" ", 1)[1].strip())
-        row = db_user(user_id) if user_id is not None else None
+        row = auth.user_row(user_id) if user_id is not None else None
         if row:
             return auth.profile(row)
     raise HTTPException(401, "Login required")
 
 
-def require_session(session: str | None = Cookie(None)):
+def require_session(session: str | None = Cookie(None, alias=auth.SESSION_COOKIE)):
     """The account, from a session cookie only.
 
     Every route that changes the account itself — its name, its credentials,

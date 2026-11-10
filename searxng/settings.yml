@@ -8,3 +8,10 @@ search:
   formats:
     - html
     - json
+
+# The stock 3s is short enough that a cold TLS handshake to an engine times
+# out, and an engine that times out is suspended, so the next search answers
+# 200 with no rows in a few milliseconds. 12s is what the first request of a
+# session needs here; warm ones come back under 1.5s.
+outgoing:
+  request_timeout: 12.0

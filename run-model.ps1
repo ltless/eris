@@ -9,9 +9,11 @@ param(
 $Port = if ($env:PORT) { $env:PORT } else { '8080' }
 $LlamaBin = if ($env:LLAMA_BIN) { $env:LLAMA_BIN } else { 'llama-server' }
 
+# @(...) around the whole expression: `+` on two strings concatenates them
+# into one bogus path, so each term is wrapped to keep this a list.
 $candidates = @(
-    (Join-Path $PSScriptRoot 'llama-server.exe') +
-    (Join-Path $PSScriptRoot 'bin\llama-server.exe')
+    @(Join-Path $PSScriptRoot 'llama-server.exe') +
+    @(Join-Path $PSScriptRoot 'bin\llama-server.exe')
 )
 foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
     if ($base) {

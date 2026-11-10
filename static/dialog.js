@@ -3,17 +3,13 @@
    or focus restoration.
 
    The markup contract is in dialog.css. Everything the caller owns is passed
-   in: the root, its opener, and two hooks — `onEscape` for a surface that has
-   its own step to give up first, and `onHide` for state that must not outlive
-   the dialog.
+   in: the root, its opener, and `onShow` for data that is fetched each time the
+   dialog opens.
 
-   A module: it is imported by the two page-level modules, and its name would
-   otherwise land in the global object every other page script declares into. */
+   A module: it is imported by settings.js, and its name would otherwise land
+   in the global object every other page script declares into. */
 
-/* Every dialog on the page, so opening one can close the others. */
-const dialogs = [];
-
-export function createDialog({ root, opener, onEscape, onHide, onShow }) {
+export function createDialog({ root, opener, onShow }) {
   const sheet = root.querySelector(".dlg-sheet");
   const nav = root.querySelector("[data-nav]");
   const hash = root.dataset.hash;
@@ -58,15 +54,13 @@ export function createDialog({ root, opener, onEscape, onHide, onShow }) {
 
   function open() {
     if (isOpen()) return;
-    // Only one dialog at a time: a second one would otherwise register a second
-    // Escape handler and a second focus trap against the same document.
-    for (const other of dialogs) if (other !== api) other.close();
     returnTo = document.activeElement;
     root.hidden = false;
     setBehind(true);
     opener?.setAttribute("aria-expanded", "true");
-    // The drawer sits under the scrim at this width, so it closes first.
-    if (matchMedia("(max-width:768px)").matches) window.ErisSidebar?.close();
+    // The drawer sits under the scrim, so it closes first. Harmless off the
+    // breakpoint, where neither class is ever set.
+    window.ErisSidebar?.close();
     sheet.focus();
     onShow?.();
   }
@@ -76,7 +70,6 @@ export function createDialog({ root, opener, onEscape, onHide, onShow }) {
     root.hidden = true;
     setBehind(false);
     opener?.setAttribute("aria-expanded", "false");
-    onHide?.();
     if (returnTo && returnTo.isConnected) returnTo.focus();
     returnTo = null;
   }
@@ -113,10 +106,8 @@ export function createDialog({ root, opener, onEscape, onHide, onShow }) {
   document.addEventListener("keydown", (e) => {
     if (!isOpen()) return;
 
-    // A surface with its own pending step gives that up on the first Escape.
     if (e.key === "Escape") {
       e.preventDefault();
-      if (onEscape?.()) return;
       dismiss();
       return;
     }
@@ -141,7 +132,5 @@ export function createDialog({ root, opener, onEscape, onHide, onShow }) {
     else close();
   });
 
-  const api = { open, close, isOpen, select };
-  dialogs.push(api);
-  return api;
+  return { open, close };
 }

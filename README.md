@@ -192,7 +192,7 @@ POST   /api/auth/profile        name
 POST   /api/auth/password
 POST   /api/auth/media          avatar, cover, model picture
 DELETE /api/auth/media
-GET    /api/models              ids, labels, default, capabilities
+GET    /api/models              ids, labels, default, capabilities, ctx_max
 GET    /api/effort              the think ladder for a model
 GET    /api/stats                what the server holds, no tokens spent
 POST   /api/prefs               model, effort, ctx, system prompt

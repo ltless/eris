@@ -8,6 +8,8 @@ reason when one is reached.
 import time
 from dataclasses import dataclass, field
 
+from ..config import settings
+
 
 class BudgetExceeded(Exception):
     """Raised when a limit is hit. `kind` names the limit that stopped the run."""
@@ -15,11 +17,6 @@ class BudgetExceeded(Exception):
     def __init__(self, kind, limit, spent):
         super().__init__(f"{kind} budget exhausted ({spent}/{limit})")
         self.kind = kind
-        self.limit = limit
-        self.spent = spent
-
-    def as_dict(self):
-        return {"kind": self.kind, "limit": self.limit, "spent": self.spent}
 
 
 @dataclass
@@ -34,12 +31,12 @@ class Budget:
     limit is the real ceiling: one call is always held back for the answer.
     """
 
-    rounds: int = 3
-    extra_rounds: int = 5
+    rounds: int = settings.max_tool_rounds
+    extra_rounds: int = settings.extra_tool_rounds
     model_calls: int = 24
     tool_calls: int = 48
     seconds: float = 900.0
-    tool_output_chars: int = 20_000
+    tool_output_chars: int = settings.tool_output_chars
     retries: int = 1
     started: float = field(default_factory=time.monotonic)
     spent_models: int = 0
@@ -53,9 +50,19 @@ class Budget:
         if self.elapsed() >= self.seconds:
             raise BudgetExceeded("seconds", self.seconds, round(self.elapsed(), 1))
 
+    def calls_left(self):
+        """Model calls still affordable, never below zero."""
+        return max(self.model_calls - self.spent_models, 0)
+
+    def may_call(self):
+        """Whether one more model call fits. The question `spend_model` asks,
+        put plainly, so a caller that wants to know before spending does not
+        re-derive the comparison."""
+        return self.spent_models < self.model_calls
+
     def spend_model(self):
         self.check_time()
-        if self.spent_models >= self.model_calls:
+        if not self.may_call():
             raise BudgetExceeded("model_calls", self.model_calls, self.spent_models)
         self.spent_models += 1
 

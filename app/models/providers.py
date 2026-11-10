@@ -10,8 +10,8 @@ import re
 
 import httpx
 
-from ..config import settings
-from .endpoint import chat_url
+from ..encoding import image_part_url, text_part_text
+from .endpoint import auth_headers, chat_url, model_for, models_url
 from .ladder import think_for_request
 
 
@@ -21,17 +21,11 @@ def to_native(messages):
     for m in messages:
         c = m.get("content")
         if isinstance(c, list):
-            text = "".join(p.get("text", "") for p in c if p.get("type") == "text")
+            text = "".join(t for t in map(text_part_text, c) if t)
             # A part can be malformed; it is dropped rather than allowed to
             # raise here, because this runs before the request's try and the
             # error would escape the generator instead of reaching the caller.
-            imgs = [
-                p["image_url"]["url"].split(",", 1)[-1]
-                for p in c
-                if p.get("type") == "image_url"
-                and isinstance(p.get("image_url"), dict)
-                and isinstance(p["image_url"].get("url"), str)
-            ]
+            imgs = [u.split(",", 1)[-1] for u in map(image_part_url, c) if u]
             mm = {"role": m["role"], "content": text}
             if imgs:
                 mm["images"] = imgs
@@ -67,8 +61,7 @@ def parse_metrics(chunk):
         return None
     out = {}
     for name in ("prompt_eval_count", "prompt_eval_cached_count", "eval_count",
-                 "eval_duration", "prompt_eval_duration", "load_duration",
-                 "total_duration"):
+                 "eval_duration", "load_duration"):
         value = chunk.get(name)
         if isinstance(value, (int, float)):
             out[name] = value
@@ -138,16 +131,11 @@ class ModelError(Exception):
     keeps that promise, because the runtime only catches this type.
     """
 
-    def __init__(self, message, *, status=None, error=None):
-        super().__init__(message)
-        self.status = status
-        self.error = error
-
 
 async def stream_completion(messages, model=None, thinking=False, tools=None, ctx=None,
                             limit=None):
     payload = {
-        "model": model or settings.model_name,
+        "model": model_for(model),
         "messages": to_native(messages),
         "stream": True,
     }
@@ -169,19 +157,17 @@ async def stream_completion(messages, model=None, thinking=False, tools=None, ct
             payload["options"]["num_predict"] = limit
     if tools:
         payload["tools"] = tools
-    headers = {"Authorization": f"Bearer {settings.model_api_key}"}
     url = chat_url()
+    # The streaming call keeps its own client: it holds a socket open for the
+    # length of a generation, which no shared client's timeout should govern.
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
-            async with c.stream("POST", url, json=payload, headers=headers) as r:
+            async with c.stream("POST", url, json=payload, headers=auth_headers()) as r:
                 if r.status_code >= 400:
                     body = (await r.aread()).decode(errors="replace")
                     # The server's own text says what is wrong with the request;
                     # the status alone does not.
-                    raise ModelError(
-                        f"model server returned {r.status_code}: {body[:400]}",
-                        status=r.status_code,
-                    )
+                    raise ModelError(f"model server returned {r.status_code}: {body[:400]}")
                 async for line in r.aiter_lines():
                     for event in parse_chunk(line):
                         yield event
@@ -225,7 +211,10 @@ async def title_for(prompt, model=None):
     for raw in text.splitlines():
         line = clean_title(raw)
         if line:
-            return line[:80]
+            # No length cut here: the one place that stores a title already
+            # bounds it (`chats.short_title`), and a cut here would be a second
+            # limit that has to be kept in step with that one.
+            return line
     return ""
 
 
@@ -259,10 +248,7 @@ async def list_models():
     """Model ids the endpoint reports. Empty when it cannot be reached."""
     try:
         async with httpx.AsyncClient(timeout=5) as c:
-            r = await c.get(
-                f"{settings.model_base_url}/models",
-                headers={"Authorization": f"Bearer {settings.model_api_key}"},
-            )
+            r = await c.get(models_url(), headers=auth_headers())
             r.raise_for_status()
             return [m["id"] for m in r.json().get("data", []) if m.get("id")]
     except Exception:
@@ -310,10 +296,7 @@ async def healthy():
     """Whether the model endpoint answers at all."""
     try:
         async with httpx.AsyncClient(timeout=4) as c:
-            r = await c.get(
-                f"{settings.model_base_url}/models",
-                headers={"Authorization": f"Bearer {settings.model_api_key}"},
-            )
+            r = await c.get(models_url(), headers=auth_headers())
             return r.status_code < 500
     except Exception:
         return False

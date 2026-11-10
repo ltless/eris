@@ -8,11 +8,19 @@ here, in one place, with the event still carrying its own fields.
 import json
 
 from .runtime import events as ev
+from .tools import fetch, search
+from .tools.registry import registry, source_view
 
-# The tools whose result carries its own card payload, sent as a frame under the
-# tool's own name.
-_CARDED = {"weather", "wayback", "crypto", "crypto_trend",
-           "equity", "equity_trend", "screen", "plan"}
+
+def carded():
+    """The tools whose result carries a card the browser draws whole, under the
+    tool's own name.
+
+    Read from the registry, so a tool that starts publishing a card says so in
+    its own declaration and nowhere else. A function rather than a set, because
+    the tools register after this module is imported.
+    """
+    return frozenset(t.name for t in registry.all() if t.carded)
 
 
 def sse(obj):
@@ -35,11 +43,9 @@ def sse_frame(event):
         # `r` rides along so the browser can file a result under the round that
         # found it without guessing from arrival order, which is what lets a
         # round's searches and its fetches be written back as one record.
-        return {"type": "sources", "r": d.get("round", 0), "items": [{
-            "n": d.get("n"), "source": d.get("source", ""), "title": d.get("title", ""),
-            "kind": d.get("kind", "web"), "read": bool(d.get("read")),
-        }]}
-    if t == ev.TOOL_STARTED and d.get("tool") == "web_search":
+        return {"type": "sources", "r": d.get("round", 0),
+                "items": [{"n": d.get("n"), **source_view(d)}]}
+    if t == ev.TOOL_STARTED and d.get("tool") == search.NAME:
         # `args` is whatever the model sent, and a JSON array is valid JSON, so
         # it is checked for shape before being read as a mapping.
         a = d.get("args") if isinstance(d.get("args"), dict) else {}
@@ -50,17 +56,17 @@ def sse_frame(event):
     # showed. It is announced when it starts, because the point of drawing it
     # is that the user can watch a slow page being read, and closed when the
     # tool ends rather than when the run does.
-    if t == ev.TOOL_STARTED and d.get("tool") == "fetch_url":
+    if t == ev.TOOL_STARTED and d.get("tool") == fetch.NAME:
         a = d.get("args") if isinstance(d.get("args"), dict) else {}
         return {"type": "fetch", "r": d.get("round", 0),
                 "url": str(a.get("url", "") or "")}
-    if t == ev.TOOL_COMPLETED and d.get("tool") == "fetch_url":
+    if t == ev.TOOL_COMPLETED and d.get("tool") == fetch.NAME:
         return {"type": "fetch_done", "r": d.get("round", 0),
-                "ok": True, "chars": d.get("chars", 0)}
+                "chars": d.get("chars", 0)}
     # These cards are drawn whole, once, when the tool ends: unlike a fetch
     # there is nothing to watch arrive, and the payload is the figures the tool
     # computed rather than anything the run knows.
-    if t == ev.TOOL_COMPLETED and d.get("tool") in _CARDED and d.get("card"):
+    if t == ev.TOOL_COMPLETED and d.get("tool") in carded() and d.get("card"):
         return {"type": d["tool"], "r": d.get("round", 0), "card": d["card"]}
     if t == ev.TOOL_FAILED:
         # `reason` is the short phrase the card replays; `message` is the full
@@ -70,6 +76,6 @@ def sse_frame(event):
                 "reason": d.get("reason", "")}
     if t == ev.MODEL_METRICS:
         return {"type": "metrics", **{k: v for k, v in d.items() if k != "round"}}
-    if t in (ev.TASK_FAILED, ev.TASK_CANCELLED):
+    if t == ev.TASK_FAILED:
         return {"type": "error", "message": d.get("message") or d.get("reason") or t}
     return None

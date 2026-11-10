@@ -24,21 +24,12 @@ _GPU_TOTAL_READ = False
 # same spawn, so a poll is one process instead of three.
 _GPU_SCRIPT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
-$out = @{ adapter_used = $null; adapter_committed = $null; runner_used = $null;
-          gpu_util = $null; total = $null }
+$out = @{ adapter_used = $null; gpu_util = $null; total = $null }
 try {
   $a = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory |
        Sort-Object DedicatedUsage -Descending | Select-Object -First 1
   if ($a) {
     $out.adapter_used = [int64]$a.DedicatedUsage
-    $out.adapter_committed = [int64]$a.TotalCommitted
-  }
-  $p = (Get-Process llama-server).Id
-  if ($p) {
-    $g = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory |
-         Where-Object { $_.Name -match ('^pid_{0}_' -f $p) }
-    $sum = ($g | Measure-Object DedicatedUsage -Sum).Sum
-    if ($null -ne $sum) { $out.runner_used = [int64]$sum }
   }
   $e = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine |
        Where-Object { $_.UtilizationPercentage -gt 0 }
@@ -102,7 +93,5 @@ async def gpu_info():
     return {
         "total": total,
         "used": live.get("adapter_used"),
-        "committed": live.get("adapter_committed"),
-        "runner": live.get("runner_used"),
         "util": live.get("gpu_util"),
     }

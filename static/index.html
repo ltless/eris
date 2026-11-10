@@ -114,7 +114,7 @@
         </div>
       </section>
 
-      <footer class="composer" id="composer">
+      <footer class="composer">
         <!-- The run's plan, held out of the message flow: a card inside the turn
              scrolls away with the turn it came from, and the plan is what the
              reader wants to keep an eye on while the run is still going. -->
@@ -156,8 +156,8 @@
               <button type="button" class="stat-btn" id="statBtn" aria-haspopup="true" aria-expanded="false"
                 aria-controls="statPanel" title="Context used">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <circle class="stat-track" cx="12" cy="12" r="10" />
-                  <circle class="stat-arc" cx="12" cy="12" r="10" />
+                  <circle class="stat-track" cx="12" cy="12" r="10" pathLength="100" />
+                  <circle class="stat-arc" cx="12" cy="12" r="10" pathLength="100" />
                 </svg>
               </button>
 
@@ -225,7 +225,7 @@
               </span>
             </button>
             <button type="button" class="s-av" id="avatar" aria-label="Change profile picture">
-              <span class="s-face" id="avatarFace">ME</span>
+              <span id="avatarFace">ME</span>
               <span class="s-pick" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
                   stroke-linecap="round" stroke-linejoin="round">
@@ -263,7 +263,7 @@
           <h3 id="setModelTitle">Model</h3>
           <div class="s-ai">
             <button type="button" class="s-av" id="modelAvatar" aria-label="Change model picture">
-              <span class="s-face" id="modelFace">AI</span>
+              <span id="modelFace">AI</span>
               <span class="s-pick" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
                   stroke-linecap="round" stroke-linejoin="round">
@@ -284,7 +284,7 @@
               <select id="selModel"></select>
             </label>
             <label>Context window (tokens)
-              <input id="inpCtx" type="number" min="2048" max="262144" step="1024" placeholder="Server default" />
+              <input id="inpCtx" type="number" min="2048" step="1024" placeholder="Server default" />
             </label>
 
             <div class="s-prompt">
@@ -332,7 +332,7 @@
           <div class="s-seg" role="radiogroup" aria-label="Theme">
             <label><input type="radio" name="theme" value="light" /><span>Light</span></label>
             <label><input type="radio" name="theme" value="dark" /><span>Dark</span></label>
-            <label><input type="radio" name="theme" value="system" checked /><span>System</span></label>
+            <label><input type="radio" name="theme" value="system" /><span>System</span></label>
           </div>
           <p class="s-note">System follows your OS setting and applies to every page, including chat.</p>
         </section>

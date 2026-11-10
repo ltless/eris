@@ -14,7 +14,7 @@ import time
 import httpx
 from bs4 import BeautifulSoup
 
-from .tools.fetch import HEADERS, is_public_url
+from .net import HEADERS, is_public_url
 
 DOMAIN_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
 ICON_TYPES = (
@@ -30,6 +30,8 @@ ICON_TYPES = (
 HTML_TYPES = ("text/html", "application/xhtml+xml")
 MAX_BYTES = 64_000
 MAX_HTML = 256_000
+# Chasing an icon down more hops than `fetch` follows a page's own redirect
+# chain is not worth it: a site with no icon leaves the letter chip.
 MAX_REDIRECTS = 3
 # A page can name half a dozen icons; the first few are the one it means.
 MAX_CANDIDATES = 4
@@ -37,6 +39,10 @@ TIMEOUT = 6
 TTL_HIT = 24 * 3600
 TTL_MISS = 3600
 MAX_CACHED = 512
+# How long the browser may keep an icon. Stated from the same TTL the server
+# caches a hit for, so the two cannot come to different answers about how long
+# an icon is good for.
+CACHE_CONTROL = f"public, max-age={TTL_HIT}"
 
 # `(expires_at, icon_or_None)`, keyed by domain. A miss is cached too: a site
 # with no icon is asked once, not on every row that points at it.

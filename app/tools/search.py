@@ -1,3 +1,5 @@
+"""Web search through the local SearXNG stack, then the top pages' text."""
+
 import re
 from datetime import date, datetime
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunsplit
@@ -5,49 +7,54 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunsplit
 import httpx
 
 from ..config import settings
-from . import as_args, fetch
+from ..errors import TOOL_ERROR
+from ..security import EXTERNAL
+from . import fetch
+from .registry import TAGS, Tool, ToolResult, registry, source_row
 
-TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": (
-            "Search the web in English. Always translate the query to English "
-            "first, whatever language the user wrote in. Use it for current "
-            "facts: news, prices, versions, releases, or anything that may "
-            "have changed recently. Keep the query short, three to six words, "
-            "like a person typing into a search box: the thing, then the "
-            "place. Leave out dates and the user's whole sentence; the "
-            "time_range argument covers recency. If one site holds the answer, "
-            "name it, such as BMKG for Indonesian weather or a vendor's own "
-            "site for a version number."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Short English search query, no date.",
-                },
-                # Both are free strings on purpose. A small model writes
-                # "generalnews" or "\"day\"", and an enum turns that slip into a
-                # refused call instead of a search with the argument dropped.
-                "time_range": {
-                    "type": "string",
-                    "description": (
-                        "Only recent results: one of day, week, month, year. Use "
-                        "day or week for prices and news, month or year for "
-                        "releases and versions."
-                    ),
-                },
-                "categories": {
-                    "type": "string",
-                    "description": "One of general, news. Use news for current events.",
-                },
-            },
-            "required": ["query"],
+NAME = "web_search"
+TIMEOUT = 15
+TIMEOUT_S = 45.0
+
+DESCRIPTION = (
+    "Search the web in English. Always translate the query to English "
+    "first, whatever language the user wrote in. Use it for current "
+    "facts: news, prices, versions, releases, or anything that may "
+    "have changed recently. Keep the query short, three to six words, "
+    "like a person typing into a search box: the thing, then the "
+    "place. Leave out dates and the user's whole sentence; the "
+    "time_range argument covers recency. If one site holds the answer, "
+    "name it, such as BMKG for Indonesian weather or a vendor's own "
+    "site for a version number."
+)
+# Both filters are free strings on purpose. A small model writes
+# "generalnews" or "\"day\"", and an enum turns that slip into a
+# refused call instead of a search with the argument dropped.
+TIME_RANGES = ("day", "week", "month", "year")
+CATEGORIES = ("general", "news")
+PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Short English search query, no date.",
+        },
+        "time_range": {
+            "type": "string",
+            "description": (
+                f"Only recent results: one of {', '.join(TIME_RANGES)}. Use "
+                "day or week for prices and news, month or year for "
+                "releases and versions."
+            ),
+        },
+        "categories": {
+            "type": "string",
+            "description": (
+                f"One of {', '.join(CATEGORIES)}. Use news for current events."
+            ),
         },
     },
+    "required": ["query"],
 }
 
 LOW_VALUE = ("facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com", "youtube.com")
@@ -126,7 +133,6 @@ def rank(query, results, fresh=False):
         if fresh:
             age = _age_days(r.get("published"))
             if age is not None:
-                # Full credit inside the week, none past the month, linear between.
                 span = STALE_DAYS - RECENT_DAYS
                 recency = max(0.0, min(1.0, (STALE_DAYS - age) / span))
         scored.append((title_hits + domain - penalty + recency, -i, r))
@@ -148,7 +154,11 @@ FRESH_RE = re.compile(
 )
 
 
-def render(results, start=0):
+def render(results, start=1):
+    """The text the model reads. `start` is the first citation number, which is
+    where this call's block sits in the run: a second search in one turn must
+    not number its first hit `[1]` again, or the model's citations point at the
+    earlier search's pages."""
     if not results:
         return (
             "No web results were found for this query. Tell the user you "
@@ -157,7 +167,7 @@ def render(results, start=0):
     head = f"Web results (as of {date.today().isoformat()}):\n\n"
     parts = []
     for i, r in enumerate(results):
-        block = f"[{start + i + 1}] {r['title']} — {r['url']}\n{r['snippet']}"
+        block = f"[{start + i}] {r['title']} — {r['url']}\n{r['snippet']}"
         if r.get("page"):
             block += f"\nPage content: {r['page']}"
         elif "page" in r:
@@ -186,7 +196,7 @@ def _pick(value, allowed):
 
 
 def time_range_for(args, query):
-    tr = _pick(args.get("time_range"), ("day", "week", "month", "year"))
+    tr = _pick(args.get("time_range"), TIME_RANGES)
     if tr:
         return tr
     if FRESH_RE.search(query):
@@ -231,7 +241,7 @@ def _hits(data):
     ]
 
 
-async def run_checked(args):
+async def _gather(args):
     """`(hits, reason)`. `reason` is empty unless the search itself failed.
 
     A dead server and a query with no results both come back as no hits, so
@@ -243,7 +253,6 @@ async def run_checked(args):
     every engine, so that is the one whose suspended list explains anything:
     the engines named under `news` are news engines, not the whole stack.
     """
-    args = as_args(args)
     query = clean_query(str(args.get("query", "")).strip())
     if not query:
         return [], ""
@@ -253,13 +262,13 @@ async def run_checked(args):
         "format": "json",
         "language": settings.searxng_language,
     }
-    cat = _pick(args.get("categories"), ("general", "news"))
+    cat = _pick(args.get("categories"), CATEGORIES)
     if cat:
         params["categories"] = cat
     if tr:
         params["time_range"] = tr
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as c:
             data = await _query(c, params)
             hits = _hits(data)
             # A model that asked for news within a day gets a much thinner
@@ -292,5 +301,51 @@ async def run_checked(args):
     return hits, ""
 
 
-async def run(args):
-    return (await run_checked(args))[0]
+def _web_sources(hits, start=1):
+    """The `sources` rows for a result set, numbered the same way `render`
+    numbers the text: the model writes `[n]`, and the browser turns it into a
+    link only when a row carries that `n`."""
+    rows = []
+    for i, h in enumerate(hits):
+        if not (h.get("url") or h.get("title")):
+            continue
+        row = source_row(
+            h.get("url") or h.get("title") or "",
+            h.get("title") or h.get("url") or "",
+            # The text itself goes to the model and never to the browser, so
+            # this flag is the only thing that lets the card tell a page the
+            # answer may rest on from one that was never more than a snippet.
+            read=bool(h.get("page")),
+        )
+        row["n"] = start + i
+        rows.append(row)
+    return rows
+
+
+async def read(args, ctx):
+    """Answer the search tool, or say why it could not run."""
+    hits, reason = await _gather(args)
+    # A search that never reached the server is a failed call, not an empty
+    # result set: the model has to be told the difference or it answers from
+    # memory on the strength of "nothing was found". The text carries that
+    # sentence, because a failed result with no text reaches the model as
+    # "(no result)" and it learns nothing.
+    if reason:
+        message = f"Web search unavailable ({reason}). Tell the user the search did not run."
+        return ToolResult.failed(TOOL_ERROR, message, retryable=True)
+    # Reserved before the text is written, because the number in the text is
+    # the number the browser links to.
+    start = ctx.numbers.reserve(len(hits))
+    return ToolResult.ok(render(hits, start), sources=_web_sources(hits, start))
+
+
+def register():
+    return registry.add(Tool(
+        name=NAME,
+        description=DESCRIPTION,
+        parameters=PARAMETERS,
+        handler=read,
+        permission=EXTERNAL,
+        timeout=TIMEOUT_S,
+        tags=TAGS,
+    ))

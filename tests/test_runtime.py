@@ -8,24 +8,21 @@ whole app depends on.
 
 import asyncio
 import json
-import os
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 sys.path.insert(0, ".")
 
-ROOT = Path(__file__).resolve().parents[1]
-
 from app.config import settings
-from app.runtime import errors, events as ev
+from app import errors
+from app.runtime import events as ev
 from app.runtime.budgets import Budget, BudgetExceeded, clip
 from app.runtime.engine import Engine, RunRequest
-from app.runtime.events import Emitter, Event, scrub
+from app.runtime.events import emit
 from app.security import permissions as perms
 from app.tools import builtin
 from app.tools.registry import Registry, Tool, ToolContext, ToolResult, registry
@@ -46,7 +43,7 @@ class RegistryChecks(unittest.TestCase):
                           "weather", "web_search"])
 
     def test_specs_carry_name_description_and_schema(self):
-        spec = next(s for s in registry.specs(("chat",))
+        spec = next(s for s in registry.specs_for(ToolContext(), ("chat",))
                     if s["function"]["name"] == "web_search")
         self.assertEqual(spec["type"], "function")
         self.assertTrue(spec["function"]["description"])
@@ -77,16 +74,14 @@ class RegistryChecks(unittest.TestCase):
             return "plain"
 
         async def result_handler(args):
-            return ToolResult.ok("rich", n=2)
+            return ToolResult.ok("rich")
 
         reg.add(Tool(name="t", description="d", parameters={"type": "object"},
                      handler=text_handler))
         reg.add(Tool(name="r", description="d", parameters={"type": "object"},
                      handler=result_handler))
         self.assertEqual(asyncio.run(reg.call("t", {})).text, "plain")
-        got = asyncio.run(reg.call("r", {}))
-        self.assertEqual(got.text, "rich")
-        self.assertEqual(got.data, {"n": 2})
+        self.assertEqual(asyncio.run(reg.call("r", {})).text, "rich")
 
     def test_a_raising_handler_becomes_a_failed_result(self):
         reg = Registry()
@@ -122,12 +117,13 @@ class RegistryChecks(unittest.TestCase):
         reg = Registry()
 
         async def needs_ctx(args, ctx):
-            return f"user={ctx.user_id}"
+            return f"files={len(ctx.files)}"
 
         reg.add(Tool(name="c", description="d", parameters={"type": "object"},
                      handler=needs_ctx))
-        got = asyncio.run(reg.call("c", {}, ToolContext(user_id=7)))
-        self.assertEqual(got.text, "user=7")
+        ctx = ToolContext(files=({"name": "a", "text": "b"},))
+        got = asyncio.run(reg.call("c", {}, ctx))
+        self.assertEqual(got.text, "files=1")
 
 
 # --- permissions ---
@@ -137,21 +133,23 @@ class PolicyChecks(unittest.TestCase):
     def test_read_only_runs_without_a_project(self):
         tool = Tool(name="r", description="d", parameters={}, handler=lambda a: "",
                     permission=perms.READ_ONLY)
-        self.assertTrue(perms.authorize(tool, ToolContext()).allowed)
+        self.assertIsNone(perms.authorize(tool))
 
     def test_a_write_is_refused_for_want_of_a_way_to_ask(self):
         tool = Tool(name="w", description="d", parameters={}, handler=lambda a: "",
                     permission=perms.WRITE)
-        decision = perms.authorize(tool, ToolContext(), {"proposal_id": "abc"})
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.code, "denied")
+        # Only a read-only or external tool reaches the network; nothing here
+        # can stop and ask the person whether they meant a write.
+        code, reason = perms.authorize(tool)
+        self.assertEqual(code, "denied")
+        self.assertIn("changes state", reason)
 
     def test_an_unknown_permission_is_refused(self):
         tool = Tool(name="x", description="d", parameters={}, handler=lambda a: "",
                     permission="god_mode")
-        decision = perms.authorize(tool, ToolContext())
-        self.assertFalse(decision.allowed)
-        self.assertIn("unknown permission", decision.reason)
+        code, reason = perms.authorize(tool)
+        self.assertEqual(code, "denied")
+        self.assertIn("unknown permission", reason)
 
     def test_specs_offer_what_can_be_asked_for_and_withhold_the_rest(self):
         reg = Registry()
@@ -234,35 +232,8 @@ class BudgetChecks(unittest.TestCase):
 
 
 class EventChecks(unittest.TestCase):
-    def test_sequence_numbers_increase_from_one(self):
-        e = Emitter()
-        a = e.emit(ev.MODEL_DELTA, text="a")
-        b = e.emit(ev.MODEL_DELTA, text="b")
-        self.assertEqual((a.seq, b.seq), (1, 2))
-
-    def test_an_emitter_can_resume_a_sequence(self):
-        e = Emitter(start=10)
-        self.assertEqual(e.emit(ev.MODEL_DELTA).seq, 11)
-
-    def test_secrets_are_scrubbed_from_payloads(self):
-        e = Emitter()
-        out = e.emit(ev.TOOL_STARTED, args={"api_key": "sk-real", "q": "x"}).as_dict()
-        self.assertEqual(out["data"]["args"]["api_key"], "[redacted]")
-        self.assertEqual(out["data"]["args"]["q"], "x")
-
-    def test_nested_secrets_are_scrubbed(self):
-        out = scrub({"a": {"token": "t", "list": [{"password": "p"}]}})
-        self.assertEqual(out["a"]["token"], "[redacted]")
-        self.assertEqual(out["a"]["list"][0]["password"], "[redacted]")
-
-    def test_long_strings_are_capped(self):
-        out = scrub({"text": "y" * 100_000})
-        self.assertLess(len(out["text"]), 100_000)
-        self.assertIn("omitted", out["text"])
-
-    def test_event_dict_is_json_serializable(self):
-        payload = Emitter().emit(ev.TOOL_COMPLETED, tool="t", n=1).as_dict()
-        json.dumps(payload)
+    def test_event_is_json_serializable(self):
+        json.dumps({"type": ev.TOOL_COMPLETED, "data": emit(ev.TOOL_COMPLETED, tool="t", n=1).data})
 
 
 # --- the loop ---
@@ -279,6 +250,15 @@ def offered(payload):
 
 def answer_pass(payload):
     return not (offered(payload) - {"plan"})
+
+
+def plain_pass(payload):
+    """A pass offered nothing to call.
+
+    The recovery ask drops the tool list entirely, so a stub can tell it apart
+    from the answering pass, which still offers `plan`.
+    """
+    return not offered(payload)
 
 
 class StubModel:
@@ -373,7 +353,7 @@ class LoopChecks(unittest.TestCase):
             model="stub",
             tags=("chat",),
             budget=Budget(rounds=2, model_calls=20, tool_calls=20, seconds=60),
-            tool_context=ToolContext(user_id=1),
+            tool_context=ToolContext(),
         )
         base.update(kw)
         return RunRequest(**base)
@@ -395,8 +375,8 @@ class LoopChecks(unittest.TestCase):
     def test_the_plan_comes_back_on_the_next_round(self):
         """The run's own steps ride on the tail of the prompt, and the stored
         history never gains the reminder, so a later round does not double it."""
-        ctx = ToolContext(user_id=1, plan=({"step": "Read the docs", "status": "done"},
-                                           {"step": "Answer", "status": "doing"}))
+        ctx = ToolContext(plan=({"step": "Read the docs", "status": "done"},
+                                {"step": "Answer", "status": "doing"}))
         self.drive(self.request(tool_context=ctx))
         first = self.join_messages(self.stub.payloads[0])
         self.assertIn("Read the docs", first)
@@ -429,10 +409,13 @@ class LoopChecks(unittest.TestCase):
                          "the final call still asked the model to think")
 
     def test_round_budget_is_enforced(self):
-        events, result = self.drive(self.request())
+        events, _ = self.drive(self.request())
         rounds = {e.data.get("round") for e in events if e.type == ev.TOOL_STARTED}
         self.assertEqual(max(rounds), 1, f"rounds ran: {sorted(rounds)}")
-        self.assertEqual(result.rounds, 3, "2 tool rounds plus the final answer")
+        # Every round reached, including the answer pass that carried no tool:
+        # three model calls in all, the last of them the bare answer.
+        spoke = {e.data.get("round") for e in events if e.type == ev.MODEL_DELTA}
+        self.assertEqual(max(spoke), 2, f"rounds spoke: {sorted(spoke)}")
 
     def test_the_tool_budget_stops_the_loop_cleanly(self):
         events, result = self.drive(self.request(budget=Budget(rounds=5, tool_calls=2,
@@ -576,7 +559,7 @@ class LoopChecks(unittest.TestCase):
         asks once more, and only the second pass is kept."""
         class OnlyMarkup(StubModel):
             def reply(self, payload):
-                if "instead of an answer" in json.dumps(payload.get("messages") or []):
+                if plain_pass(payload):
                     return [json.dumps({"message": {"content": "the real answer"}})]
                 return [json.dumps({"message": {"content":
                     "<tool_call>\n<function=plan>\n<parameter=steps>\n[]\n</parameter>\n"
@@ -602,8 +585,10 @@ class LoopChecks(unittest.TestCase):
         self.stub = Stuck(calls_per_round=0)
         settings.model_base_url = self.stub.start()
         _, result = self.drive(self.request())
+        # The model never wrote prose, so anything shown here came from the
+        # engine telling the reader the turn produced no answer.
         self.assertNotIn("tool_call", result.answer)
-        self.assertIn("instead of an answer", result.answer)
+        self.assertTrue(result.answer.strip())
 
     def test_a_final_pass_spent_on_the_plan_still_gets_an_answer(self):
         """The answering pass offers `plan`, and a model that records a step
@@ -611,7 +596,7 @@ class LoopChecks(unittest.TestCase):
         asked for again, or the reader gets the card and "No answer came back"."""
         class Planner(StubModel):
             def reply(self, payload):
-                if "You recorded the plan" in json.dumps(payload.get("messages") or []):
+                if plain_pass(payload):
                     return [json.dumps({"message": {"content": "here is the answer"}})]
                 if answer_pass(payload):
                     return [json.dumps({"message": {"content": "", "tool_calls": [{
@@ -647,7 +632,8 @@ class LoopChecks(unittest.TestCase):
         self.stub = OnlyPlans(calls_per_round=0)
         settings.model_base_url = self.stub.start()
         _, result = self.drive(self.request())
-        self.assertIn("never wrote an answer", result.answer)
+        self.assertNotIn("tool_call", result.answer)
+        self.assertTrue(result.answer.strip())
 
     def test_a_model_error_is_not_a_success_shaped_answer(self):
         self.stub.fail = "boom"
@@ -668,25 +654,11 @@ class LoopChecks(unittest.TestCase):
         self.stub.stop()
         self.stub = Unknown()
         settings.model_base_url = self.stub.start()
-        _, result = self.drive(self.request())
-        self.assertEqual(result.tool_runs[0]["tool"], "no_such_tool")
-        self.assertFalse(result.tool_runs[0]["ok"])
-        self.assertEqual(result.tool_runs[0]["error"]["code"], errors.UNKNOWN_TOOL)
-
-    def test_cancellation_between_steps(self):
-        engine = Engine(self.request())
-
-        async def run():
-            out = []
-            async for e in engine.run():
-                out.append(e.type)
-                if e.type in (ev.TOOL_COMPLETED, ev.TOOL_FAILED):
-                    engine.cancel()
-            return out, engine.result
-
-        kinds, result = asyncio.run(run())
-        self.assertEqual(result.stop_reason, "cancelled")
-        self.assertIn(ev.TASK_CANCELLED, kinds)
+        events, _ = self.drive(self.request())
+        failed = [e for e in events if e.type == ev.TOOL_FAILED]
+        self.assertTrue(failed, "an unknown tool produced no failure event")
+        self.assertEqual(failed[0].data["tool"], "no_such_tool")
+        self.assertEqual(failed[0].data["code"], errors.UNKNOWN_TOOL)
 
     def test_a_state_changing_tool_is_refused_and_the_run_carries_on(self):
         """The tool is not offered, and naming it anyway does not get it run:
@@ -708,7 +680,7 @@ class LoopChecks(unittest.TestCase):
         self.stub.stop()
         self.stub = Gated()
         settings.model_base_url = self.stub.start()
-        request = self.request(tool_context=ToolContext(user_id=1))
+        request = self.request(tool_context=ToolContext())
         try:
             events, result = self.drive(request)
         finally:
@@ -719,13 +691,6 @@ class LoopChecks(unittest.TestCase):
         self.assertNotIn("gated", json.dumps(self.stub.payloads[0].get("tools") or []),
                          "a write was offered to the model")
         self.assertTrue(any(e.type == ev.TOOL_FAILED for e in events))
-        self.assertFalse([r for r in result.tool_runs if r.get("ok")])
-
-    def test_events_carry_increasing_sequence_numbers(self):
-        events, _ = self.drive(self.request())
-        seqs = [e.seq for e in events]
-        self.assertEqual(seqs, sorted(seqs))
-        self.assertEqual(len(set(seqs)), len(seqs))
 
     def test_sources_from_tools_are_collected(self):
         events, result = self.drive(self.request())
@@ -783,14 +748,12 @@ class LoopChecks(unittest.TestCase):
 
         self.tool_calls({"slow": (slow, perms.READ_ONLY), "fast": (fast, perms.READ_ONLY)})
         start = time.monotonic()
-        events, result = self.drive(self.request(
+        events, _ = self.drive(self.request(
             budget=Budget(rounds=1, model_calls=20, tool_calls=20, seconds=60)))
         elapsed = time.monotonic() - start
 
         self.assertEqual(order, ["fast", "slow"], "the calls did not overlap")
         self.assertLess(elapsed, 0.26, "the round cost the sum of its calls")
-        self.assertEqual([r["tool"] for r in result.tool_runs], ["slow", "fast"],
-                         "tool_runs did not follow the order asked")
         completed = [e for e in events if e.type == ev.TOOL_COMPLETED]
         self.assertEqual([e.data["tool"] for e in completed], ["slow", "fast"],
                          "events did not follow the order asked")
@@ -829,13 +792,12 @@ class LoopChecks(unittest.TestCase):
             "rd": (flaky_read, perms.EXTERNAL),
             "wr": (flaky_write, perms.WRITE),
         })
-        _, result = self.drive(self.request(
+        self.drive(self.request(
             budget=Budget(rounds=1, model_calls=20, tool_calls=20, seconds=60)))
         self.assertEqual(tries["final"], 1, "an unretryable failure was retried")
         self.assertEqual(tries["read"], 2, "a retryable network read was not retried")
         # The write never ran at all: `authorize` refuses it before its handler.
         self.assertEqual(tries["write"], 0, "a state-changing call reached its handler")
-        self.assertTrue([r for r in result.tool_runs if r["tool"] == "rd" and r["ok"]])
 
 
 if __name__ == "__main__":

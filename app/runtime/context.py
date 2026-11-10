@@ -1,76 +1,56 @@
 """Assembling what the model gets to see.
 
-Session, knowledge, and evidence compete for one window. Keep the current
-instruction, stop when the budget is full, and drop the least relevant passage
-first.
+One window, one function: what the model is sent is decided here, and the
+engine does not truncate anything itself.
 """
 
-from dataclasses import dataclass
+from ..encoding import image_part_url, text_part_text
 
-DEFAULT_BUDGET = 24_000
+# Room for the system prompt, and room for the turns that follow it.
+PROMPT_LIMIT = 8_000
+SESSION_LIMIT = 8_000
 
+# The most messages one request may carry. A long tool round can add a pair of
+# messages per call, and a server that pairs an assistant call with its answer
+# rejects the request when the pair is split, so the cut opens on a user turn.
+MAX_MESSAGES = 60
 
-@dataclass
-class ContextBudget:
-    total: int = DEFAULT_BUDGET
-    per_source: int = 6_000
-    session: int = 8_000
-
-    def slice(self, text, limit=None):
-        limit = limit or self.per_source
-        if text is None:
-            return ""
-        return text if len(text) <= limit else text[:limit].rstrip() + "\n[... truncated]"
+TRUNCATED = "\n[... truncated]"
 
 
-def assemble(budget, *, base_prompt, today, session="",
-             knowledge=(), evidence=(), instruction=""):
-    """The system prompt and the context blocks, within budget.
+def _slice(text, limit):
+    if text is None:
+        return ""
+    return text if len(text) <= limit else text[:limit].rstrip() + TRUNCATED
+
+
+def assemble(*, base_prompt, today, instruction=""):
+    """The system prompt, within budget.
 
     The base prompt and the instruction go first, since a truncation that drops
-    them is a broken request; optional material is appended so the least
-    relevant passage is what falls off.
+    them is a broken request.
     """
-    parts = [budget.slice(base_prompt, 8_000)]
+    parts = [_slice(base_prompt, PROMPT_LIMIT)]
     if today:
         parts.append(f"Today is {today}.")
-    used = sum(len(p) for p in parts)
-    room = max(budget.total - used, 0)
-
-    blocks = []
-    for text in _blocks(knowledge, "Context", budget, room):
-        blocks.append(text)
-        room -= len(text)
-        if room <= 0:
-            break
-    for text in _blocks(evidence, "Evidence", budget, room):
-        blocks.append(text)
-        room -= len(text)
-        if room <= 0:
-            break
-
-    if blocks:
-        parts.extend(blocks)
-    if session:
-        parts.append("Recent conversation:\n" + budget.slice(session, budget.session))
     if instruction:
         parts.append(instruction)
     return "\n\n".join(p for p in parts if p and p.strip())
 
 
-def recent(messages, limit=None, budget=None):
+def recent(messages):
     """The newest whole turns that fit, oldest first.
 
     Turns are kept or dropped as a unit, and the window opens on a user turn:
-    an answer whose question fell off reads as the model talking to itself.
+    an answer whose question fell off reads as the model talking to itself. The
+    cap is both a character room and a message count, so a run that made many
+    small tool calls is bounded the same way as one that made few large ones.
     """
-    budget = budget or ContextBudget()
-    room = limit or budget.session
     kept = []
     spent = 0
     for m in reversed(messages):
         cost = _message_cost(m)
-        if kept and spent + cost > room:
+        if kept and (spent + cost > SESSION_LIMIT or len(kept) >= MAX_MESSAGES):
             break
         kept.append(m)
         spent += cost
@@ -88,31 +68,7 @@ def _message_cost(message):
     if isinstance(content, str):
         return len(content)
     if isinstance(content, list):
-        text = sum(len(p.get("text", "")) for p in content if isinstance(p, dict))
-        images = sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
+        text = sum(len(t) for t in map(text_part_text, content) if t)
+        images = sum(1 for p in content if image_part_url(p))
         return text + 4_000 * images
     return 0
-
-
-def _blocks(items, label, budget, room):
-    """One block per passage, with its origin, until `room` runs out."""
-    if not items:
-        return []
-    kept = []
-    spent = 0
-    for s in items:
-        text = budget.slice(s.text)
-        cost = len(text) + 60
-        if spent + cost > room:
-            break
-        spent += cost
-        head = f"[{len(kept) + 1}]" + (f" ({s.origin})" if s.origin else "")
-        kept.append((head, text))
-    if not kept:
-        return []
-    body = "\n\n".join(f"{head}\n{text}" for head, text in kept)
-    cite = (
-        f"\nCite these as [n]. They are sources gathered for this question; do not "
-        f"present a passage you were not given."
-    )
-    return [f"{label}:\n{body}{cite}"]

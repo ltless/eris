@@ -8,9 +8,8 @@ one withheld from a model that could use it costs the answer.
 
 import httpx
 
-from ..config import settings
 from .client import client
-from .endpoint import base_url
+from .endpoint import base_url, model_for
 
 TAGS_TIMEOUT = 5
 
@@ -101,5 +100,5 @@ def cached_capabilities(model=None):
     that would have to wait uses this and leaves the asking to the routes that
     show the answer.
     """
-    name = model or settings.model_name
+    name = model_for(model)
     return _CAPS.get(name)

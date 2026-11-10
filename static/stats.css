@@ -54,12 +54,13 @@
 }
 
 /* The arc is drawn as a full circle and clipped by the offset, which is the
-   one property the readout moves. `--stat-fill` is set from 0 to 1. */
+   one property the readout moves. `--stat-fill` is set from 0 to 1, and the
+   path length is stated as 100 in the markup, so the offset is in percent. */
 .stat-arc {
   stroke: var(--text);
   stroke-linecap: round;
-  stroke-dasharray: var(--stat-c, 62.83);
-  stroke-dashoffset: calc(var(--stat-c, 62.83) * (1 - var(--stat-fill, 0)));
+  stroke-dasharray: 100;
+  stroke-dashoffset: calc(100 * (1 - var(--stat-fill, 0)));
   transition: stroke-dashoffset var(--mo-base) var(--mo-ease);
 }
 

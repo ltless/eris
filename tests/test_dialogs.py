@@ -90,9 +90,17 @@ def check_the_shell_lives_in_one_file():
 
 
 def check_the_old_page_only_redirects():
-    """The route still resolves, and lands in the dialog."""
+    """The route still resolves, and lands in the dialog.
+
+    The hash is compared against the one `index.html` declares rather than
+    spelled out again: the page states it in three literals and cannot read
+    `data-hash`, so renaming the attribute would otherwise leave this file
+    pointing at a dialog that no longer answers to that name.
+    """
     page = read("settings.html")
-    assert "/#settings" in page, "settings.html does not point at /#settings"
+    root = re.search(r'id="setModal" data-hash="(\w+)"', read("index.html"))
+    assert root, "index.html has no setModal hash"
+    assert f"/#{root.group(1)}" in page, "settings.html does not point at the settings dialog"
     assert 'id="sec-' not in page, "settings.html still renders its own panels"
     assert "<script src=" not in page, "settings.html still loads an app script"
 

@@ -1,9 +1,12 @@
-"""Failures the runtime can name.
+"""Failures the app can name.
 
 A tool failure reaches the model as a tool message and the browser as an event,
 so both need to be told what went wrong. An exception's class name is not that
 answer, so each one is normalized to a code, a message, and whether retrying
 the same call could plausibly work.
+
+The codes sit above both the tools that raise them and the runtime that reports
+them, so neither layer has to reach into the other for a name.
 """
 
 from dataclasses import dataclass
@@ -27,6 +30,3 @@ class ToolError(Exception):
 
     def __str__(self):
         return f"{self.code}: {self.message}"
-
-    def as_dict(self):
-        return {"code": self.code, "message": self.message, "retryable": self.retryable}

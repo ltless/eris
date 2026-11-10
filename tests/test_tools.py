@@ -10,29 +10,54 @@ from datetime import datetime, timedelta, timezone
 
 from app import api
 from app.tools import fetch, search
+from app.tools.registry import as_args
 
-TOOL = search.TOOL
+
+def search_result(args):
+    """`(hits, reason)` from the search layer.
+
+    The tool wraps this pair into a `ToolResult`, so the checks read the pair
+    itself: a failed search is a reason with no hits, and the sentence the
+    model is given is built on top of it.
+    """
+    return asyncio.run(search._gather(as_args(args)))
+
+
+def unpack(result):
+    """A tool's reply as `(ok, text, reason, metadata)`.
+
+    Every handler answers with a `ToolResult`, and most of these checks are
+    written against the four things it carries: whether the call succeeded, the
+    text the model reads, the tool's own short phrase for what stopped it, and
+    the payload the browser draws.
+    """
+    return (result.success, result.text,
+            str((result.metadata or {}).get("reason", "") or ""),
+            result.metadata)
 
 
 def check_tool_shape():
-    fn = TOOL["function"]
-    assert TOOL["type"] == "function"
+    from app.tools import builtin
+    from app.tools.registry import registry
+
+    builtin.register_builtins()
+    fn = registry.get("web_search").spec()["function"]
     assert fn["name"] == "web_search"
     assert fn["parameters"]["required"] == ["query"]
     assert fn["description"]
 
 
 def check_bad_arguments():
-    assert asyncio.run(search.run("not json")) == []
-    assert asyncio.run(search.run(json.dumps({"query": "  "}))) == []
-    assert asyncio.run(search.run(json.dumps({}))) == []
+    assert search_result("not json")[0] == []
+    assert search_result(json.dumps({"query": "  "}))[0] == []
+    assert search_result(json.dumps({}))[0] == []
 
 
 def check_unreachable():
     prev = search.settings.searxng_url
     search.settings.searxng_url = "http://127.0.0.1:1"
     try:
-        assert asyncio.run(search.run(json.dumps({"query": "x"}))) == []
+        assert search_result(json.dumps({"query": "x"}))[0] == []
     finally:
         search.settings.searxng_url = prev
 
@@ -144,8 +169,8 @@ def check_filters_are_retried_wider():
     # send the run on to read pages it cannot read.
     search.settings.fetch_pages = False
     try:
-        hits, reason = asyncio.run(search.run_checked(
-            {"query": "bitcoin price", "categories": "news", "time_range": "day"}))
+        hits, reason = search_result(
+            {"query": "bitcoin price", "categories": "news", "time_range": "day"})
     finally:
         search.httpx.AsyncClient, search.settings.fetch_pages = old, old_pages
     assert reason == "", reason
@@ -172,8 +197,8 @@ def check_a_down_news_stack_is_not_a_failed_search():
     search.httpx.AsyncClient = FakeClient
     search.settings.fetch_pages = False
     try:
-        hits, reason = asyncio.run(search.run_checked(
-            {"query": "jakarta weather", "categories": "news", "time_range": "day"}))
+        hits, reason = search_result(
+            {"query": "jakarta weather", "categories": "news", "time_range": "day"})
     finally:
         search.httpx.AsyncClient, search.settings.fetch_pages = old, old_pages
     assert reason == "", reason
@@ -192,7 +217,7 @@ def check_suspended_engines_are_a_failure():
     old = search.httpx.AsyncClient
     search.httpx.AsyncClient = FakeClient
     try:
-        hits, reason = asyncio.run(search.run_checked({"query": "bitcoin price"}))
+        hits, reason = search_result({"query": "bitcoin price"})
     finally:
         search.httpx.AsyncClient = old
     assert hits == [], hits
@@ -250,7 +275,7 @@ def check_run_sends_cleaned_query():
     old = search.httpx.AsyncClient
     search.httpx.AsyncClient = FakeClient
     try:
-        asyncio.run(search.run({"query": "weather in Bali today 2026-10-19"}))
+        search_result({"query": "weather in Bali today 2026-10-19"})
     finally:
         search.httpx.AsyncClient = old
     assert sent["q"] == "weather in Bali today", sent
@@ -261,9 +286,9 @@ def check_run_accepts_dict():
     prev = search.settings.searxng_url
     search.settings.searxng_url = "http://127.0.0.1:1"
     try:
-        assert asyncio.run(search.run({"query": "x"})) == []
-        assert asyncio.run(search.run("not json")) == []
-        assert asyncio.run(search.run(["x"])) == []
+        assert search_result({"query": "x"})[0] == []
+        assert search_result("not json")[0] == []
+        assert search_result(["x"])[0] == []
     finally:
         search.settings.searxng_url = prev
 
@@ -304,24 +329,25 @@ def check_rank_freshness_dedup():
 
 
 def check_fetch_tool_shape():
-    fn = fetch.TOOL["function"]
+    from app.tools import builtin
+    from app.tools.registry import registry
+
+    builtin.register_builtins()
+    fn = registry.get("fetch_url").spec()["function"]
     assert fn["name"] == "fetch_url"
     assert fn["parameters"]["required"] == ["url"]
-    assert asyncio.run(fetch.run("not json")) == "No URL given."
+    # The arguments a model sends are normalized by the registry before any
+    # handler sees them, so a JSON string is read here the same way.
+    _, text, _, _ = unpack(asyncio.run(fetch.read(as_args("not json"))))
+    assert text == "No URL given."
     # SSRF: private address never fetched, message says so
-    assert "Could not read" in asyncio.run(fetch.run({"url": "http://127.0.0.1:8000/"}))
+    ok, text, reason, _ = unpack(asyncio.run(fetch.read({"url": "http://127.0.0.1:8000/"})))
+    assert not ok and text.startswith("Could not read"), text
     # The short reason travels apart from the sentence, so the card can replay
     # it after a reload without restating the URL it already shows.
-    ok, text, reason = asyncio.run(fetch.read({"url": "http://127.0.0.1:8000/"}))
-    assert not ok and reason == "not a public http(s) address", reason
-    assert text.startswith("Could not read"), text
-    ok, text, reason = asyncio.run(fetch.read({}))
+    assert reason == "not a public http(s) address", reason
+    ok, text, reason, _ = unpack(asyncio.run(fetch.read({})))
     assert not ok and reason and text == "No URL given."
-
-
-def check_numbering():
-    out = search.render([{"title": "A", "url": "http://a", "snippet": "s"}], start=4)
-    assert "[5] A" in out, out
 
 
 def check_a_read_page_is_not_asked_for_again():
@@ -378,15 +404,15 @@ def check_a_fetched_page_is_cached():
     fetch.is_public_url = lambda u: "127.0.0.1" not in u
     fetch._cache.clear()
     try:
-        first = asyncio.run(fetch.read({"url": "https://example.com/a"}))
-        second = asyncio.run(fetch.read({"url": "https://example.com/a"}))
+        first = unpack(asyncio.run(fetch.read({"url": "https://example.com/a"})))
+        second = unpack(asyncio.run(fetch.read({"url": "https://example.com/a"})))
         assert first[0] and second[0], (first, second)
         assert second[1] == first[1], "the second read did not return the cached text"
         assert len(Client.asked) == 1, Client.asked
 
         # A failure is not cached: the site may be down for a moment, and the
         # next attempt has to go back to the network to find out.
-        ok, _, reason = asyncio.run(fetch.read({"url": "http://127.0.0.1:8000/"}))
+        ok, _, reason, _ = unpack(asyncio.run(fetch.read({"url": "http://127.0.0.1:8000/"})))
         assert not ok and reason == "not a public http(s) address", reason
         assert not [u for u, _ in fetch._cache if "127.0.0.1" in u], fetch._cache
     finally:
@@ -401,27 +427,32 @@ def check_a_file_is_read_through_the_tool():
     from app.tools.registry import ToolContext
 
     text = "".join(f"line {i}\n" for i in range(2000))
-    ctx = ToolContext(user_id=1, files=({"name": "notes.txt", "text": text},))
+    ctx = ToolContext(files=({"name": "notes.txt", "text": text},))
 
-    ok, body, reason = files.read({"name": "notes.txt"}, ctx)
-    assert ok and reason == "", (ok, reason)
+    first = files.read({"name": "notes.txt"}, ctx)
+    assert first.success, first.error
+    body = first.text
     assert "notes.txt" in body and "line 0" in body, body[:200]
     assert f"of {len(text)}" in body, body[:200]
     assert "offset=" in body, "a cut read does not say where to continue"
 
     # The continuation picks up exactly where the first slice stopped.
     end = int(body.split("offset=")[1].split("]")[0])
-    ok, more, _ = files.read({"name": "notes.txt", "offset": end}, ctx)
-    assert ok and more.startswith(f"File: notes.txt (characters {end}-"), more[:80]
+    more = files.read({"name": "notes.txt", "offset": end}, ctx)
+    assert more.success, more.error
+    assert more.text.startswith(f"File: notes.txt (characters {end}-"), more.text[:80]
+
+    def why(result):
+        return result.metadata.get("reason")
 
     # A model that drops the extension or the case still finds its file.
-    assert files.read({"name": "NOTES"}, ctx)[0], "a looser name match did not find the file"
-    assert files.read({"name": "other.txt"}, ctx)[2] == "no such attachment"
-    assert files.read({}, ctx)[2] == "no file was named"
+    assert files.read({"name": "NOTES"}, ctx).success, "a looser name match did not find the file"
+    assert why(files.read({"name": "other.txt"}, ctx)) == "no such attachment"
+    assert why(files.read({}, ctx)) == "no file was named"
     # With nothing attached there is nothing to read, and the tool says so.
-    assert files.read({"name": "x"}, ToolContext())[2] == "no file is attached"
-    assert files.read({"name": "x", "offset": 5}, ctx)[2] == "no such attachment"
-    assert files.read({"name": "notes.txt", "offset": len(text)}, ctx)[2] == "offset past the end"
+    assert why(files.read({"name": "x"}, ToolContext())) == "no file is attached"
+    assert why(files.read({"name": "x", "offset": 5}, ctx)) == "no such attachment"
+    assert why(files.read({"name": "notes.txt", "offset": len(text)}, ctx)) == "offset past the end"
 
 
 def check_a_long_file_is_named_not_inlined():
@@ -582,7 +613,7 @@ def check_weather_reads_a_place():
     Client = _weather_client({"Bandung": place}, forecast)
     weather.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(weather.read({"location": "Kota Bandung", "days": 2}))
+        ok, text, reason, meta = unpack(asyncio.run(weather.read({"location": "Kota Bandung", "days": 2})))
     finally:
         weather.httpx.AsyncClient = old
     assert ok and reason == "", (ok, reason)
@@ -610,12 +641,11 @@ def check_weather_says_when_it_does_not_know_the_place():
     old = weather.httpx.AsyncClient
     weather.httpx.AsyncClient = _weather_client({}, {})
     try:
-        ok, text, reason, meta = asyncio.run(weather.read({"location": "Nowhereville"}))
-        assert not ok and "Nowhereville" in text and meta == {}, (text, meta)
+        ok, text, reason, meta = unpack(asyncio.run(weather.read({"location": "Nowhereville"})))
+        assert not ok and "Nowhereville" in text and not meta.get("card"), (text, meta)
         assert reason, reason
-        ok, text, reason, meta = asyncio.run(weather.read({}))
+        ok, text, reason, meta = unpack(asyncio.run(weather.read({})))
         assert not ok and text == "No place given.", text
-        assert asyncio.run(weather.run({})) == "No place given."
     finally:
         weather.httpx.AsyncClient = old
 
@@ -666,23 +696,18 @@ def _rising_klines(n=120):
     return rows
 
 
-def _flat_klines(n, price=100.0):
-    """Candles that never move, so an indicator has a value that can be checked
-    by hand rather than against a second implementation."""
-    return [[i, str(price), str(price), str(price), str(price), "1000"] for i in range(n)]
-
-
 def check_crypto_parses_what_the_model_sends():
-    from app.tools import crypto
+    from app.tools import marketdata
 
-    assert crypto.parse_symbol("BTC") == ("BTC", "USD")
-    assert crypto.parse_symbol("btc/usdt") == ("BTC", "USDT")
-    assert crypto.parse_symbol("eth-usd") == ("ETH", "USD")
-    assert crypto.parse_symbol("bitcoin") == ("BTC", "USD")
-    assert crypto.parse_symbol("sol/eur") == ("SOL", "EUR")
-    assert crypto.parse_symbol("") == (None, "USD")
+    default = marketdata.DEFAULT_QUOTE
+    assert marketdata.parse_symbol("BTC") == ("BTC", default)
+    assert marketdata.parse_symbol("btc/usdt") == ("BTC", "USDT")
+    assert marketdata.parse_symbol("eth-usd") == ("ETH", "USD")
+    assert marketdata.parse_symbol("bitcoin") == ("BTC", default)
+    assert marketdata.parse_symbol("sol/eur") == ("SOL", "EUR")
+    assert marketdata.parse_symbol("") == (None, default)
     # A quote given as its own field still wins over a bare symbol.
-    assert crypto.parse_quote({"symbol": "BTC", "quote": "idr"}) == ("BTC", "IDR")
+    assert marketdata.parse_quote({"symbol": "BTC", "quote": "idr"}) == ("BTC", "IDR")
 
 
 def check_crypto_reads_the_first_source_that_answers():
@@ -695,7 +720,7 @@ def check_crypto_reads_the_first_source_that_answers():
         "quoteVolume": "28112962441",
     })})
     try:
-        ok, text, reason, meta = asyncio.run(crypto.read({"symbol": "btc"}))
+        ok, text, reason, meta = unpack(asyncio.run(crypto.read({"symbol": "btc"})))
     finally:
         crypto.httpx.AsyncClient = old
     assert ok and reason == "", (ok, reason, text)
@@ -721,7 +746,7 @@ def check_crypto_rotates_when_a_source_is_rate_limited():
     })
     crypto.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(crypto.read({"symbol": "BTC"}))
+        ok, text, reason, meta = unpack(asyncio.run(crypto.read({"symbol": "BTC"})))
     finally:
         crypto.httpx.AsyncClient = old
     assert ok and reason == "", (ok, reason, text)
@@ -745,53 +770,56 @@ def check_crypto_falls_through_to_the_last_source():
         "market_cap": 1554681972439, "market_cap_rank": 1,
     }])})
     try:
-        ok, text, reason, meta = asyncio.run(crypto.read({"symbol": "bitcoin"}))
+        ok, text, reason, meta = unpack(asyncio.run(crypto.read({"symbol": "bitcoin"})))
     finally:
         crypto.httpx.AsyncClient = old
     assert ok, (reason, text)
     card = meta["card"]
     assert card["source"] == "CoinGecko" and card["name"] == "Bitcoin", card
-    assert card["market_cap"] and card["rank"] == 1, card
+    assert card["market_cap"], card
+    # The rank is the model's, written into the rendered text; the card draws
+    # the cap on its own.
+    assert "(rank 1)" in text, text
     # A cap past a trillion takes the T tier, so the figure is one group, not
     # six digits of billions.
     assert "1.55T" in text and "1,554.68B" not in text, text
 
 
 def check_a_trillion_is_stated_as_one_group():
-    from app.tools import crypto
+    from app.tools.marketdata import big
 
-    assert crypto._big(1_217_000_000_000_000) == "1,217.00T"
-    assert crypto._big(1_554_681_972_439) == "1.55T"
+    assert big(1_217_000_000_000_000) == "1,217.00T"
+    assert big(1_554_681_972_439) == "1.55T"
     # The tier below is untouched: a billion is still a billion.
-    assert crypto._big(28_112_962_441) == "28.11B"
-    assert crypto._big(78_000_000) == "78.00M"
-    assert crypto._big(None) == "?"
+    assert big(28_112_962_441) == "28.11B"
+    assert big(78_000_000) == "78.00M"
+    assert big(None) == "?"
     # Just under a tier rounds up at the two decimal places shown, which reads
     # as the next tier. Worth knowing, not worth a branch to hide.
-    assert crypto._big(999_999_999_999) == "1,000.00B"
+    assert big(999_999_999_999) == "1,000.00B"
 
 
 def check_market_indicators_on_numbers_that_can_be_checked():
-    from app.tools import market
+    from app.tools.marketdata import change, rsi, slope, sma
 
     # A flat series has no gains and no losses, which is the branch where a
     # naive RSI divides by zero.
     flat = [100.0] * 30
-    assert market._sma(flat, 20) == 100.0, market._sma(flat, 20)
-    assert market._rsi(flat) == 100.0, market._rsi(flat)
-    assert market._slope(flat, 10) == 0.0, market._slope(flat, 10)
+    assert sma(flat, 20) == 100.0, sma(flat, 20)
+    assert rsi(flat) == 100.0, rsi(flat)
+    assert slope(flat, 10) == 0.0, slope(flat, 10)
 
     # Not enough bars is None, not a number computed from whatever is there.
-    assert market._sma(flat[:10], 20) is None
-    assert market._rsi(flat[:10]) is None
-    assert market._slope(flat[:10], 10) is None
+    assert sma(flat[:10], 20) is None
+    assert rsi(flat[:10]) is None
+    assert slope(flat[:10], 10) is None
 
     # A straight climb of one a day: the last 14 moves are all gains.
     climb = [float(100 + i) for i in range(30)]
-    assert market._rsi(climb) == 100.0
+    assert rsi(climb) == 100.0
     # Averages of 110–119 and 120–129: 114.5 to 124.5, so 8.73% higher.
-    assert market._slope(climb, 10) == round((124.5 - 114.5) / 114.5 * 100, 2)
-    assert market._change(climb, 10) == round((129 - 119) / 119 * 100, 2)
+    assert slope(climb, 10) == round((124.5 - 114.5) / 114.5 * 100, 2)
+    assert change(climb, 10) == round((129 - 119) / 119 * 100, 2)
 
 
 def check_market_reads_a_trend_from_a_rise():
@@ -802,7 +830,7 @@ def check_market_reads_a_trend_from_a_rise():
         market.KLINE_URL: (200, _rising_klines(120)),
     })
     try:
-        ok, text, reason, meta = asyncio.run(market.read_trend({"symbol": "BTC"}))
+        ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "BTC"})))
     finally:
         crypto.httpx.AsyncClient = old
     assert ok and reason == "", (ok, reason, text)
@@ -824,7 +852,7 @@ def check_market_ships_the_candles_with_their_own_averages():
         market.KLINE_URL: (200, _rising_klines(60)),
     })
     try:
-        ok, text, reason, meta = asyncio.run(market.read_trend({"symbol": "BTC", "days": 60}))
+        ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "BTC", "days": 60})))
     finally:
         crypto.httpx.AsyncClient = old
     assert ok and reason == "", (ok, reason, text)
@@ -854,7 +882,7 @@ def check_market_rotates_to_coinbase_and_reports_short_history():
     })
     crypto.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(market.read_trend({"symbol": "BTC"}))
+        ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "BTC"})))
     finally:
         crypto.httpx.AsyncClient = old
     assert ok, (reason, text)
@@ -870,10 +898,10 @@ def check_market_rotates_to_coinbase_and_reports_short_history():
         market.CANDLE_URL.format(pair="BTC-USD"): (200, []),
     })
     try:
-        ok, text, reason, meta = asyncio.run(market.read_trend({"symbol": "BTC"}))
+        ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "BTC"})))
     finally:
         crypto.httpx.AsyncClient = old
-    assert not ok and meta == {}, (ok, meta)
+    assert not ok and not meta.get("card"), (ok, meta)
     assert "too few" in text, text
 
 
@@ -886,17 +914,17 @@ def check_market_says_when_no_candle_source_answers():
             market.KLINE_URL: (400, {}),
             market.CANDLE_URL.format(pair="ZZZZ-USD"): (404, {}),
         })
-        ok, text, reason, meta = asyncio.run(market.read_trend({"symbol": "ZZZZ"}))
+        ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "ZZZZ"})))
         assert not ok and "No candle source lists" in text, text
 
         crypto.httpx.AsyncClient = _crypto_client({
             market.KLINE_URL: (429, {}),
             market.CANDLE_URL.format(pair="BTC-USD"): (429, {}),
         })
-        ok, text, reason, meta = asyncio.run(market.read_trend({"symbol": "BTC"}))
+        ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "BTC"})))
         assert not ok and "rate-limiting" in text, text
 
-        ok, text, reason, meta = asyncio.run(market.read_trend({}))
+        ok, text, reason, meta = unpack(asyncio.run(market.read({})))
         assert not ok and text == "No coin given.", text
     finally:
         crypto.httpx.AsyncClient = old
@@ -908,8 +936,8 @@ def check_crypto_says_when_no_source_lists_the_coin():
     old = crypto.httpx.AsyncClient
     crypto.httpx.AsyncClient = _crypto_client({})
     try:
-        ok, text, reason, meta = asyncio.run(crypto.read({"symbol": "ZZZZ"}))
-        assert not ok and meta == {}, (ok, meta)
+        ok, text, reason, meta = unpack(asyncio.run(crypto.read({"symbol": "ZZZZ"})))
+        assert not ok and not meta.get("card"), (ok, meta)
         assert "ZZZZ" in text, text
         assert "rate-limiting" not in text, text
         # Every source refusing with a limit is a wait, not a bad ticker.
@@ -918,10 +946,10 @@ def check_crypto_says_when_no_source_lists_the_coin():
             crypto.COINBASE_URL.format(pair="BTC-USD"): (429, {}),
             crypto.GECKO_URL: (429, {}),
         })
-        ok, text, reason, meta = asyncio.run(crypto.read({"symbol": "BTC"}))
+        ok, text, reason, meta = unpack(asyncio.run(crypto.read({"symbol": "BTC"})))
         assert not ok and "rate-limiting" in text, text
         # No coin at all is refused before anything is asked.
-        ok, text, reason, meta = asyncio.run(crypto.read({}))
+        ok, text, reason, meta = unpack(asyncio.run(crypto.read({})))
         assert not ok and text == "No coin given.", text
     finally:
         crypto.httpx.AsyncClient = old
@@ -971,7 +999,7 @@ def check_wayback_finds_and_reads_a_snapshot():
     wayback.is_public_url = lambda u: True
     wayback.fetch_page = fake_fetch_page
     try:
-        ok, text, reason, meta = asyncio.run(wayback.read({"url": "example.com/gone"}))
+        ok, text, reason, meta = unpack(asyncio.run(wayback.read({"url": "example.com/gone"})))
     finally:
         wayback.httpx.AsyncClient = old_client
         wayback.is_public_url = old_public
@@ -989,7 +1017,7 @@ def check_wayback_finds_and_reads_a_snapshot():
     assert card["url"] == "https://example.com/gone", card
     assert card["read"] == sources[0]["source"], card
     assert card["older"] == [
-        {"when": "2018-01-01", "url": "https://example.com/gone", "type": "text/html",
+        {"when": "2018-01-01", "url": "https://example.com/gone",
          "read": "https://web.archive.org/web/20180101120000id_/https://example.com/gone"}
     ], card
 
@@ -1034,13 +1062,13 @@ def check_wayback_says_when_nothing_is_archived():
     wayback.httpx.AsyncClient = Client
     wayback.is_public_url = lambda u: True
     try:
-        ok, text, reason, meta = asyncio.run(wayback.read({"url": "https://example.com/never"}))
-        assert not ok and "no snapshot" in text and meta == {}, text
+        ok, text, reason, meta = unpack(asyncio.run(wayback.read({"url": "https://example.com/never"})))
+        assert not ok and "no snapshot" in text and not meta.get("card"), text
         assert reason, reason
-        ok, text, reason, meta = asyncio.run(wayback.read({}))
+        ok, text, reason, meta = unpack(asyncio.run(wayback.read({})))
         assert not ok and text == "No URL given.", text
-        ok, text, reason, meta = asyncio.run(wayback.read({"url": "http://127.0.0.1/x"}))
-        assert not ok and meta == {}, text
+        ok, text, reason, meta = unpack(asyncio.run(wayback.read({"url": "http://127.0.0.1/x"})))
+        assert not ok and not meta.get("card"), text
     finally:
         wayback.httpx.AsyncClient = old_client
         wayback.is_public_url = old_public
@@ -1049,7 +1077,7 @@ def check_wayback_says_when_nothing_is_archived():
 def check_wayback_refuses_a_private_address():
     from app.tools import wayback
 
-    ok, text, reason, meta = asyncio.run(wayback.read({"url": "http://169.254.169.254/latest/meta-data/"}))
+    ok, text, reason, meta = unpack(asyncio.run(wayback.read({"url": "http://169.254.169.254/latest/meta-data/"})))
     assert not ok and reason == "not a public http(s) address", reason
     assert "169.254" in text, text
 
@@ -1058,13 +1086,13 @@ def check_plan_records_and_normalizes():
     from app.tools import plan
     from app.tools.registry import ToolContext
 
-    ctx = ToolContext(user_id=1)
-    ok, text, reason, meta = plan.read(
+    ctx = ToolContext()
+    ok, text, reason, meta = unpack(plan.read(
         {"steps": [{"step": "Read the docs", "status": "done"},
                    {"step": "Draft the answer", "status": "Doing"},
                    {"step": "Answer"}]},
         ctx,
-    )
+    ))
     assert ok and not reason, reason
     # An unknown or missing status is a step nobody placed, not a refusal.
     assert [s["status"] for s in ctx.plan] == ["done", "doing", "todo"], ctx.plan
@@ -1076,11 +1104,11 @@ def check_plan_refuses_a_call_with_nothing_in_it():
     from app.tools import plan
     from app.tools.registry import ToolContext
 
-    ctx = ToolContext(user_id=1)
-    ok, text, reason, meta = plan.read({"steps": [{"step": "  "}, ""]}, ctx)
+    ctx = ToolContext()
+    ok, text, reason, meta = unpack(plan.read({"steps": [{"step": "  "}, ""]}, ctx))
     assert not ok and reason == "every step was empty", reason
     # A call that said nothing must not wipe a plan the run already wrote down.
-    ok, _, _, _ = plan.read({"steps": [{"step": "First", "status": "todo"}]}, ctx)
+    ok, _, _, _ = unpack(plan.read({"steps": [{"step": "First", "status": "todo"}]}, ctx))
     assert ok
     plan.read({"steps": []}, ctx)
     assert [s["step"] for s in ctx.plan] == ["First"], ctx.plan
@@ -1090,31 +1118,31 @@ def check_plan_caps_the_list():
     from app.tools import plan
     from app.tools.registry import ToolContext
 
-    ctx = ToolContext(user_id=1)
-    ok, text, _, _ = plan.read(
+    ctx = ToolContext()
+    ok, text, _, _ = unpack(plan.read(
         {"steps": [{"step": f"step {i}", "status": "todo"} for i in range(30)]}, ctx
-    )
+    ))
     assert ok and len(ctx.plan) == plan.MAX_STEPS, len(ctx.plan)
     assert f"first {plan.MAX_STEPS}" in text, text
 
 
 def check_every_carded_tool_reaches_the_browser():
-    """The carded list lives in four places, and a tool missing from one of them
-    draws no card live, or none on a reload. This is the check that keeps them
-    together."""
+    """The carded tools and the browser's builders have to agree.
+
+    A tool that declares `carded` is one whose result becomes a card frame at
+    all; the browser draws it with `ErisToolCall[tool]`, live and on a reload.
+    A tool in one and not the other either draws nothing or throws.
+    """
     from pathlib import Path
-    from app.sse import _CARDED
+    from app.sse import carded
 
     root = Path(__file__).resolve().parents[1]
-    api = (root / "app" / "api.py").read_text(encoding="utf-8")
-    app_js = (root / "static" / "app.js").read_text(encoding="utf-8")
     toolcall = (root / "static" / "toolcall.js").read_text(encoding="utf-8")
-    for name in _CARDED:
-        # Two tuples in api.py, the live frame and the failed one.
-        assert api.count(f'"{name}"') >= 2, f"{name} is missing from an api.py tuple"
-        assert f'"{name}"' in app_js, f"{name} is missing from a static/app.js branch"
-        # The replay does ErisToolCall[tool], so the builder must be exported.
-        assert name in toolcall, f"static/toolcall.js has no {name} builder"
+    block = toolcall.split("const cards = {", 1)[1].split("\n  };", 1)[0]
+    for name in carded():
+        # A shorthand entry is `weather,`; a renamed one is `crypto_trend: ...`.
+        assert f"\n    {name}," in block or f"\n    {name}:" in block, (
+            f"static/toolcall.js has no {name} builder")
 
 
 def check_registry_chat_tools():
@@ -1127,6 +1155,8 @@ def check_registry_chat_tools():
 
 def check_native_stream():
     """Ollama /api/chat streams JSON lines with a message object per chunk."""
+    from app.config import settings
+    from app.models import providers
     lines = [
         json.dumps({"message": {"role": "assistant", "thinking": "hmm"}}),
         json.dumps({"message": {"role": "assistant", "content": "hal"}}),
@@ -1167,18 +1197,19 @@ def check_native_stream():
             assert kw["json"]["messages"] == [{"role": "user", "content": "hi"}]
             return FakeStream()
 
-    prev_client, prev_base = api.httpx.AsyncClient, api.settings.model_base_url
-    api.httpx.AsyncClient = FakeClient
-    api.settings.model_base_url = "http://fake/v1"
+    prev_client, prev_base = providers.httpx.AsyncClient, settings.model_base_url
+    providers.httpx.AsyncClient = FakeClient
+    settings.model_base_url = "http://fake/v1"
 
     async def run():
-        return [item async for item in api.stream_completion([{"role": "user", "content": "hi"}])]
+        return [item async for item in providers.stream_completion(
+            [{"role": "user", "content": "hi"}])]
 
     try:
         out = asyncio.run(run())
     finally:
-        api.httpx.AsyncClient = prev_client
-        api.settings.model_base_url = prev_base
+        providers.httpx.AsyncClient = prev_client
+        settings.model_base_url = prev_base
     assert out[:3] == [("thinking", "hmm"), ("delta", "hal"), ("delta", "o")], out
     assert out[3] == ("tool_calls", [{"id": "c1", "function": {"name": "web_search", "arguments": {"query": "eris"}}}]), out
 
@@ -1207,8 +1238,8 @@ def check_chats_sqlite():
 
     turns = chats.turns(1, "c1")
     assert len(turns) == 2 and turns[0]["role"] == "user"
-    assert len(turns[1]["thinking"]) == 8000
-    assert len(turns[1]["sources"]) == 8
+    assert len(turns[1]["thinking"]) == chats.MAX_THINKING
+    assert len(turns[1]["sources"]) == chats.MAX_SOURCES
     assert turns[1]["web"][0]["query"] == "q1"
 
     chats.save_turn(1, "c1", "assistant", "hal", thinking=["satu", "dua"])
@@ -1224,7 +1255,7 @@ def check_chats_sqlite():
     assert [c["id"] for c in ordered] == ["c3", "c1"], ordered
 
     chats.delete(1, "c1")
-    assert chats.list_chats(1) == [{"id": "c3", "title": "New chat", "pinned": True}]
+    assert chats.list_chats(1) == [{"id": "c3", "title": chats.UNTITLED, "pinned": True}]
 
     chats._db.close()
     chats._db = None
@@ -1303,12 +1334,13 @@ def check_images_roundtrip():
     assert chats.pack_images([jpeg, b"not an image"]) is not None
 
     # The cap is on the bytes, and it stops rather than overruns.
+    original = chats.MAX_IMAGE_BYTES
     chats.MAX_IMAGE_BYTES = len(jpeg) + 10
     try:
         blob = chats.pack_images([jpeg, jpeg])
         assert chats.unpack_images(blob) == [url(jpeg, "image/jpeg")], blob
     finally:
-        chats.MAX_IMAGE_BYTES = 4_000_000
+        chats.MAX_IMAGE_BYTES = original
 
     # A turn with no images carries no column and no key.
     chats.save_turn(1, "c1", "user", "text only")
@@ -1345,7 +1377,7 @@ def check_files_roundtrip():
     assert api._with_files("", None) == ""
 
     # A file alone still carries a turn to the model, and names the chat.
-    cleaned = api._clean_files([{"name": "x.md", "text": "a" * 90_000}])
+    cleaned = api._clean_files([api.AttachedFile(name="x.md", text="a" * 90_000)])
     assert cleaned[0]["name"] == "x.md"
     assert cleaned[0]["text"].endswith("[... truncated]")
     assert len(cleaned[0]["text"]) <= api.MAX_FILE_CHARS + len("\n[... truncated]")
@@ -1459,11 +1491,13 @@ def check_rank_keeps_input():
 
 
 def check_to_native():
+    from app.models.providers import to_native
+
     mm = [{"role": "user", "content": [{"type": "text", "text": "hello "}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}]
-    out = api.to_native(mm)
+    out = to_native(mm)
     assert out == [{"role": "user", "content": "hello ", "images": ["AAA"]}], out
     plain = [{"role": "assistant", "content": "x"}]
-    assert api.to_native(plain) == plain
+    assert to_native(plain) == plain
 
 
 def check_favicons_refuse_a_bad_domain():
@@ -1851,8 +1885,6 @@ def check_the_opening_words_cut_at_a_word():
     # Cut on the boundary instead of mid-word, so the sidebar does not read as
     # broken text.
     long = "b" * 100
-    # Cut on the boundary instead of mid-word, so the sidebar does not read as
-    # broken text.
     assert chats.short_title("b" * 30 + " " + long) == "b" * 30
     assert chats.short_title("halo dunia " + long) == "halo dunia " + "b" * 29
     # A boundary near the start would throw away most of the title, so a word
@@ -1955,7 +1987,7 @@ def check_equity_reads_a_quote_with_the_cookie_it_had_to_fetch():
     }]}})})
     equity.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(equity.read({"symbol": "BBCA.JK"}))
+        ok, text, reason, meta = unpack(asyncio.run(equity.read({"symbol": "BBCA.JK"})))
     finally:
         equity.httpx.AsyncClient = old_client
         equity._cache.update(old_cache)
@@ -1990,7 +2022,7 @@ def check_equity_resolves_a_name_through_the_search():
     })
     equity.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(equity.read({"symbol": "bank mandiri"}))
+        ok, text, reason, meta = unpack(asyncio.run(equity.read({"symbol": "bank mandiri"})))
     finally:
         equity.httpx.AsyncClient = old_client
         equity._cache.update(old_cache)
@@ -2013,7 +2045,7 @@ def check_equity_says_which_symbol_it_could_not_find():
     })
     equity.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(equity.read({"symbol": "AAPL,ZZZZ"}))
+        ok, text, reason, meta = unpack(asyncio.run(equity.read({"symbol": "AAPL,ZZZZ"})))
     finally:
         equity.httpx.AsyncClient = old_client
         equity._cache.update(old_cache)
@@ -2028,7 +2060,7 @@ def check_equity_quote_tool_states_its_own_limits():
 
     # A market with no screen, and a sort Yahoo does not take, are both answered
     # before any request goes out.
-    ok, text, reason, meta = asyncio.run(equity.read_screen({"region": "atlantis"}))
+    ok, text, reason, meta = unpack(asyncio.run(equity.read_screen({"region": "atlantis"})))
     assert not ok and reason == "no screen for that market", (reason, text)
     assert equity._region("Indonesia") == "id"
     assert equity._region("ID") == "id"
@@ -2036,11 +2068,11 @@ def check_equity_quote_tool_states_its_own_limits():
     # Nothing was given, so the default market applies rather than an error.
     assert equity._region("") == "id"
 
-    ok, text, reason, meta = asyncio.run(
-        equity.read_screen({"region": "id", "sort": "cheapest"}))
+    ok, text, reason, meta = unpack(asyncio.run(
+        equity.read_screen({"region": "id", "sort": "cheapest"})))
     assert not ok and reason == "unsupported sort", (reason, text)
 
-    ok, text, reason, meta = asyncio.run(equity.read({"symbol": "  "}))
+    ok, text, reason, meta = unpack(asyncio.run(equity.read({"symbol": "  "})))
     assert not ok and reason == "no symbol was given", (reason, text)
 
 def check_equity_trend_drops_a_bar_that_never_traded():
@@ -2055,8 +2087,8 @@ def check_equity_trend_drops_a_bar_that_never_traded():
     Client = _equity_client({url: (200, _yahoo_chart(60, gap=59))})
     equity.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(
-            equity.read_trend({"symbol": "BBCA.JK", "days": 180}))
+        ok, text, reason, meta = unpack(asyncio.run(
+            equity.read_trend({"symbol": "BBCA.JK", "days": 180})))
     finally:
         equity.httpx.AsyncClient = old_client
         equity._cache.update(old_cache)
@@ -2090,7 +2122,7 @@ def check_equity_trend_rebuilds_a_session_the_crumb_aged_out_of():
     ]})
     equity.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(equity.read({"symbol": "AAPL"}))
+        ok, text, reason, meta = unpack(asyncio.run(equity.read({"symbol": "AAPL"})))
     finally:
         equity.httpx.AsyncClient = old_client
         equity._cache.update(old_cache)
@@ -2119,8 +2151,8 @@ def check_equity_screen_ranks_one_market():
     }]}})})
     equity.httpx.AsyncClient = Client
     try:
-        ok, text, reason, meta = asyncio.run(
-            equity.read_screen({"region": "indonesia", "sort": "gainers", "limit": 25}))
+        ok, text, reason, meta = unpack(asyncio.run(
+            equity.read_screen({"region": "indonesia", "sort": "gainers", "limit": 25})))
     finally:
         equity.httpx.AsyncClient = old_client
         equity._cache.update(old_cache)

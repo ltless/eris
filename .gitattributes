@@ -1,0 +1,7 @@
+# Shell scripts must stay LF: a CR before the newline turns every line into a
+# command name with a stray \r, and any bash without Git Bash's CR stripping
+# fails on line 1.
+*.sh text eol=lf
+
+# PowerShell expects CRLF on Windows.
+*.ps1 text eol=crlf

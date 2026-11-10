@@ -13,7 +13,6 @@ import os
 import sys
 import tempfile
 import threading
-import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, ".")

@@ -8,7 +8,7 @@ window.ErisFileView = (() => {
   let closeBtn = null;
   let returnTo = null;
 
-  const X_ICON = '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+  const X_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
 
   function build() {
     root = document.createElement("div");
@@ -92,5 +92,5 @@ window.ErisFileView = (() => {
     returnTo = null;
   }
 
-  return { open, close, isOpen: () => !!root && !root.hidden };
+  return { open, close };
 })();

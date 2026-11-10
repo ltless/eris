@@ -105,19 +105,19 @@ function paintProfile(u) {
 /* Theme. */
 
 function bindTheme() {
-  const mode = window.ErisTheme ? window.ErisTheme.mode : "system";
-  const input = document.querySelector(`input[name="theme"][value="${mode}"]`);
+  // theme.js loads first on this page and is the one place the mode is kept.
+  const input = document.querySelector(
+    `input[name="theme"][value="${window.ErisTheme.mode}"]`
+  );
   if (input) input.checked = true;
   for (const r of document.querySelectorAll('input[name="theme"]')) {
     r.addEventListener("change", () => {
-      if (r.checked && window.ErisTheme) window.ErisTheme.set(r.value);
+      if (r.checked) window.ErisTheme.set(r.value);
     });
   }
 }
 
 /* API tokens. */
-
-const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 function when(seconds) {
   if (!seconds) return "never used";
@@ -129,7 +129,6 @@ function when(seconds) {
 function tokenRow(t) {
   const li = document.createElement("li");
   li.className = "lib-row";
-  li.dataset.id = t.id;
 
   const who = document.createElement("div");
   who.className = "lib-id";
@@ -160,7 +159,6 @@ function tokenRow(t) {
 function paintTokens(items) {
   els.tokenList.replaceChildren(...items.map(tokenRow));
   els.tokenEmpty.hidden = items.length > 0;
-  els.tokenEmpty.textContent = "No tokens yet.";
 }
 
 async function loadTokens() {
@@ -333,6 +331,9 @@ async function init() {
   els.selModel.innerHTML = "";
   const items = (j && Array.isArray(j.items)) ? j.items : [];
   const labels = (j && j.labels) || {};
+  // The server owns the ceiling and states it here, so the field and the
+  // route that clamps the value cannot disagree about it.
+  if (j && j.ctx_max) els.inpCtx.max = j.ctx_max;
   for (const id of items) {
     const opt = document.createElement("option");
     // The value is the id, because that is what the endpoint takes back and
@@ -396,4 +397,4 @@ const dialog = createDialog({
 bind();
 bindTheme();
 
-if (location.hash === "#settings") dialog.open();
+if (location.hash === "#" + els.root.dataset.hash) dialog.open();

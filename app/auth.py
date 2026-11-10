@@ -13,14 +13,32 @@ import time
 
 from .store import open_db, path_from_env
 
-SESSION_TTL = 7 * 24 * 3600  # 7 days
+SESSION_TTL = 7 * 24 * 3600
+
+# The cookie the session token travels in. The browser sends it under this name
+# and the routes set and clear it under the same one, so it is stated here
+# rather than pinned by a handler's parameter name.
+SESSION_COOKIE = "session"
+
+# The cost of one password hash. Reading it back has to use the same number, or
+# every stored password stops verifying, so both callers read it here.
+PW_ITERATIONS = 100_000
+
+# The shortest password this app will store. Stated once so the rule the
+# register route enforces and the one the change route enforces cannot drift.
+MIN_PASSWORD = 6
+
+# The columns added to `users` after the table was first created. The table's
+# own declaration and the `ALTER TABLE` sweep both read this one list, so a new
+# one cannot reach a fresh database and miss an existing one.
+LATE_COLUMNS = ("avatar", "cover", "prefs")
+_LATE_SQL = ", ".join(f"{name} TEXT" for name in LATE_COLUMNS)
 
 SCHEMA = (
     "CREATE TABLE users("
     "id INTEGER PRIMARY KEY, name TEXT NOT NULL, "
     "email TEXT UNIQUE NOT NULL COLLATE NOCASE, "
-    "pw TEXT NOT NULL, created INTEGER NOT NULL, "
-    "avatar TEXT, cover TEXT, prefs TEXT);"
+    f"pw TEXT NOT NULL, created INTEGER NOT NULL, {_LATE_SQL});"
     "CREATE TABLE sessions("
     "token TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
     "expires INTEGER NOT NULL);"
@@ -35,7 +53,7 @@ def db_path():
 
 def _migrate(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
-    for column in ("avatar", "cover", "prefs"):
+    for column in LATE_COLUMNS:
         if column not in cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
 
@@ -48,7 +66,7 @@ def db():
 
 def hash_pw(pw):
     salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 100_000).hex()
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), PW_ITERATIONS).hex()
     return f"{salt}${h}"
 
 
@@ -57,14 +75,14 @@ def check_pw(pw, stored):
         salt, h = stored.split("$")
     except ValueError:
         return False
-    cand = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), 100_000).hex()
+    cand = hashlib.pbkdf2_hmac("sha256", pw.encode(), bytes.fromhex(salt), PW_ITERATIONS).hex()
     return hmac.compare_digest(cand, h)
 
 
 def create_user(name, email, pw):
     email = email.strip().lower()
-    if not name.strip() or "@" not in email or len(pw) < 6:
-        return None, "name/email/password invalid (min 6 chars)"
+    if not name.strip() or "@" not in email or len(pw) < MIN_PASSWORD:
+        return None, f"name/email/password invalid (min {MIN_PASSWORD} chars)"
     try:
         cur = db().execute(
             "INSERT INTO users(name,email,pw,created) VALUES(?,?,?,?)",
@@ -91,6 +109,12 @@ def new_session(user_id):
     )
     db().commit()
     return token
+
+
+def user_row(user_id):
+    """One user's own row. The whole row, rather than a profile, because a
+    caller that has just changed a column needs to read the rest back."""
+    return db().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
 
 
 def profile(row):
@@ -124,26 +148,38 @@ def set_name(user_id, name):
     db().commit()
 
 
+# Where each picture of an account is kept. `avatar` and `cover` are columns on
+# the user row; the model picture belongs next to the model choice and the
+# prompt, so it is a key in the prefs blob. The column name cannot be bound as a
+# parameter, which is the other reason this mapping exists: it pins the name to
+# a literal rather than trusting the caller.
+MEDIA_SLOTS = {"avatar": "avatar", "cover": "cover", "model": "prefs"}
+MODEL_AVATAR = "model_avatar"
+
+
 def set_media(user_id, kind, url):
-    # The column name cannot be bound as a parameter, so it is pinned to a
-    # literal set here rather than trusted from the caller.
-    if kind == "model":
-        # The model picture belongs to the account's preferences, next to the
-        # model choice and the prompt, so it lives in the prefs blob. A None url
-        # clears the key instead of storing a null.
+    slot = MEDIA_SLOTS.get(kind)
+    if slot is None:
+        raise ValueError(f"unknown media kind: {kind}")
+    if slot == "prefs":
+        # A None url clears the key instead of storing a null.
         def change(prefs):
             if url:
-                prefs["model_avatar"] = url
+                prefs[MODEL_AVATAR] = url
             else:
-                prefs.pop("model_avatar", None)
+                prefs.pop(MODEL_AVATAR, None)
 
         update_prefs(user_id, change)
         return
-    column = {"avatar": "avatar", "cover": "cover"}.get(kind)
-    if not column:
-        raise ValueError(f"unknown media kind: {kind}")
-    db().execute(f"UPDATE users SET {column}=? WHERE id=?", (url, user_id))
+    db().execute(f"UPDATE users SET {slot}=? WHERE id=?", (url, user_id))
     db().commit()
+
+
+def media_url(user, kind):
+    """Where this account's picture of that kind is, or `None`."""
+    if MEDIA_SLOTS.get(kind) == "prefs":
+        return (user.get("prefs") or {}).get(MODEL_AVATAR)
+    return user.get(kind)
 
 
 def update_prefs(user_id, change):
@@ -166,14 +202,9 @@ def update_prefs(user_id, change):
     return prefs
 
 
-def set_prefs(user_id, prefs):
-    db().execute("UPDATE users SET prefs=? WHERE id=?", (json.dumps(prefs), user_id))
-    db().commit()
-
-
 def change_password(user_id, old_pw, new_pw):
-    if len(new_pw) < 6:
-        return None, "password too short (min 6 chars)"
+    if len(new_pw) < MIN_PASSWORD:
+        return None, f"password too short (min {MIN_PASSWORD} chars)"
     row = db().execute("SELECT pw FROM users WHERE id=?", (user_id,)).fetchone()
     if not row or not check_pw(old_pw, row["pw"]):
         return None, "old password wrong"

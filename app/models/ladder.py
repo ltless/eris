@@ -10,9 +10,8 @@ import asyncio
 
 import httpx
 
-from ..config import settings
 from .client import client as http
-from .endpoint import base_url, chat_url
+from .endpoint import base_url, chat_url, model_for
 
 # Every value the endpoint's `think` field accepts as a level, in the order a
 # person would read them. A model's own template names the ones it takes and
@@ -38,6 +37,20 @@ _LADDERS: dict = {}
 # background and the effort control asks for the same answer moments later, so
 # the second caller waits on the first instead of probing beside it.
 _PENDING: dict = {}
+
+# Model ids already warmed, and the tasks doing it. A kept reference is what
+# stops a probe being collected mid-flight.
+_WARMED: set = set()
+_RUNNING: set = set()
+
+
+def _done(task):
+    _RUNNING.discard(task)
+    # A probe that raised must not surface as an unretrieved task exception;
+    # it changes nothing about the ladder's answer.
+    if not task.cancelled():
+        task.exception()
+
 
 # A refused value is refused before the model is touched, so the sentinel's
 # answer comes back almost at once and is worth waiting only briefly for.
@@ -125,7 +138,7 @@ async def think_ladder(model=None):
     out counts as unasked, not refused: a cold model loads slower than it says
     no, and half a ladder would hide the rungs it has.
     """
-    name = model or settings.model_name
+    name = model_for(model)
     if name in _LADDERS:
         return _LADDERS[name]
     # A probe belongs to the loop that started it, so a caller on another loop
@@ -183,13 +196,42 @@ async def _ask_ladder(name):
     return ladder
 
 
+def warm(model=None):
+    """Probe this model's ladder in the background, once per process.
+
+    `/api/models` starts this after answering, and the effort control asks for
+    the same ladder moments later. A probe that answered nothing is not cached,
+    so the id is remembered here: a poll every few seconds must not become a
+    probe every few seconds. The task is kept referenced until it finishes, and
+    an exception is collected there since it changes nothing about the answer.
+    """
+    name = model_for(model)
+    if name in _WARMED:
+        return
+    _WARMED.add(name)
+    task = asyncio.ensure_future(think_ladder(name))
+    _RUNNING.add(task)
+    task.add_done_callback(_done)
+
+
 def cached_ladder(model=None):
     """The ladder for a model if it has already been asked for, else `None`.
 
     A chat must not wait on a probe: on a model that is not loaded it costs the
     load too. This call site leaves the asking to the panel that shows it.
     """
-    return _LADDERS.get(model or settings.model_name)
+    return _LADDERS.get(model_for(model))
+
+
+def rungs_of(ladder):
+    """A ladder as the steps to offer, with the unknown case resolved.
+
+    `None` means the model was never asked, and the plain pair is what a request
+    carried before any of this existed; an empty ladder is an answer — this model
+    cannot think — and stays empty. Every reader of a ladder goes through here,
+    so that difference is stated once.
+    """
+    return FALLBACK_LADDER if ladder is None else ladder
 
 
 def rung_index(stored, ladder):
@@ -198,7 +240,7 @@ def rung_index(stored, ladder):
     The index is clamped, not trusted: a step this model lacks lands on the
     nearest rung it has. Nothing stored means the model's own default.
     """
-    rungs = FALLBACK_LADDER if ladder is None else ladder
+    rungs = rungs_of(ladder)
     if not rungs:
         return 0
     if stored is None:
@@ -212,8 +254,8 @@ def think_value(effort, ladder):
     A model whose ladder is empty is asked for no thinking rather than for a
     value it would refuse.
     """
-    rungs = FALLBACK_LADDER if ladder is None else ladder
-    return rungs[rung_index(effort, ladder)] if rungs else False
+    rungs = rungs_of(ladder)
+    return rungs[rung_index(effort, rungs)] if rungs else False
 
 
 def effort_label(value):

@@ -8,6 +8,11 @@ import time
 from .store import open_db, path_from_env
 
 MAX_THINKING = 8000
+# How many source rows a stored turn keeps. A run's own budget bounds what it
+# can find, but a turn that searched every round can still collect more rows
+# than a replay needs, and the citations of the dropped ones stay in the answer
+# text as numbers the reload marks rather than links. The live list has no cap:
+# a reader watching the run sees every source it found.
 MAX_SOURCES = 8
 MAX_IMAGE_BYTES = 4_000_000
 
@@ -15,6 +20,16 @@ MAX_IMAGE_BYTES = 4_000_000
 # as a readable placeholder, so it is a value rather than NULL, and every check
 # for "still unnamed" is against this string.
 UNTITLED = "New chat"
+
+# How much of a first message becomes a title. `name_from_model` compares the
+# stored title against `short_title(source)` to tell the model's name from the
+# one the first message wrote, so both readings have to use the same limit as
+# the default here.
+TITLE_CHARS = 40
+# A name someone chose, or the model wrote, may run longer than the first
+# message's own title. The two share one bound so a rename cannot outrun a
+# listing by a different number.
+NAME_CHARS = 80
 
 # The three types a stored image may be, by the bytes it starts with. The type
 # is read off the bytes rather than taken from the data URL, so what comes back
@@ -85,15 +100,47 @@ def decode_data_url(url):
     except (binascii.Error, ValueError):
         return None
 
+def _thinking_from_stored(raw):
+    """A stored thinking entry as the browser reads it. Model text can start
+    with "[" and still not be our JSON list, so the parse is tried, not taken."""
+    if not raw.startswith("["):
+        return raw
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+# Every column a turn carries beyond the three that are always there, in the
+# order they are written: the SQL type it is stored as, and how a stored value
+# becomes what a replay draws (`None` for text that is already itself). The
+# table, the migration, the insert and the replay all read this one list, so a
+# field added here is stored and read back without a second edit.
+COLUMNS = (
+    ("quote", "TEXT", None),
+    ("thinking", "TEXT", _thinking_from_stored),
+    ("sources", "TEXT", json.loads),
+    ("web", "TEXT", json.loads),
+    ("fetches", "TEXT", json.loads),
+    ("answers", "TEXT", json.loads),
+    ("images", "BLOB", unpack_images),
+    ("files", "TEXT", json.loads),
+    ("cards", "TEXT", json.loads),
+)
+
+_COLUMN_SQL = ", ".join(f"{name} {kind}" for name, kind, _ in COLUMNS)
+_COLUMN_NAMES = ", ".join(name for name, _, _ in COLUMNS)
+_COLUMN_MARKS = ", ".join("?" for _ in COLUMNS)
+_COLUMN_SET = {name for name, _, _ in COLUMNS}
+
 SCHEMA = (
     "CREATE TABLE chats("
     "id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
     f"title TEXT NOT NULL DEFAULT '{UNTITLED}', "
     "pinned INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);"
     "CREATE TABLE turns("
-    "chat_id TEXT NOT NULL, role TEXT NOT NULL, "
-    "content TEXT NOT NULL, quote TEXT, thinking TEXT, sources TEXT, "
-    "web TEXT, fetches TEXT, answers TEXT, images BLOB, files TEXT, cards TEXT, ts INTEGER NOT NULL);"
+    "chat_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, "
+    f"{_COLUMN_SQL}, ts INTEGER NOT NULL);"
     "CREATE INDEX turns_chat ON turns(chat_id);"
 )
 
@@ -106,20 +153,9 @@ def db_path():
 
 def _migrate(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(turns)")}
-    if "quote" not in cols:
-        conn.execute("ALTER TABLE turns ADD COLUMN quote TEXT")
-    if "web" not in cols:
-        conn.execute("ALTER TABLE turns ADD COLUMN web TEXT")
-    if "fetches" not in cols:
-        conn.execute("ALTER TABLE turns ADD COLUMN fetches TEXT")
-    if "answers" not in cols:
-        conn.execute("ALTER TABLE turns ADD COLUMN answers TEXT")
-    if "images" not in cols:
-        conn.execute("ALTER TABLE turns ADD COLUMN images BLOB")
-    if "files" not in cols:
-        conn.execute("ALTER TABLE turns ADD COLUMN files TEXT")
-    if "cards" not in cols:
-        conn.execute("ALTER TABLE turns ADD COLUMN cards TEXT")
+    for name, kind, _ in COLUMNS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE turns ADD COLUMN {name} {kind}")
 
 
 def db():
@@ -128,8 +164,13 @@ def db():
     return _db
 
 
-def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=None, web=None,
-              fetches=None, answers=None, images=None, files=None, cards=None):
+def save_turn(user_id, chat_id, role, text, **extra):
+    """Store one turn. `extra` holds any of `COLUMNS` by name; a field the table
+    does not have is refused rather than silently dropped."""
+    unknown = set(extra) - _COLUMN_SET
+    if unknown:
+        raise TypeError(f"save_turn got an unknown field: {', '.join(sorted(unknown))}")
+    quote, images, files = extra.get("quote"), extra.get("images"), extra.get("files")
     # A turn can be carried by any one of four things: the words typed under
     # it, the selection it answers, an attached image, or an attached file. Any
     # one alone is reason enough to keep the turn.
@@ -141,7 +182,7 @@ def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=N
     if owner and owner["user_id"] != user_id:
         return
     now = int(time.time() * 1000)
-    meta = json.dumps(sources[:MAX_SOURCES]) if sources else None
+    thinking = extra.get("thinking")
     if isinstance(thinking, list):
         # Truncating the serialized JSON would leave it unparseable, so trim by
         # whole rounds and capped text until the encoding itself fits.
@@ -158,17 +199,23 @@ def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=N
         thinking = json.dumps(kept) if kept else None
     elif thinking:
         thinking = thinking[:MAX_THINKING]
-    webj = json.dumps(web) if web else None
-    fetchj = json.dumps(fetches) if fetches else None
-    ansj = json.dumps(answers) if answers else None
-    imgblob = pack_images(images) if images else None
-    filej = json.dumps(files) if files else None
-    cardj = json.dumps(cards) if cards else None
+    sources = extra.get("sources")
+    stored = {
+        "quote": quote or None,
+        "thinking": thinking or None,
+        "sources": json.dumps(sources[:MAX_SOURCES]) if sources else None,
+        "images": pack_images(images) if images else None,
+    }
+    # The rest of `COLUMNS`, read from the same declaration the schema and the
+    # reader are built from: every column not singled out above is JSON.
+    for name, _, _ in COLUMNS:
+        if name not in stored:
+            value = extra.get(name)
+            stored[name] = json.dumps(value) if value else None
     db().execute(
-        "INSERT INTO turns(chat_id,role,content,quote,thinking,sources,web,fetches,answers,"
-        "images,files,cards,ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (chat_id, role, text, quote or None, thinking or None, meta, webj, fetchj, ansj,
-         imgblob, filej, cardj, now),
+        f"INSERT INTO turns(chat_id,role,content,{_COLUMN_NAMES},ts) "
+        f"VALUES(?,?,?,{_COLUMN_MARKS},?)",
+        (chat_id, role, text, *(stored[name] for name, _, _ in COLUMNS), now),
     )
     db().execute(
         "INSERT INTO chats(id,user_id,ts) VALUES(?,?,?) "
@@ -178,15 +225,21 @@ def save_turn(user_id, chat_id, role, text, quote=None, thinking=None, sources=N
     db().commit()
 
 
+def _placeholder(title):
+    """Whether a stored title is still the placeholder. One predicate for the
+    question, so a chat that may be named and a chat that is named from its
+    first message cannot disagree about a title with whitespace around it."""
+    return (title or "").strip() == UNTITLED
+
 def untitled(chat_id, user_id=None):
     """True while a chat has never been named: no row yet, or still the
     placeholder the first user message overwrites. A chat the user emptied is
     back to unnamed, so a later message may name it again."""
     row = _title_row(chat_id, user_id)
-    return row is None or row["title"].strip() == UNTITLED
+    return row is None or _placeholder(row["title"])
 
 
-def short_title(text, limit=40):
+def short_title(text, limit=TITLE_CHARS):
     """`text` as a one-line title of at most `limit` characters.
 
     Cut on a word boundary where there is one, because a title that ends
@@ -203,7 +256,7 @@ def short_title(text, limit=40):
 def touch_title(chat_id, text, user_id=None):
     """Name a chat from its first user message, if nothing has named it yet."""
     row = _title_row(chat_id, user_id)
-    if row and row["title"] == UNTITLED:
+    if row and _placeholder(row["title"]):
         title = short_title(text) or UNTITLED
         if user_id is None:
             db().execute("UPDATE chats SET title=? WHERE id=?", (title, chat_id))
@@ -238,8 +291,7 @@ def turns(user_id, chat_id, limit=100):
     # Newest window, then flipped back to reading order: a long chat has to
     # open on its latest exchange, not its first one.
     rows = db().execute(
-        "SELECT role,content,quote,thinking,sources,web,fetches,answers,images,files,cards "
-        "FROM turns "
+        f"SELECT role,content,{_COLUMN_NAMES} FROM turns "
         "WHERE chat_id=(SELECT id FROM chats WHERE id=? AND user_id=?) "
         "ORDER BY rowid DESC LIMIT ?",
         (chat_id, user_id, limit),
@@ -247,32 +299,9 @@ def turns(user_id, chat_id, limit=100):
     out = []
     for r in rows:
         t = {"role": r["role"], "content": r["content"]}
-        if r["quote"]:
-            t["quote"] = r["quote"]
-        if r["thinking"]:
-            raw = r["thinking"]
-            if raw.startswith("["):
-                # Model text can start with "[" and still not be our JSON list.
-                try:
-                    t["thinking"] = json.loads(raw)
-                except ValueError:
-                    t["thinking"] = raw
-            else:
-                t["thinking"] = raw
-        if r["sources"]:
-            t["sources"] = json.loads(r["sources"])
-        if r["web"]:
-            t["web"] = json.loads(r["web"])
-        if r["fetches"]:
-            t["fetches"] = json.loads(r["fetches"])
-        if r["answers"]:
-            t["answers"] = json.loads(r["answers"])
-        if r["images"]:
-            t["images"] = unpack_images(r["images"])
-        if r["files"]:
-            t["files"] = json.loads(r["files"])
-        if r["cards"]:
-            t["cards"] = json.loads(r["cards"])
+        for name, _, load in COLUMNS:
+            if r[name]:
+                t[name] = load(r[name]) if load else r[name]
         out.append(t)
     return out
 
@@ -296,10 +325,10 @@ def name_from_model(user_id, chat_id, title, source):
     chat while the answer is still streaming, and that name wins.
     """
     cur = _title_row(chat_id, user_id)
-    if cur is None or cur["title"] not in (UNTITLED, short_title(source)):
+    if cur is None or not (_placeholder(cur["title"]) or cur["title"] == short_title(source)):
         return False
     db().execute("UPDATE chats SET title=? WHERE id=? AND user_id=?",
-                 (short_title(title, 80) or UNTITLED, chat_id, user_id))
+                 (short_title(title, NAME_CHARS) or UNTITLED, chat_id, user_id))
     db().commit()
     return True
 
@@ -312,7 +341,7 @@ def set_meta(user_id, chat_id, title=None, pinned=None):
         return
     if title is not None:
         db().execute("UPDATE chats SET title=? WHERE id=?",
-                     (short_title(title, 80) or UNTITLED, chat_id))
+                     (short_title(title, NAME_CHARS) or UNTITLED, chat_id))
     if pinned is not None:
         db().execute("UPDATE chats SET pinned=? WHERE id=?", (int(bool(pinned)), chat_id))
     db().commit()

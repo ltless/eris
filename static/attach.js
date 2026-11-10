@@ -8,7 +8,7 @@ const ErisAttach = (() => {
   // Anything past this is refused before it is read: a file that big is not a
   // question, and reading it would freeze the tab for no answer.
   const MAX_FILE_BYTES = 2_000_000;
-  const X_ICON = '<svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+  const X_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
   const IMG_ICON =
     '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 16l5-5 4 4 3-3 6 6" /><circle cx="9" cy="9" r="1.4" /></svg>';
   // One glyph per kind of text file: at 15px the file outline is the constant
@@ -125,7 +125,7 @@ const ErisAttach = (() => {
     for (const f of [...fileList]) {
       if (items.length >= MAX_ATTS) break;
       const kind = classify(f);
-      const a = { id: ++seq, name: f.name || "file", kind, file: f, status: "ok" };
+      const a = { id: ++seq, name: f.name || "file", kind, status: "ok" };
       if (!kind) {
         a.status = "err";
         a.msg = "unsupported type";
@@ -203,21 +203,14 @@ const ErisAttach = (() => {
       nm.className = "chip-name";
       nm.textContent = a.name;
       el.append(nm);
-      if (a.status === "err" && a.msg) {
-        const note = document.createElement("span");
-        note.className = "chip-note";
-        note.textContent = a.msg;
-        el.append(note);
-      } else if (a.status === "busy") {
-        const note = document.createElement("span");
-        note.className = "chip-note";
-        note.textContent = "reading...";
-        el.append(note);
-      } else if (a.msg) {
-        const note = document.createElement("span");
-        note.className = "chip-note";
-        note.textContent = a.msg;
-        el.append(note);
+      // The chip's own class already carries the error colour; the note is
+      // whatever the read has to say, the wait it is still in included.
+      const note = a.msg;
+      if (note) {
+        const span = document.createElement("span");
+        span.className = "chip-note";
+        span.textContent = note;
+        el.append(span);
       }
     }
 

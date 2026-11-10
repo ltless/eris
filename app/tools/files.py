@@ -5,40 +5,43 @@ round sends the whole conversation again, so text inlined once is paid for
 again on each of them; a tool call reads the part the model asked for, once.
 """
 
-from . import as_args
+from ..errors import TOOL_ERROR
+from ..security import READ_ONLY
+from .registry import TAGS, Tool, ToolResult, registry
 
 DEFAULT_LENGTH = 8_000
-MAX_LENGTH = 40_000
+NAME = "read_file"
+TIMEOUT_S = 10.0
 
-TOOL = {
-    "type": "function",
-    "function": {
-        "name": "read_file",
-        "description": (
-            "Read text from a file attached to this message, by the name shown "
-            "in the prompt. A long file comes back in parts; call again with "
-            "`offset` set to the number the returned note gives you."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "The file's name, as the prompt shows it.",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Character to start reading at. Default 0.",
-                },
-                "length": {
-                    "type": "integer",
-                    "description": f"Characters to return. Default {DEFAULT_LENGTH}.",
-                },
-            },
-            "required": ["name"],
+DESCRIPTION = (
+    "Read text from a file attached to this message, by the name shown "
+    "in the prompt. A long file comes back in parts; call again with "
+    "`offset` set to the number the returned note gives you."
+)
+PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "description": "The file's name, as the prompt shows it.",
+        },
+        "offset": {
+            "type": "integer",
+            "description": "Character to start reading at. Default 0.",
+        },
+        "length": {
+            "type": "integer",
+            "description": f"Characters to return. Default {DEFAULT_LENGTH}.",
         },
     },
+    "required": ["name"],
 }
+
+
+def _attached(ctx):
+    """The files this run carries, as a tuple. One reader for both the tool and
+    its `when`, so the two cannot disagree about what "attached" means."""
+    return tuple(getattr(ctx, "files", ()) or ())
 
 
 def _find(files, name):
@@ -58,20 +61,27 @@ def _find(files, name):
 
 
 def read(args, ctx):
-    """`(ok, text, reason)` for one attached file. `reason` is empty on
-    success, and names the failure apart from the text the model reads."""
-    args = as_args(args)
-    files = tuple(getattr(ctx, "files", ()) or ())
+    """Answer the read_file tool, or say which failure stopped it."""
+    files = _attached(ctx)
     if not files:
-        return False, "No file is attached to this message.", "no file is attached"
+        return ToolResult.failed(
+            TOOL_ERROR, "No file is attached to this message.",
+            reason="no file is attached",
+        )
     name = str(args.get("name", "") or "").strip()
     if not name:
         names = ", ".join(f["name"] for f in files)
-        return False, f"No file named. Attached: {names}.", "no file was named"
+        return ToolResult.failed(
+            TOOL_ERROR, f"No file named. Attached: {names}.",
+            reason="no file was named",
+        )
     found = _find(files, name)
     if found is None:
         names = ", ".join(f["name"] for f in files)
-        return False, f"No file named {name!r}. Attached: {names}.", "no such attachment"
+        return ToolResult.failed(
+            TOOL_ERROR, f"No file named {name!r}. Attached: {names}.",
+            reason="no such attachment",
+        )
 
     text = found.get("text") or ""
     try:
@@ -82,18 +92,37 @@ def read(args, ctx):
         length = int(args.get("length") or DEFAULT_LENGTH)
     except (TypeError, ValueError):
         length = DEFAULT_LENGTH
-    length = min(max(length, 1), MAX_LENGTH)
+    # No upper clamp on the slice: attached text is already capped where it is
+    # stored, so a huge `length` can only return what is left of the file.
+    length = max(length, 1)
     if offset >= len(text):
-        return False, f"{name} holds {len(text)} characters; {offset} is past its end.", "offset past the end"
+        return ToolResult.failed(
+            TOOL_ERROR,
+            f"{name} holds {len(text)} characters; {offset} is past its end.",
+            reason="offset past the end",
+        )
 
     part = text[offset : offset + length]
     end = offset + len(part)
     body = f"File: {name} (characters {offset}-{end} of {len(text)})\n{part}"
     if end < len(text):
-        body += f"\n[... {len(text) - end} more characters; call read_file with name={name!r} and offset={end}]"
-    return True, body, ""
+        body += (f"\n[... {len(text) - end} more characters; call read_file with "
+                 f"name={name!r} and offset={end}]")
+    return ToolResult.ok(body)
 
 
-async def run(args, ctx):
-    """Handler for the read_file tool. Returns text for the model, never raises."""
-    return read(args, ctx)[1]
+def _has_files(ctx):
+    return bool(_attached(ctx))
+
+
+def register():
+    return registry.add(Tool(
+        name=NAME,
+        description=DESCRIPTION,
+        parameters=PARAMETERS,
+        handler=read,
+        permission=READ_ONLY,
+        timeout=TIMEOUT_S,
+        tags=TAGS,
+        when=_has_files,
+    ))

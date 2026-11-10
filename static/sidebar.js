@@ -108,7 +108,9 @@ const ErisSidebar = (() => {
 
     const sorted = [...chats].sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
     sorted.forEach((c) => {
-      const title = c.title || "New chat";
+      // The server always stores a title: a chat that has never been named
+      // carries its own placeholder, so a row with none is not a state.
+      const title = c.title;
       const b = document.createElement("div");
       b.className = "side-row" + (c.id === activeId ? " active" : "") + (c.pinned ? " pinned" : "");
       b.title = title;

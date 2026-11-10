@@ -8,14 +8,11 @@ hand — and against a real measurement taken from the same family.
 
 import sys
 import unittest
-from pathlib import Path
 
 sys.path.insert(0, ".")
 
 from app.models import stats
 from app.models.providers import parse_chunk, parse_metrics
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def info(**over):

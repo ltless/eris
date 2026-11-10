@@ -1,14 +1,8 @@
-"""Tool arguments parsing."""
+"""The tools, one module each.
 
-import json
-
-
-def as_args(args):
-    """Tool arguments arrive as a dict, or as a JSON string from some models."""
-    if isinstance(args, dict):
-        return args
-    try:
-        parsed = json.loads(args)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+Every module declares its own `Tool` and ends with its own `register()`;
+`builtin.py` decides which of them a chat run gets. The registry normalizes a
+call's arguments once, so tool modules receive a dict — `normalize_call` in
+`app.models.providers` keeps its own job at the transport edge, where a
+model's server hands the arguments over.
+"""

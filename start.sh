@@ -17,15 +17,48 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 1. venv + deps
-[ -d .venv ] || { echo "> creating venv"; python3 -m venv .venv; }
-PY=.venv/bin/python
-.venv/bin/pip install -q -r requirements.txt
+if [ ! -d .venv ]; then
+  echo "> creating venv"
+  for candidate in python3 python py; do
+    if command -v "$candidate" >/dev/null; then
+      "$candidate" -m venv .venv && break
+    fi
+  done
+  [ -d .venv ] || { echo "! python not found on PATH (install Python 3.10+)" >&2; exit 1; }
+fi
+# POSIX venvs put the interpreter in bin/, Windows venvs in Scripts/.
+if [ -x .venv/bin/python ]; then
+  PY=.venv/bin/python
+elif [ -x .venv/Scripts/python.exe ]; then
+  PY=.venv/Scripts/python.exe
+else
+  PY=
+fi
+# A venv built on another machine keeps a python.exe that points at a base
+# interpreter this host does not have. It exists but cannot run anything.
+if [ -n "$PY" ] && ! "$PY" -c '' >/dev/null 2>&1; then
+  echo "! .venv is broken (its base Python is missing on this machine)" >&2
+  echo "  delete .venv, then re-run this script" >&2
+  exit 1
+fi
+if [ -z "$PY" ]; then
+  echo "! .venv has no usable interpreter, delete it and re-run" >&2
+  exit 1
+fi
+"$PY" -m pip install -q -r requirements.txt
 
 # 2. SearXNG
 if command -v docker >/dev/null; then
-  echo "> starting docker services (searxng)"
-  docker compose up -d
-  started_docker=1
+  # The CLI is on PATH whether or not the engine is up, and `compose up` dies
+  # under set -e when it is not. Probe first so the engine being down is a
+  # warning, not a crash.
+  if docker info >/dev/null 2>&1; then
+    echo "> starting docker services (searxng)"
+    docker compose up -d
+    started_docker=1
+  else
+    echo "! Docker engine not running - start Docker Desktop, then re-run"
+  fi
 else
   echo "! docker not found, skipping SearXNG"
 fi
@@ -56,4 +89,6 @@ fi
 
 # 5. app
 echo "> Eris on http://localhost:$PORT"
-exec "$PY" -m uvicorn app.api:app --host 0.0.0.0 --port "$PORT"
+# Not exec: replacing this shell would throw away the EXIT trap, and the llama
+# server and the containers this script started would outlive it.
+"$PY" -m uvicorn app.api:app --host 0.0.0.0 --port "$PORT"

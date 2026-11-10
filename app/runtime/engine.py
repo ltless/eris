@@ -5,22 +5,22 @@ stops when the model answers, the budget runs out, or a limit is reached.
 
 It does not decide permissions (the tool registry does), does not know tools
 by name (registration does), and does not write to the database directly.
-Everything is reported as an event with a sequence number for replay.
+Everything it does is reported as an event, in the order it happened.
 """
 
 import asyncio
-import json
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
+from .. import errors
 from ..models import ModelError, cached_capabilities, merge_tool_calls, stream_completion
-from ..security.permissions import EXTERNAL, READ_ONLY
-from ..tools.registry import ToolContext, registry
-from . import errors, events
+from ..security import authorize
+from ..tools.plan import step_line
+from ..tools.registry import TAGS, ToolContext, as_args, registry
+from . import events
 from .budgets import Budget, BudgetExceeded, clip
-from .events import Emitter, scrub
-
-MAX_TOOL_MESSAGES = 60
+from .context import recent
+from .events import emit
 
 
 @dataclass
@@ -31,10 +31,9 @@ class RunRequest:
     model: str | None = None
     thinking: bool | str = False         # a rung the model accepts: False, True, or a level
     ctx_tokens: int | None = None
-    tags: tuple = ("chat",)              # which tools to offer
+    tags: tuple = TAGS                   # which tools to offer
     budget: Budget | None = None
     tool_context: ToolContext | None = None
-    system_prompt: str | None = None
 
 
 @dataclass
@@ -48,30 +47,11 @@ class RunResult:
     # has two entries here and only a reload needs them.
     answers: list = field(default_factory=list)
     sources: list = field(default_factory=list)
-    tool_runs: list = field(default_factory=list)
-    model_calls: int = 0
-    rounds: int = 0
     stop_reason: str = "answered"
     budget: dict = field(default_factory=dict)
-    error: str | None = None
-    metrics: dict = field(default_factory=dict)   # what the last model call cost
-
-    def as_dict(self):
-        return {
-            "answer": self.answer,
-            "sources": self.sources,
-            "tool_runs": self.tool_runs,
-            "model_calls": self.model_calls,
-            "rounds": self.rounds,
-            "stop_reason": self.stop_reason,
-            "budget": self.budget,
-            "error": self.error,
-            "metrics": self.metrics,
-        }
 
 
 def tool_message(call, content):
-    """The message that carries a tool's output back to the model."""
     m = {"role": "tool", "content": content}
     if call.get("id"):
         m["tool_call_id"] = call["id"]
@@ -93,7 +73,7 @@ def _with_plan(messages, plan):
         return messages
     lines = ["The plan you recorded for this task, so far:"]
     for i, s in enumerate(plan, 1):
-        lines.append(f"{i}. [{s['status']}] {s['step']}")
+        lines.append(step_line(i, s))
     lines.append("Keep going through it, and call plan again when a step changes.")
     return messages + [{"role": "user", "content": "\n".join(lines)}]
 
@@ -101,21 +81,20 @@ def _with_plan(messages, plan):
 _OPEN = "<tool_call>"
 _CLOSE = "</tool_call>"
 
-# Sent when a pass leaves nothing but a tool call written as text. The server
-# only parses calls when the request carries the tool list, so a tool-less pass
-# can turn one into prose; the answer has to be asked for again, plainly.
-_AS_TEXT = (
-    "That reply was a tool call written as text, so the reader got markup "
-    "instead of an answer. Answer in prose now, without any tool call and "
-    "without <tool_call> tags."
+# Sent when a round has nothing else to do and still has no prose to show,
+# which happens two ways: the model reasoned to the end and stopped, or a
+# tool-less pass turned a tool call into text — the server only parses calls
+# when the request carries the tool list. Either way the answer is asked for
+# once more, plainly.
+_NO_ANSWER = (
+    "That reply gave the reader no answer. Answer in prose now, from what the "
+    f"run already has, without any tool call and without {_OPEN} tags."
 )
 
-# Sent when the final pass spent itself on a `plan` call and left no prose. The
-# step is recorded and its card is kept, but a card is not an answer.
-_AFTER_PLAN = (
-    "You recorded the plan but wrote no answer, so the reader has a card and "
-    "nothing else. Answer in prose now, from what the run already found, and "
-    "do not call any tool."
+# What the reader is told when that ask did not take either. There is no answer
+# to show, and the markup some models produce instead is not one.
+_NO_ANSWER_SORRY = (
+    "The model produced no answer, and said nothing when asked again."
 )
 
 
@@ -184,45 +163,43 @@ class _ToolCallFilter:
         return rest
 
 
-def _answer_ask(messages, plan, note=_AS_TEXT):
+def _answer_ask(messages, plan):
     """The conversation plus the note that sends the model back to prose."""
-    return _with_plan(messages, plan) + [{"role": "user", "content": note}]
+    return _with_plan(messages, plan) + [{"role": "user", "content": _NO_ANSWER}]
 
 
-def _drop_old_tool_messages(messages):
-    """Keep the conversation bounded without losing the turns that matter: the
-    system prompt, the first user turn, and the newest tool exchanges stay."""
-    if len(messages) <= MAX_TOOL_MESSAGES:
+def _window(messages):
+    """The conversation as the model gets it: the system prompt, then the newest
+    turns that fit. A round appends a pair of messages per call, so the window
+    is recomputed each round rather than decided once at the door."""
+    if len(messages) <= 1:
         return messages
-    head = messages[:2]
-    tail = messages[-(MAX_TOOL_MESSAGES - 2):]
-    # The cut can land inside a round. A `tool` message whose parent assistant
-    # call went over the edge is an orphan, and a server that pairs them by id
-    # rejects the whole request rather than the one message.
-    while tail and tail[0].get("role") == "tool":
-        tail = tail[1:]
-    return head + tail
+    return messages[:1] + recent(messages[1:])
 
 
 class Engine:
     """Runs one request and yields its events."""
 
-    def __init__(self, request: RunRequest, emitter: Emitter | None = None):
+    def __init__(self, request: RunRequest):
         self.req = request
-        self.emitter = emitter or Emitter()
         self.budget = request.budget or Budget()
         self.ctx = request.tool_context or ToolContext()
         self.result = RunResult()
         self.thinking: list[str] = []
-        self.sources: list[dict] = []
         # Track which sources the run has already seen, to know when a
         # repeated search finds nothing new and should stop.
         self._seen_sources: set = set()
         self._new_sources = 0
-        self._cancelled = False
-        self._allowed_tool_names = {s["function"]["name"] for s in registry.specs_for(self.ctx)}
+        # What the current round's call produced: characters of thinking, and
+        # characters dropped as a tool call written into the answer channel.
+        # Reset at the top of each round; read to tell a round that said
+        # nothing from one that thought, or from one that wrote markup.
+        self._thought = 0
+        self._markup = 0
         # The offered list is the same every round: the registry is fixed for the
-        # life of a run, and only the final pass withholds it.
+        # life of a run, and only the final pass withholds it. Both lists come
+        # from one pass over the registry, so the tools a run may use are
+        # decided in one place.
         #
         # A model that declares it does not call tools is offered none: the
         # list is sent on every round, and one the model cannot use is prompt
@@ -231,25 +208,21 @@ class Engine:
         # one — `None` means "unknown" here, never "no".
         declared = cached_capabilities(request.model)
         offer = declared is None or declared.get("tools", True)
-        specs = [s for s in registry.specs(request.tags)
-                 if s["function"]["name"] in self._allowed_tool_names]
-        self._specs = specs if offer and specs else None
-        # The final pass keeps `plan` and drops the rest. A model that still
-        # wants to record a step can call it; one that wants to keep searching
-        # has no schema to call, so the search ends where the budget says.
-        # Without any list at all a model reaches for the tool anyway and
-        # writes the call into the answer channel, which the reader then sees
-        # as markup.
-        self._answer_specs = None
-        if offer:
-            self._answer_specs = [s for s in specs
-                                  if s["function"]["name"] == "plan"] or None
-
-    def cancel(self):
-        """Ask the loop to stop at the next boundary. A tool already running is
-        not interrupted mid-write; the check happens between steps, which is
-        where a stop is safe."""
-        self._cancelled = True
+        specs = registry.specs_for(self.ctx, request.tags) if offer else []
+        self._specs = specs or None
+        # The final pass keeps the tools that declared `last_pass` and drops the
+        # rest. A model that still wants to record a step can call it; one that
+        # wants to keep searching has no schema to call, so the search ends
+        # where the budget says. Without any list at all a model reaches for the
+        # tool anyway and writes the call into the answer channel, which the
+        # reader then sees as markup.
+        kept = {t.name for t in registry.all() if t.last_pass}
+        answer_specs = [s for s in specs if s["function"]["name"] in kept]
+        # The names the answering pass offers, and the list of schemas it offers,
+        # are the same set: the final pass runs a call only if it was offered, so
+        # both are built here from one pass over the registry.
+        self._answer_names = frozenset(s["function"]["name"] for s in answer_specs)
+        self._answer_specs = answer_specs or None
 
     async def run(self) -> AsyncIterator[events.Event]:
         """Drive the loop, yielding every event as it happens.
@@ -263,34 +236,30 @@ class Engine:
                 yield event
         except BudgetExceeded as e:
             self.result.stop_reason = "budget"
-            self.result.error = str(e)
-            yield self.emitter.emit(events.TASK_FAILED, reason="budget", **e.as_dict())
+            yield emit(
+                events.TASK_FAILED, reason="budget",
+                code=errors.BUDGET_EXCEEDED, message=str(e),
+            )
         except ModelError as e:
-            self.result.stop_reason = "model_error"
-            self.result.error = str(e)
-            yield self.emitter.emit(
-                events.TASK_FAILED, reason="model_error", code=errors.MODEL_ERROR, message=str(e)
+            self.result.stop_reason = errors.MODEL_ERROR
+            yield emit(
+                events.TASK_FAILED, reason=errors.MODEL_ERROR,
+                code=errors.MODEL_ERROR, message=str(e),
             )
         self.result.budget = self.budget.used()
-        self.result.sources = self.sources
         # One entry per round, empty where a round thought nothing. The browser
         # places a card by its round number, so dropping the empty slots would
         # shift every later round's thinking onto an earlier round's cards.
         self.result.thinking = list(self.thinking)
 
     async def _loop(self):
-        messages = _drop_old_tool_messages(list(self.req.messages))
+        messages = list(self.req.messages)
 
         rounds = self.budget.rounds
         # Extra rounds only if the model-call budget can pay for them.
-        extra = min(self.budget.extra_rounds, self._headroom(rounds))
+        extra = min(self.budget.extra_rounds, self._headroom())
         round_no = 0
         while True:
-            if self._cancelled:
-                self.result.stop_reason = "cancelled"
-                yield self.emitter.emit(events.TASK_CANCELLED)
-                return
-
             # Past the soft allowance, grant another round only if the previous
             # one found new sources. A model that can't find new queries gets
             # the same pages back, so an unproductive round ends the search.
@@ -304,11 +273,6 @@ class Engine:
             # budget dies.
             specs = self._answer_specs if final else self._specs
             self.budget.spend_model()
-            self.result.model_calls += 1
-
-            yield self.emitter.emit(
-                events.MODEL_STARTED, round=round_no, final=final, tools=bool(specs)
-            )
             calls: list = []
             text_parts: list[str] = []
             self.thinking.append("")
@@ -318,78 +282,30 @@ class Engine:
             # sees as an answer hidden in a thinking card. Every other pass
             # carries the rung exactly as it was resolved, which may be
             # `True`, `False`, or a level name the model itself accepts.
-            seen = {}
-            try:
-                async for event in self._stream_round(
-                    _with_plan(messages, self.ctx.plan), specs,
-                    False if final else self.req.thinking,
-                    round_no, calls, text_parts, seen,
+            self._thought = 0
+            self._markup = 0
+            # No ModelError handling here: `run` wraps this generator, and one
+            # place that states "the model could not be reached" is enough.
+            async for event in self._stream_round(
+                _with_plan(_window(messages), self.ctx.plan), specs,
+                False if final else self.req.thinking,
+                round_no, calls, text_parts,
+            ):
+                yield event
+            # A round can end with nothing to show: it reasoned to the end
+            # and stopped, or (on a tool-less pass) it wrote a tool call
+            # into the answer channel, which the server cannot parse. Neither
+            # is an answer, so it is asked once more with no tools and no
+            # thinking before the turn is called finished. The final pass is
+            # left to its own block below, which asks for the same thing after
+            # running whatever call it did make.
+            stuck = not final and not calls and not text_parts and (
+                self._thought or self._markup)
+            if stuck:
+                async for event in self._answer_or_sorry(
+                    messages, round_no, calls, text_parts
                 ):
                     yield event
-                # A round that reasons its way to the end and then stops without
-                # a word leaves the turn with nothing to show. The same request
-                # with the tool list dropped and the thinking channel closed is
-                # what gets the prose out, so it is asked once more before the
-                # turn is called finished. The list goes too: a tool round keeps
-                # the lowest thinking rung on models where `false` would take the
-                # tools with it, and this pass exists to have no thinking at all.
-                if (
-                    not final
-                    and not calls
-                    and not text_parts
-                    and seen.get("thought")
-                    and self.budget.spent_models < self.budget.model_calls
-                ):
-                    self.budget.spend_model()
-                    self.result.model_calls += 1
-                    async for event in self._stream_round(
-                        _with_plan(messages, self.ctx.plan), None, False,
-                        round_no, calls, text_parts, seen
-                    ):
-                        yield event
-                # A pass can end with a tool call written as text and no prose.
-                # The server only parses calls when the request carries the
-                # list, so this is what a tool-less pass does with a model that
-                # still wants to act. Markup is not an answer: the turn is asked
-                # once more, plainly, with nothing to call.
-                if (
-                    not calls
-                    and not text_parts
-                    and seen.get("markup")
-                    and self.budget.spent_models < self.budget.model_calls
-                ):
-                    self.budget.spend_model()
-                    self.result.model_calls += 1
-                    async for event in self._stream_round(
-                        _answer_ask(messages, self.ctx.plan), None, False,
-                        round_no, calls, text_parts, seen,
-                    ):
-                        yield event
-                # The ask did not take either. The round has no answer to show,
-                # and the markup it did produce is not one, so the reader is
-                # told what happened instead of being handed the raw markup.
-                # This fires on any round: a model that only writes markup made
-                # no calls, so the turn ends here whatever the budget says.
-                if not calls and not text_parts and seen.get("markup"):
-                    sorry = ("The model answered with a tool call instead of an "
-                             "answer, and said nothing when asked again.")
-                    text_parts.append(sorry)
-                    yield self.emitter.emit(events.MODEL_DELTA, text=sorry, round=round_no)
-            except ModelError as e:
-                yield self.emitter.emit(
-                    events.TASK_FAILED, reason="model_error", code=errors.MODEL_ERROR, message=str(e)
-                )
-                self.result.stop_reason = "model_error"
-                self.result.error = str(e)
-                return
-
-            yield self.emitter.emit(
-                events.MODEL_COMPLETED,
-                round=round_no,
-                chars=sum(len(p) for p in text_parts),
-                tool_calls=len(calls),
-            )
-            self.result.rounds = round_no + 1
 
             def record():
                 """File the round's prose as the answer. The recovery passes add
@@ -404,10 +320,9 @@ class Engine:
                 # The only call the final pass can still make is `plan`, and
                 # dropping it would leave the card one step behind the answer.
                 # A tool it was not offered is not run, whatever it named.
-                offered = {s["function"]["name"] for s in (self._answer_specs or [])}
+                offered = self._answer_names
                 runnable = [c for c in calls
                             if (c.get("function") or {}).get("name") in offered]
-                runnable = self._filter_calls(runnable)
                 if runnable:
                     messages.append({"role": "assistant", "content": "", "tool_calls": runnable})
                     async for event in self._run_calls(runnable, messages, round_no):
@@ -417,22 +332,11 @@ class Engine:
                 # answer, which the reader sees as the run having stopped. The
                 # step is kept, and the answer is asked for once more with
                 # nothing left to call.
-                if (not text_parts
-                        and self.budget.spent_models < self.budget.model_calls):
-                    self.budget.spend_model()
-                    self.result.model_calls += 1
-                    async for event in self._stream_round(
-                        _answer_ask(messages, self.ctx.plan, _AFTER_PLAN), None, False,
-                        round_no, calls, text_parts, seen,
+                if not text_parts:
+                    async for event in self._answer_or_sorry(
+                        messages, round_no, calls, text_parts
                     ):
                         yield event
-                if not text_parts:
-                    # The ask did not take. Nothing was answered, and the reader
-                    # is told that rather than left with the card alone.
-                    sorry = ("The model recorded its plan but never wrote an "
-                             "answer, and said nothing when asked again.")
-                    text_parts.append(sorry)
-                    yield self.emitter.emit(events.MODEL_DELTA, text=sorry, round=round_no)
                 record()
                 self.result.stop_reason = "answered"
                 break
@@ -440,32 +344,21 @@ class Engine:
             if not calls:
                 self.result.stop_reason = "answered"
                 break
-            if self._cancelled:
-                self.result.stop_reason = "cancelled"
-                yield self.emitter.emit(events.TASK_CANCELLED)
-                return
 
-            runnable = self._filter_calls(calls)
-            if not runnable:
-                self.result.stop_reason = "no_valid_calls"
-                break
-
-            messages.append({"role": "assistant", "content": "", "tool_calls": runnable})
-            async for event in self._run_calls(runnable, messages, round_no):
+            messages.append({"role": "assistant", "content": "", "tool_calls": calls})
+            async for event in self._run_calls(calls, messages, round_no):
                 yield event
 
             round_no += 1
 
-        yield self.emitter.emit(events.TASK_COMPLETED, **self.result.as_dict())
-
-    async def _stream_round(self, messages, specs, thinking, round_no, calls, text_parts, seen):
+    async def _stream_round(self, messages, specs, thinking, round_no, calls, text_parts):
         """One model call, its events forwarded as they arrive.
 
         The parts are collected into the caller's lists rather than returned,
         because a round can be streamed twice and both halves are one answer.
-        `seen` records what came back, so the caller can tell a round that
-        thought and answered nothing from one that simply had nothing to say,
-        and from one that wrote a tool call into the answer channel.
+        What came back is counted on the engine, so the caller can tell a round
+        that thought and answered nothing from one that simply had nothing to
+        say, and from one that wrote a tool call into the answer channel.
         """
         markup = _ToolCallFilter()
 
@@ -487,46 +380,63 @@ class Engine:
             elif kind == "delta":
                 text = prose(value)
                 if text:
-                    yield self.emitter.emit(events.MODEL_DELTA, text=text, round=round_no)
+                    yield emit(events.MODEL_DELTA, text=text, round=round_no)
             elif kind == "thinking":
-                seen["thought"] = seen.get("thought", 0) + len(value)
+                self._thought += len(value)
                 self.thinking[-1] += value
-                yield self.emitter.emit(events.MODEL_THINKING, text=value, round=round_no)
+                yield emit(events.MODEL_THINKING, text=value, round=round_no)
             elif kind == "metrics":
-                # Kept per round and overwritten, because the last call is the
-                # one whose prompt held the whole conversation: it is the only
-                # one whose count describes the context in use, and that is
-                # what a reader wants to see.
-                self.result.metrics = value
-                yield self.emitter.emit(events.MODEL_METRICS, round=round_no, **value)
+                # Sent on every call rather than kept: the browser shows the
+                # last one it saw, and the last call is the one whose prompt
+                # held the whole conversation, which is the count that
+                # describes the context in use.
+                yield emit(events.MODEL_METRICS, round=round_no, **value)
 
         tail = markup.flush()
         if tail:
             text_parts.append(tail)
-            yield self.emitter.emit(events.MODEL_DELTA, text=tail, round=round_no)
+            yield emit(events.MODEL_DELTA, text=tail, round=round_no)
         if markup.dropped:
-            seen["markup"] = seen.get("markup", 0) + markup.dropped
+            self._markup += markup.dropped
 
-    def _headroom(self, rounds):
-        """Extra rounds the model-call budget can afford."""
-        left = self.budget.model_calls - self.budget.spent_models
-        return max(left - rounds - 1, 0)
+    def _headroom(self):
+        """Extra rounds the model-call budget can afford, one call held back
+        for the answer."""
+        return max(self.budget.calls_left() - self.budget.rounds - 1, 0)
 
-    def _filter_calls(self, calls):
-        """Drop names nobody registered, and keep the rest in order."""
-        out = []
-        for call in calls:
-            name = (call.get("function") or {}).get("name")
-            if registry.get(name) is None:
-                self.result.tool_runs.append(
-                    {"tool": name or "?", "ok": False, "error": {"code": errors.UNKNOWN_TOOL,
-                                                                 "message": f"no tool named {name!r}"}}
-                )
-                continue
-            out.append(call)
-        return out
+    async def _recover(self, messages, round_no, calls, text_parts):
+        """Ask for prose once more, with no tools and no thinking.
 
-    async def _run_calls(self, calls, messages, round_no=0):
+        Budget permitting, the same conversation is sent with the no-answer
+        note. A model that thought its way to a stop, or wrote a call as text,
+        gets the plainest possible request before the round is called
+        answerless.
+        """
+        if not self.budget.may_call():
+            return
+        self.budget.spend_model()
+        async for event in self._stream_round(
+            _answer_ask(_window(messages), self.ctx.plan), None, False,
+            round_no, calls, text_parts,
+        ):
+            yield event
+
+    async def _answer_or_sorry(self, messages, round_no, calls, text_parts):
+        """Ask once more, and if that goes unanswered too, say so.
+
+        Both call sites reach this the same way — a round that ended with no
+        prose — and both need the same pair of steps: the extra ask, then the
+        plain sentence when even that produces nothing, because a reader shown
+        an empty turn reads it as the run having stopped.
+        """
+        async for event in self._recover(messages, round_no, calls, text_parts):
+            yield event
+        if not text_parts:
+            text_parts.append(_NO_ANSWER_SORRY)
+            yield emit(
+                events.MODEL_DELTA, text=_NO_ANSWER_SORRY, round=round_no)
+
+    async def _run_calls(self, calls, messages, round_no):
         """Run one round's calls together, then report them in the order asked.
 
         The tools run concurrently because the calls in a round are
@@ -536,22 +446,15 @@ class Engine:
         order it asked in, and the events are emitted the same way, because the
         browser places a card by its round and closes the oldest first.
         """
-        if self._cancelled:
-            yield self.emitter.emit(events.TASK_CANCELLED)
-            return
-
         started = []
         for call in calls:
             fn = call.get("function") or {}
             name = fn.get("name")
-            args = fn.get("arguments") or {}
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except json.JSONDecodeError:
-                    args = {}
+            # Parsed here as well as in `Registry.call`, because the started
+            # event carries the arguments and is emitted before anything runs.
+            args = as_args(fn.get("arguments"))
 
-            yield self.emitter.emit(events.TOOL_STARTED, tool=name, args=args, round=round_no)
+            yield emit(events.TOOL_STARTED, tool=name, args=args, round=round_no)
 
             try:
                 self.budget.spend_tool()
@@ -566,7 +469,7 @@ class Engine:
 
         for i, (call, name, args, job, err) in enumerate(started):
             if job is None:
-                yield self.emitter.emit(
+                yield emit(
                     events.TOOL_FAILED, tool=name, round=round_no,
                     code=errors.BUDGET_EXCEEDED, message=str(err),
                 )
@@ -574,29 +477,27 @@ class Engine:
                 continue
 
             result = results[i]
-            run = {
-                "tool": name,
-                "args": scrub(args),
-                "ok": result.success,
-                "error": result.error,
-            }
-            self.result.tool_runs.append(run)
-
-            text = result.text if result.text is not None else _render(result.data)
+            text = result.text if result.text is not None else "(no result)"
             text = clip(text, self.budget.tool_output_chars)
             messages.append(tool_message(call, text))
 
             for source in (result.metadata or {}).get("sources", []) or []:
-                self.sources.append(source)
+                # A tool that wrote citation numbers into its own text reserved
+                # its block from the run's counter and stamps the rows. Any
+                # other source is numbered here, so every row the browser sees
+                # has the `n` its links need.
+                if not source.get("n"):
+                    source = {**source, "n": self.ctx.numbers.reserve()}
+                self.result.sources.append(source)
                 if self._note_source(source):
                     self._new_sources += 1
-                yield self.emitter.emit(events.SOURCE_FOUND, round=round_no, **source)
+                yield emit(events.SOURCE_FOUND, round=round_no, **source)
 
             if result.success:
                 # `card` is the tool's own figures for the browser to draw, and
                 # only the tools that publish one carry it; everything else
                 # reaches the cards through sources.
-                yield self.emitter.emit(
+                yield emit(
                     events.TOOL_COMPLETED, tool=name, round=round_no, chars=len(text or ""),
                     sources=len((result.metadata or {}).get("sources", []) or []),
                     card=(result.metadata or {}).get("card"),
@@ -605,7 +506,7 @@ class Engine:
                 # `reason` is the tool's own short phrase for what stopped it,
                 # which is what the card replays; `message` is the sentence the
                 # model was given, which repeats the URL the card already shows.
-                yield self.emitter.emit(
+                yield emit(
                     events.TOOL_FAILED, tool=name, round=round_no,
                     code=(result.error or {}).get("code", errors.TOOL_ERROR),
                     message=(result.error or {}).get("message", ""),
@@ -625,24 +526,17 @@ class Engine:
 
         A write or a command isn't retried: the runtime can't tell if the
         first attempt took effect, and repeating could double the side
-        effect. `EXTERNAL` covers the network reads, which are idempotent
-        when the tool says so.
+        effect. The question is the same one the registry asks before running
+        anything, so it is put to `authorize` rather than re-derived here — a
+        refinement there would otherwise not reach a retry.
         """
         result = await registry.call(name, args, self.ctx)
         if result.success:
             return result
         tool = registry.get(name)
         retryable = bool((result.error or {}).get("retryable"))
-        safe = tool is not None and tool.permission in (READ_ONLY, EXTERNAL)
+        safe = tool is not None and authorize(tool) is None
         if retryable and safe and self.budget.allow_retry():
             return await registry.call(name, args, self.ctx)
         return result
 
-
-def _render(data):
-    if not data:
-        return "(no result)"
-    try:
-        return json.dumps(data, ensure_ascii=False, indent=2)
-    except (TypeError, ValueError):
-        return str(data)

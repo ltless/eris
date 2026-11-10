@@ -24,3 +24,22 @@ def base_url():
 def chat_url():
     """The model talks on the native /api/chat path, framed as NDJSON."""
     return base_url() + "/api/chat"
+
+
+def models_url():
+    """The model list is the one OpenAI-shaped route, so it keeps the `/v1`
+    suffix the base URL carries rather than the stripped-back root."""
+    return settings.model_base_url.rstrip("/") + "/models"
+
+
+def auth_headers():
+    """The credentials for the server, which are the same on both route
+    families: the bearer token is what the endpoint checks, not the path."""
+    return {"Authorization": f"Bearer {settings.model_api_key}"}
+
+
+def model_for(model=None):
+    """The model a call is about, which is the configured one when the caller
+    named none. Stated once because every layer falls back the same way, and a
+    second spelling would be a second answer to "which model is this"."""
+    return model or settings.model_name

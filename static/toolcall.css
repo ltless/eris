@@ -383,7 +383,7 @@
 
 .wx-rays {
   transform-box: view-box;
-  transform-origin: 12px 12px;
+  transform-origin: center;
   animation: wx-spin 22s linear infinite;
 }
 

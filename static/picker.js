@@ -503,12 +503,13 @@ const ErisPicker = (() => {
     // A model that declared nothing about thinking keeps it: unknown is not
     // the same as absent, and a control that vanishes on a quiet server would
     // take the feature with it.
-    const thinks = caps[chosen] ? caps[chosen].thinking !== false : true;
+    const cap = caps[chosen] || {};
+    const thinks = cap.thinking !== false;
     if (effortBtn) effortBtn.hidden = !thinks;
     if (!thinks) close();
     // The composer reads the same answer to decide what it can attach, so it
     // is told whenever the model changes rather than asking for itself.
-    if (chosen) ErisAttach?.setVision(caps[chosen] ? caps[chosen].vision !== false : true);
+    if (chosen) ErisAttach?.setVision(cap.vision !== false);
     if (changed) {
       // A probe for the old model can still be in flight. Its ticket has to be
       // spent here, or it lands against the new `chosen` and writes this model's
@@ -523,7 +524,6 @@ const ErisPicker = (() => {
       else paintEffort();
       drawEffort();
     }
-    return ids.length;
   }
 
   return { init, setModels };

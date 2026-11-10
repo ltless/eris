@@ -1,52 +1,35 @@
 """Safe page fetcher for web_search results.
 
-Search hits come from the open web, so every URL is untrusted input:
-scheme/host validation + private-IP blocking before connecting, redirect hops
-re-validated one by one, response size capped, text extracted by hand.
-
-Residual risk: DNS rebinding between the getaddrinfo check and the connection.
-Acceptable for a single-user self-hosted box; pinning a transport kills it if
-this ever faces a hostile network.
+Search hits come from the open web, so every URL is untrusted input: scheme and
+host validation, private-IP blocking and redirect re-validation all live in
+`..net`, and this module only reads what that allows.
 """
 
 import asyncio
 import io
-import ipaddress
 import re
-import socket
 import time
-from urllib.parse import urlsplit
 
 import httpx
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
 from ..config import settings
-from . import as_args
+from ..errors import TOOL_ERROR
+from ..net import HEADERS, is_public_url
+from ..security import EXTERNAL
+from .registry import TAGS, Tool, ToolResult, missing_arg, registry
 
 TIMEOUT = 12
 MIN_READABLE = 80
 MAX_BYTES = 2_000_000
+# A page's own redirect chain is worth following: it is how a link that moved
+# still answers. Five hops is a chain, not a chase.
 MAX_REDIRECTS = 5
-# A bot UA is refused outright by most CDNs, so this reads as an ordinary
-# browser and sends the headers one sends. Sec-Fetch-* and the referer are what
-# most 403s actually check: without them a page that opens in a browser answers
-# 403 to the same URL here (medium, weather-atlas). A site that still refuses is
-# refusing the request itself, not its shape, and no header fixes that.
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-)
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
-    "Referer": "https://www.google.com/",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "cross-site",
-    "Upgrade-Insecure-Requests": "1",
-}
+# Concurrent page reads in one `fetch_pages` call.
+MAX_PAGES = 4
+NAME = "fetch_url"
+TIMEOUT_S = 30.0
 
 _STRIP_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "form", "nav", "footer", "header")
 
@@ -57,6 +40,19 @@ _STRIP_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "form
 TTL = 900
 MAX_CACHED = 64
 _cache: dict[tuple[str, int], tuple[float, str]] = {}
+
+DESCRIPTION = (
+    "Fetch one URL and return its full readable text. Use it after "
+    "web_search to read a specific result in depth, or when the user "
+    "gives a link."
+)
+PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string", "description": "The URL to read."},
+    },
+    "required": ["url"],
+}
 
 
 def _cached(url, max_chars):
@@ -74,39 +70,6 @@ def _remember(url, max_chars, text):
     if len(_cache) >= MAX_CACHED:
         _cache.clear()
     _cache[(url, max_chars)] = (time.monotonic() + TTL, text)
-
-
-def _ip_blocked(ip):
-    try:
-        a = ipaddress.ip_address(ip)
-    except ValueError:
-        return True
-    return (
-        a.is_private
-        or a.is_loopback
-        or a.is_link_local
-        or a.is_reserved
-        or a.is_multicast
-        or a.is_unspecified
-        or (a.version == 6 and a.is_site_local)
-    )
-
-
-def is_public_url(url):
-    try:
-        p = urlsplit(url)
-    except ValueError:
-        return False
-    if p.scheme not in ("http", "https"):
-        return False
-    host = p.hostname
-    if not host:
-        return False
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except (socket.gaierror, UnicodeError):
-        return False
-    return bool(infos) and all(not _ip_blocked(i[4][0]) for i in infos)
 
 
 def extract_text(raw, max_chars):
@@ -175,56 +138,46 @@ async def fetch_page(client, url, max_chars):
 
 
 async def fetch_pages(urls, max_chars):
-    """Fetch several pages concurrently. Returns {url: text_or_None}."""
-    urls = list(dict.fromkeys(u for u in urls if u))[:4]
+    """Fetch several pages concurrently. Returns {url: text_or_None}.
+
+    How many is the caller's call: `search` passes `settings.fetch_top`, and a
+    cap here as well would drop a page after the caller had already counted it.
+    `MAX_PAGES` is the connection pool this shares, not a second limit.
+    """
+    urls = list(dict.fromkeys(u for u in urls if u))
     if not urls:
         return {}
     async with httpx.AsyncClient(
         timeout=TIMEOUT,
         follow_redirects=False,
         headers=HEADERS,
-        limits=httpx.Limits(max_connections=4),
+        limits=httpx.Limits(max_connections=MAX_PAGES),
     ) as c:
         texts = await asyncio.gather(*[fetch_page(c, u, max_chars) for u in urls])
     return {u: t for u, (t, _) in zip(urls, texts)}
 
 
-TOOL = {
-    "type": "function",
-    "function": {
-        "name": "fetch_url",
-        "description": (
-            "Fetch one URL and return its full readable text. Use it after "
-            "web_search to read a specific result in depth, or when the user "
-            "gives a link."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "The URL to read."},
-            },
-            "required": ["url"],
-        },
-    },
-}
-
-
 async def read(args):
-    """`(ok, text, reason)` for one URL. `reason` is empty on success, and comes
-    back apart from the text so the card can name the failure alone."""
-    args = as_args(args)
+    """Answer the fetch tool, or say which failure stopped it."""
     url = str(args.get("url", "") or "").strip()
     if not url:
-        return False, "No URL given.", "no URL was given"
+        return missing_arg("URL")
     async with httpx.AsyncClient(
         timeout=TIMEOUT, follow_redirects=False, headers=HEADERS
     ) as c:
         text, reason = await fetch_page(c, url, settings.fetch_max_chars)
     if not text:
-        return False, f"Could not read {url}: {reason}.", reason
-    return True, f"Page content for {url}:\n{text}", ""
+        return ToolResult.failed(TOOL_ERROR, f"Could not read {url}: {reason}.", reason=reason)
+    return ToolResult.ok(f"Page content for {url}:\n{text}")
 
 
-async def run(args):
-    """Handler for the fetch_url tool. Returns text for the model, never raises."""
-    return (await read(args))[1]
+def register():
+    return registry.add(Tool(
+        name=NAME,
+        description=DESCRIPTION,
+        parameters=PARAMETERS,
+        handler=read,
+        permission=EXTERNAL,
+        timeout=TIMEOUT_S,
+        tags=TAGS,
+    ))

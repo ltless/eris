@@ -5,41 +5,33 @@ anything runs. Reading the world is allowed; changing it is not, because
 nothing in this app can stop and ask the person whether they meant it.
 """
 
-from dataclasses import dataclass
-
 READ_ONLY = "read_only"
+EXTERNAL = "external"
 WRITE = "write"
 COMMAND = "command"
-EXTERNAL = "external"
 DESTRUCTIVE = "destructive"
 
 LEVELS = (READ_ONLY, WRITE, COMMAND, EXTERNAL, DESTRUCTIVE)
 
-@dataclass(frozen=True)
-class Decision:
-    allowed: bool
-    code: str = ""
-    reason: str = ""
+# What the runtime allows. `authorize` answers from this one set, so "may this
+# run" has a single answer rather than one per call site.
+ALLOWED = (READ_ONLY, EXTERNAL)
 
-ALLOW = Decision(True)
 
-def deny(code, reason):
-    return Decision(False, code=code, reason=reason)
+def authorize(tool):
+    """`None` when the tool may run, else `(code, reason)` for the refusal.
 
-def authorize(tool, ctx=None, args=None):
-    """Whether this tool may run.
-
-    Returns a Decision. A denied call is reported to the model as a tool error
-    and to the user as an event; it is never silently skipped.
+    A denied call is reported to the model as a tool error and to the user as
+    an event; it is never silently skipped. The answer reads the declared
+    permission and nothing else, so no caller has to supply context it will
+    not be asked about.
     """
     level = tool.permission
     if level not in LEVELS:
-        return deny("denied", f"tool {tool.name!r} declares an unknown permission {level!r}")
-
-    if level in (READ_ONLY, EXTERNAL):
-        return ALLOW
-
-    # Everything below changes something, and nothing in this app can stop and
-    # ask the person whether they meant it. The answer stays no rather than
+        return "denied", f"tool {tool.name!r} declares an unknown permission {level!r}"
+    if level in ALLOWED:
+        return None
+    # Everything else changes something. Nothing here can stop and ask the
+    # person whether they meant it, so the answer stays no rather than
     # becoming yes by default.
-    return deny("denied", f"{tool.name} changes state, and nothing here can ask permission for it")
+    return "denied", f"{tool.name} changes state, and nothing here can ask permission for it"

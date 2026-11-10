@@ -49,7 +49,6 @@ _KV_FIELDS = {
 }
 
 
-
 def architecture(model_info):
     """The model's architecture fields, by their plain names.
 
@@ -73,6 +72,13 @@ def architecture(model_info):
     return out
 
 
+def cache_name(cache_type=None):
+    """The cache type name, normalized. `None` and an empty name both read as
+    the configured one. One normalizer, so the name a figure is computed for
+    and the name reported beside it cannot be two different strings."""
+    return (cache_type or settings.kv_cache_type or "f16").strip().lower()
+
+
 def element_bytes(cache_type=None):
     """Bytes per KV element for a cache type name, or `None` if it is unknown.
 
@@ -80,8 +86,7 @@ def element_bytes(cache_type=None):
     would then turn into a figure that looks measured and is wrong, which is
     worse than the panel having no figure at all.
     """
-    name = (cache_type or settings.kv_cache_type or "f16").strip().lower()
-    return KV_BYTES.get(name)
+    return KV_BYTES.get(cache_name(cache_type))
 
 
 def kv_bytes(info, ctx, cache_type=None):
@@ -176,13 +181,13 @@ async def model_info(model):
     return shown
 
 
-async def model_stats(model, ctx=None, metrics=None):
+async def model_stats(model, ctx=None):
     """Everything the panel shows, gathered in one place.
 
     `ctx` is the context this account would ask for; the allocated context wins
     when the model is already loaded, because that is the one the runner
-    actually reserved. `metrics` are the counts from the last streamed answer,
-    which are the only place prompt usage is ever stated.
+    actually reserved. Prompt usage is not here: the counts only ever come off
+    a streamed answer, and the panel keeps the last ones it was sent.
     """
     loaded, shown, gpu = await asyncio.gather(
         runtime_status(model),
@@ -195,15 +200,13 @@ async def model_stats(model, ctx=None, metrics=None):
     # it loads, the figure is an estimate for the context that would be asked
     # for, which is why the answer says which one it is.
     sized_ctx = allocated or ctx or _num(info.get("context"))
-    cache_type = (settings.kv_cache_type or "f16").strip().lower()
+    cache_type = cache_name()
     return {
         "model": model,
         "loaded": loaded is not None,
         "expires_at": (loaded or {}).get("expires_at"),
         "size": _num((loaded or {}).get("size")),
         "size_vram": _num((loaded or {}).get("size_vram")),
-        "runner": (loaded or {}).get("runner"),
-        "details": (loaded or {}).get("details") or (shown or {}).get("details") or {},
         "context": {
             "max": _num(info.get("context")),
             "allocated": allocated,
@@ -222,5 +225,4 @@ async def model_stats(model, ctx=None, metrics=None):
             "known": element_bytes(cache_type) is not None,
         },
         "gpu": gpu,
-        "last": metrics or None,
     }

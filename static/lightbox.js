@@ -67,5 +67,5 @@ window.ErisLightbox = (() => {
     returnTo = null;
   }
 
-  return { open, close, isOpen: () => !!root && !root.hidden };
+  return { open, close };
 })();

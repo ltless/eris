@@ -7,7 +7,11 @@ name the geocoder does not know is retried in looser forms before giving up.
 
 import httpx
 
-from . import as_args
+from ..errors import TOOL_ERROR
+from ..security import EXTERNAL
+from .registry import (
+    TAGS, Tool, ToolResult, days_arg, missing_arg, registry, source_row, unreadable, unreachable,
+)
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
@@ -17,6 +21,8 @@ DEFAULT_DAYS = 3
 MAX_DAYS = 7
 MAX_CHARS = 4_000
 MAX_TRIES = 4
+NAME = "weather"
+TIMEOUT_S = 25.0
 
 # The WMO scale open-meteo reports in. A number alone tells the model nothing.
 WMO = {
@@ -73,30 +79,24 @@ QUALIFIERS = {
     "the",
 }
 
-TOOL = {
-    "type": "function",
-    "function": {
-        "name": "weather",
-        "description": (
-            "Current weather and a short forecast for a place, by name. Use it "
-            "for any question about temperature, rain, wind, or conditions now "
-            "or in the next few days, instead of searching for them."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "The place, e.g. 'Bandung' or 'Jakarta, Indonesia'.",
-                },
-                "days": {
-                    "type": "integer",
-                    "description": f"Forecast days, 1 to {MAX_DAYS}. Default {DEFAULT_DAYS}.",
-                },
-            },
-            "required": ["location"],
+DESCRIPTION = (
+    "Current weather and a short forecast for a place, by name. Use it "
+    "for any question about temperature, rain, wind, or conditions now "
+    "or in the next few days, instead of searching for them."
+)
+PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "location": {
+            "type": "string",
+            "description": "The place, e.g. 'Bandung' or 'Jakarta, Indonesia'.",
+        },
+        "days": {
+            "type": "integer",
+            "description": f"Forecast days, 1 to {MAX_DAYS}. Default {DEFAULT_DAYS}.",
         },
     },
+    "required": ["location"],
 }
 
 
@@ -131,7 +131,6 @@ async def _lookup(client, name):
 
 
 async def _find_place(client, name):
-    """The first of the name's forms the geocoder knows, or None."""
     for candidate in _candidates(name):
         place = await _lookup(client, candidate)
         if place:
@@ -178,7 +177,7 @@ def _at(series, key, i):
     return values[i] if i < len(values) else None
 
 
-def _render(label, place, data, days):
+def _render(label, place, data, day_count):
     lines = [
         f"Weather for {label} ({place.get('latitude')}, {place.get('longitude')}), "
         f"local time {data.get('timezone') or 'unknown'}."
@@ -196,8 +195,8 @@ def _render(label, place, data, days):
     daily = data.get("daily") or {}
     dates = daily.get("time") or []
     if dates:
-        lines.append(f"Forecast ({len(dates[:days])} days):")
-        for i, day in enumerate(dates[:days]):
+        lines.append(f"Forecast ({len(dates[:day_count])} days):")
+        for i, day in enumerate(dates[:day_count]):
             lines.append(
                 f"  {day}: {_code(_at(daily, 'weather_code', i))}, "
                 f"{_num(_at(daily, 'temperature_2m_min', i))} to "
@@ -208,18 +207,17 @@ def _render(label, place, data, days):
     return "\n".join(lines)[:MAX_CHARS]
 
 
-def _card(label, place, data, days):
+def _card(label, data, day_count):
     """The card's own payload: figures, not sentences. The model reads `_render`
     and never this; the reader sees this and never the rendered text."""
     now = data.get("current") or {}
     daily = data.get("daily") or {}
     dates = daily.get("time") or []
     forecast = []
-    for i, day in enumerate(dates[:days]):
+    for i, day in enumerate(dates[:day_count]):
         forecast.append(
             {
                 "date": str(day),
-                "code": _at(daily, "weather_code", i),
                 "text": _code(_at(daily, "weather_code", i)),
                 "min": _fig(_at(daily, "temperature_2m_min", i)),
                 "max": _fig(_at(daily, "temperature_2m_max", i)),
@@ -229,14 +227,10 @@ def _card(label, place, data, days):
         )
     return {
         "place": label,
-        "lat": _fig(place.get("latitude")),
-        "lon": _fig(place.get("longitude")),
-        "timezone": data.get("timezone") or "",
         "now": {
             "time": str(now.get("time") or ""),
             "temp": _fig(now.get("temperature_2m")),
             "feels": _fig(now.get("apparent_temperature")),
-            "code": now.get("weather_code"),
             "text": _code(now.get("weather_code")),
             "humidity": _fig(now.get("relative_humidity_2m")),
             "wind": _fig(now.get("wind_speed_10m")),
@@ -246,27 +240,12 @@ def _card(label, place, data, days):
     }
 
 
-def _days(args):
-    try:
-        days = int(args.get("days") or DEFAULT_DAYS)
-    except (TypeError, ValueError):
-        days = DEFAULT_DAYS
-    return min(max(days, 1), MAX_DAYS)
-
-
 async def read(args):
-    """`(ok, text, reason, meta)`. `reason` is empty on success, and comes back
-    apart from the text so the caller can name the failure alone. `meta` is the
-    tool result's metadata: the source list, and the figures the card draws."""
-    args = as_args(args)
-    location = ""
-    for key in ("location", "place", "city"):
-        location = str(args.get(key) or "").strip()
-        if location:
-            break
+    """Answer the weather tool, or say which failure stopped it."""
+    location = str(args.get("location") or "").strip()
     if not location:
-        return False, "No place given.", "no place was given", {}
-    days = _days(args)
+        return missing_arg("place")
+    day_count = days_arg(args, DEFAULT_DAYS, 1, MAX_DAYS)
     params = {
         "latitude": 0,
         "longitude": 0,
@@ -274,19 +253,18 @@ async def read(args):
         "precipitation,weather_code,wind_speed_10m",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
         "precipitation_sum,precipitation_probability_max",
-        "forecast_days": days,
+        "forecast_days": day_count,
         "timezone": "auto",
     }
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True) as client:
             place = await _find_place(client, location)
             if place is None:
-                return (
-                    False,
+                return ToolResult.failed(
+                    TOOL_ERROR,
                     f"No place named {location!r} was found. Try the plain name of "
                     "the city, or add the country.",
-                    "the place name was not found",
-                    {},
+                    reason="the place name was not found",
                 )
             params["latitude"] = place.get("latitude")
             params["longitude"] = place.get("longitude")
@@ -294,29 +272,26 @@ async def read(args):
             r.raise_for_status()
             data = r.json()
     except httpx.HTTPError as e:
-        return (
-            False,
-            f"The weather service could not be reached ({type(e).__name__}).",
-            "the weather service could not be reached",
-            {},
-        )
+        return unreachable("The weather service", e, "the weather service could not be reached")
     except ValueError:
-        return (
-            False,
-            "The weather service sent a reply that could not be read.",
-            "the weather service replied with something unreadable",
-            {},
-        )
+        return unreadable("The weather service", "the weather service replied with something unreadable")
     label = _label(place) or location
-    meta = {
-        "sources": [
-            {"source": PROVIDER_URL, "title": f"{label} — open-meteo", "kind": "web", "read": True}
-        ],
-        "card": _card(label, place, data, days),
-    }
-    return True, _render(label, place, data, days), "", meta
+    source = source_row(PROVIDER_URL, f"{label} — open-meteo", read=True)
+    return ToolResult.ok(
+        _render(label, place, data, day_count),
+        sources=[source],
+        card=_card(label, data, day_count),
+    )
 
 
-async def run(args):
-    """Handler for the weather tool. Returns text for the model, never raises."""
-    return (await read(args))[1]
+def register():
+    return registry.add(Tool(
+        name=NAME,
+        description=DESCRIPTION,
+        parameters=PARAMETERS,
+        handler=read,
+        permission=EXTERNAL,
+        timeout=TIMEOUT_S,
+        tags=TAGS,
+        carded=True,
+    ))

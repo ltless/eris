@@ -13,8 +13,14 @@ import time
 import httpx
 from contextlib import asynccontextmanager
 
-from . import as_args, crypto, market
-from .fetch import USER_AGENT
+from ..errors import TOOL_ERROR
+from ..net import HEADERS
+from ..security import EXTERNAL
+from .marketdata import (
+    MIN_BARS, Unavailable, analyse, big, money, num, pos, trend_card,
+    trend_prose, when,
+)
+from .registry import TAGS, Tool, ToolResult, days_arg, missing_arg, registry, source_row
 
 CONSENT_URL = "https://fc.yahoo.com"
 CRUMB_URL = "https://query2.finance.yahoo.com/v1/test/getcrumb"
@@ -33,13 +39,20 @@ MAX_SYMBOLS = 10
 MIN_DAYS = 30
 MAX_DAYS = 1_825
 DEFAULT_DAYS = 180
-MIN_BARS = market.MIN_BARS
+# Three tools live in this module, so each carries its own name and timeout the
+# way a single-tool module does.
+NAME = "equity"
+TIMEOUT_S = 35.0
+TREND_NAME = "equity_trend"
+TREND_TIMEOUT_S = 40.0
+SCREEN_NAME = "screen"
+SCREEN_TIMEOUT_S = 35.0
+# What a screen may ask for, and what it gets when it asks for nothing. The
+# schema states these and `read_screen` clamps to them, so they are one pair.
+SCREEN_MIN = 5
+SCREEN_MAX = 50
+SCREEN_DEFAULT = 10
 
-HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "application/json,text/plain,*/*",
-    "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
-}
 
 # Yahoo's own search returns nothing for these, but they are the two the
 # question is most likely to name outright, so they are mapped rather than
@@ -53,6 +66,11 @@ ALIASES = {
     "idx lq45": "^JKLQ45",
     "jakarta islamic": "^JKII",
 }
+
+# The one-word names a question uses for an exchange index, derived from the
+# table rather than restated: every other key is a phrase, which a caller reads
+# out of the table instead of being told it in a schema description.
+ALIAS_NAMES = tuple(key.upper() for key in ALIASES if " " not in key)
 
 REGIONS = {
     "id": "Indonesia",
@@ -99,29 +117,6 @@ SORTS = {
 TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-^=]{0,14}$")
 
 _cache = {"crumb": "", "cookies": {}}
-
-
-class Unavailable(Exception):
-    """One source could not answer. `limited` tells a rate limit apart from a
-    symbol Yahoo does not list."""
-
-    def __init__(self, reason, limited=False):
-        super().__init__(reason)
-        self.reason = reason
-        self.limited = limited
-
-
-def _num(value):
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _pos(value):
-    """A figure, or `None` when there is nothing to report. A zero volume on a
-    halted ticker is not a volume, and printed as one it is a wrong fact."""
-    return value or None
 
 
 async def _handshake(client):
@@ -183,8 +178,8 @@ async def _json(client, url, params=None, guarded=False, method="GET", body=None
     raise Unavailable("yahoo refused the session")
 
 
-def _search(client, text):
-    return _json(client, SEARCH_URL, {"q": text, "quotesCount": 8, "newsCount": 0})
+async def _search(client, text):
+    return await _json(client, SEARCH_URL, {"q": text, "quotesCount": 8, "newsCount": 0})
 
 
 async def _resolve(client, raw):
@@ -216,8 +211,7 @@ async def _quote_rows(client, symbols):
     rows = []
     for i in range(0, len(symbols), BATCH):
         chunk = symbols[i:i + BATCH]
-        d = await _json(client, QUOTE_URL,
-                        {"symbols": ",".join(chunk)}, guarded=True)
+        d = await _json(client, QUOTE_URL, {"symbols": ",".join(chunk)}, guarded=True)
         rows.extend((d.get("quoteResponse") or {}).get("result") or [])
     return rows
 
@@ -228,17 +222,17 @@ def _row(q):
         "symbol": symbol,
         "name": q.get("shortName") or q.get("longName") or symbol,
         "quote": q.get("currency"),
-        "price": _num(q.get("regularMarketPrice")),
-        "change": _num(q.get("regularMarketChangePercent")),
-        "high": _pos(_num(q.get("regularMarketDayHigh"))),
-        "low": _pos(_num(q.get("regularMarketDayLow"))),
-        "prev": _pos(_num(q.get("regularMarketPreviousClose"))),
-        "volume": _pos(_num(q.get("regularMarketVolume"))),
-        "market_cap": _pos(_num(q.get("marketCap"))),
-        "pe": _num(q.get("trailingPE")),
-        "dividend": _num(q.get("dividendYield")),
-        "week52_high": _pos(_num(q.get("fiftyTwoWeekHigh"))),
-        "week52_low": _pos(_num(q.get("fiftyTwoWeekLow"))),
+        "price": num(q.get("regularMarketPrice")),
+        "change": num(q.get("regularMarketChangePercent")),
+        "high": pos(num(q.get("regularMarketDayHigh"))),
+        "low": pos(num(q.get("regularMarketDayLow"))),
+        "prev": pos(num(q.get("regularMarketPreviousClose"))),
+        "volume": pos(num(q.get("regularMarketVolume"))),
+        "market_cap": pos(num(q.get("marketCap"))),
+        "pe": num(q.get("trailingPE")),
+        "dividend": num(q.get("dividendYield")),
+        "week52_high": pos(num(q.get("fiftyTwoWeekHigh"))),
+        "week52_low": pos(num(q.get("fiftyTwoWeekLow"))),
         "exchange": q.get("fullExchangeName") or q.get("exchange"),
         "kind": q.get("quoteType"),
         "market_state": q.get("marketState"),
@@ -250,22 +244,22 @@ def _render_rows(rows):
     lines = []
     for r in rows:
         line = f"{r['name']} ({r['symbol']}) on {r['exchange']}: "
-        line += crypto.money(r["price"]) + (f" {r['quote']}" if r["quote"] else "")
+        line += money(r["price"]) + (f" {r['quote']}" if r["quote"] else "")
         if r["change"] is not None:
             line += f", {r['change']:+.2f}% today"
         line += "."
         facts = []
         if r["prev"] is not None:
-            facts.append(f"previous close {crypto.money(r['prev'])}")
+            facts.append(f"previous close {money(r['prev'])}")
         if r["high"] is not None and r["low"] is not None:
-            facts.append(f"day range {crypto.money(r['low'])} to {crypto.money(r['high'])}")
+            facts.append(f"day range {money(r['low'])} to {money(r['high'])}")
         if r["week52_low"] is not None and r["week52_high"] is not None:
-            facts.append(f"52-week range {crypto.money(r['week52_low'])} to "
-                         f"{crypto.money(r['week52_high'])}")
+            facts.append(f"52-week range {money(r['week52_low'])} to "
+                         f"{money(r['week52_high'])}")
         if r["volume"] is not None:
-            facts.append(f"volume {crypto.big(r['volume'])}")
+            facts.append(f"volume {big(r['volume'])}")
         if r["market_cap"] is not None:
-            facts.append(f"market cap {crypto.big(r['market_cap'])} {r['quote'] or ''}".strip())
+            facts.append(f"market cap {big(r['market_cap'])} {r['quote'] or ''}".strip())
         if r["pe"] is not None:
             facts.append(f"P/E {r['pe']:.2f}")
         if r["dividend"] is not None:
@@ -277,7 +271,7 @@ def _render_rows(rows):
         lines.append(line)
     lines.append(
         "Prices are Yahoo Finance's, delayed by up to 15 minutes on most "
-        f"exchanges. Read at {crypto.when(int(time.time()))}. If a symbol looks "
+        f"exchanges. Read at {when(int(time.time()))}. If a symbol looks "
         "like the wrong company, say which exchange you meant rather than "
         "guessing."
     )
@@ -285,17 +279,18 @@ def _render_rows(rows):
 
 
 async def read(args):
-    """`(ok, text, reason, meta)` for the quote tool."""
-    args = as_args(args)
-    raw = args.get("symbol") or args.get("symbols") or ""
+    """Answer the quote tool, or say which failure stopped it."""
+    raw = args.get("symbol") or ""
     parts = [p.strip() for p in re.split(r"[,;\n]+", str(raw)) if p.strip()]
     if not parts:
-        return False, "No symbol given.", "no symbol was given", {}
+        return missing_arg("symbol")
     if len(parts) > MAX_SYMBOLS:
-        return (False,
-                f"{len(parts)} symbols were asked for; {MAX_SYMBOLS} is the most one "
-                "call reads. Ask again for the rest.",
-                "too many symbols in one call", {})
+        return ToolResult.failed(
+            TOOL_ERROR,
+            f"{len(parts)} symbols were asked for; {MAX_SYMBOLS} is the most one "
+            "call reads. Ask again for the rest.",
+            reason="too many symbols in one call",
+        )
 
     try:
         async with _client() as client:
@@ -307,27 +302,20 @@ async def read(args):
             if not symbols:
                 text = (f"Nothing on Yahoo Finance matches {', '.join(parts)}. "
                         "Give a ticker with its exchange, such as BBCA.JK or 7203.T.")
-                return False, text, "no listing matches that name", {}
+                return ToolResult.failed(TOOL_ERROR, text, reason="no listing matches that name")
 
             rows = [_row(q) for q in await _quote_rows(client, symbols)]
             found = {r["symbol"] for r in rows}
             missing.extend(s for s in symbols if s not in found)
             rows = [r for r in rows if r["price"] is not None]
-    except Unavailable as e:
-        if e.limited:
-            text = "Yahoo Finance is rate-limiting right now. Try again in a minute."
-            return False, text, "yahoo is rate-limiting", {}
-        text = f"Yahoo Finance could not be reached: {e.reason}."
-        return False, text, e.reason, {}
-    except httpx.HTTPError:
-        return (False, "Yahoo Finance did not answer in time.",
-                "yahoo did not answer", {})
+    except (Unavailable, httpx.HTTPError) as e:
+        return _yahoo_error(e)
 
     if not rows:
         text = ("Yahoo Finance listed " + ", ".join(symbols) +
                 " but sent no price for it, which usually means the listing is "
                 "delisted or halted.")
-        return False, text, "no price came back", {}
+        return ToolResult.failed(TOOL_ERROR, text, reason="no price came back")
 
     text = _render_rows(rows)
     if missing:
@@ -339,27 +327,14 @@ async def read(args):
         "url": PAGE_URL.format(symbol=rows[0]["symbol"]),
         "at": int(time.time()),
     }
-    source_row = {
-        "source": rows[0]["url"],
-        "title": f"{rows[0]['symbol']} — Yahoo Finance",
-        "kind": "web",
-        "read": False,
-    }
-    return True, text, "", {"sources": [source_row], "card": card}
+    row = source_row(rows[0]["url"], f"{rows[0]['symbol']} — Yahoo Finance")
+    return ToolResult.ok(text, sources=[row], card=card)
 
 
-def _days(args):
-    try:
-        days = int(args.get("days") or DEFAULT_DAYS)
-    except (TypeError, ValueError):
-        days = DEFAULT_DAYS
-    return min(max(days, MIN_DAYS), MAX_DAYS)
-
-
-async def _bars(client, symbol, days, interval):
+async def _bars(client, symbol, day_span, interval):
     now = int(time.time())
     d = await _json(client, CHART_URL.format(symbol=symbol),
-                    {"period1": now - days * 86_400, "period2": now,
+                    {"period1": now - day_span * 86_400, "period2": now,
                      "interval": interval})
     chart = d.get("chart") or {}
     if chart.get("error"):
@@ -403,131 +378,69 @@ INTERVALS = {"1d": "daily", "1wk": "weekly", "1mo": "monthly"}
 
 
 async def read_trend(args):
-    """`(ok, text, reason, meta)` for the equity trend tool."""
-    args = as_args(args)
+    """Answer the equity trend tool, or say which failure stopped it."""
     raw = str(args.get("symbol") or "").strip()
     if not raw:
-        return False, "No symbol given.", "no symbol was given", {}
+        return missing_arg("symbol")
     interval = str(args.get("interval") or "1d").lower()
     if interval not in INTERVALS:
-        return (False, f"Interval must be one of {', '.join(INTERVALS)}.",
-                "unsupported interval", {})
-    days = _days(args)
+        return ToolResult.failed(
+            TOOL_ERROR, f"Interval must be one of {', '.join(INTERVALS)}.",
+            reason="unsupported interval",
+        )
+    day_span = days_arg(args, DEFAULT_DAYS, MIN_DAYS, MAX_DAYS)
 
     try:
         async with _client() as client:
             symbol = await _resolve(client, raw) or raw.upper()
-            bars, meta = await _bars(client, symbol, days, interval)
-    except Unavailable as e:
-        if e.limited:
-            text = "Yahoo Finance is rate-limiting right now. Try again in a minute."
-            return False, text, "yahoo is rate-limiting", {}
-        text = f"No daily history came back for {raw}: {e.reason}."
-        return False, text, e.reason, {}
-    except httpx.HTTPError:
-        return False, "Yahoo Finance did not answer in time.", "yahoo did not answer", {}
+            bars, meta = await _bars(client, symbol, day_span, interval)
+    except (Unavailable, httpx.HTTPError) as e:
+        return _yahoo_error(e, f"No {INTERVALS[interval]} history came back for {raw}: ")
 
+    wording = INTERVALS[interval]
     if len(bars) < MIN_BARS:
-        text = (f"Only {len(bars)} {INTERVALS[interval]} bars came back for {symbol}, "
-                f"too few to read a trend. {MIN_BARS} are needed; ask for a longer "
-                "window.")
-        return False, text, "not enough history", {}
+        return ToolResult.failed(
+            TOOL_ERROR,
+            f"Only {len(bars)} {wording} bars came back for {symbol}, "
+            f"too few to read a trend. {MIN_BARS} are needed; ask for a longer "
+            "window.",
+            reason="not enough history",
+        )
 
     name = meta.get("shortName") or meta.get("longName") or symbol
     currency = meta.get("currency") or ""
     exchange = meta.get("fullExchangeName") or meta.get("exchangeName") or ""
-    a = market.analyse(bars)
-    verdict = market.trend_of(a)
-    condition = market.condition_of(a["rsi"])
-
-    closes = [b["c"] for b in bars]
-    parts = []
-    if a["ma20"] is not None and a["above20"] is not None:
-        side = "above" if a["above20"] >= 0 else "below"
-        line = f"MA20 {crypto.money(a['ma20'])} ({a['above20']:+.2f}% {side})"
-        if a["slope20"] is not None:
-            line += f", MA20 slope {a['slope20']:+.2f}% over the last 10 bars"
-        parts.append(line)
-    if a["ma50"] is not None and a["above50"] is not None:
-        side = "above" if a["above50"] >= 0 else "below"
-        parts.append(f"MA50 {crypto.money(a['ma50'])} ({a['above50']:+.2f}% {side})")
-    if a["ma200"] is not None and a["above200"] is not None:
-        side = "above" if a["above200"] >= 0 else "below"
-        parts.append(f"MA200 {crypto.money(a['ma200'])} ({a['above200']:+.2f}% {side})")
-    changes = [
-        f"{label} {a[key]:+.2f}%"
-        for key, label in (("change_7", "7 bars"), ("change_30", "30 bars"),
-                           ("change_90", "90 bars"))
-        if a[key] is not None
-    ]
-    if changes:
-        parts.append(", ".join(changes))
-    if a["range_pos"] is not None:
-        parts.append(f"30-bar range {crypto.money(a['range_low'])} to "
-                     f"{crypto.money(a['range_high'])}, price at {a['range_pos']:.0f}% of it")
-    if a["atr_pct"] is not None:
-        parts.append(f"ATR14 {a['atr_pct']:.2f}% of price")
-    if a["rel_volume"] is not None:
-        parts.append(f"volume {a['rel_volume']:.2f}× its 20-bar average")
-
-    head = f"{name} ({symbol}) on {exchange}, {INTERVALS[interval]}, {len(bars)} bars, {verdict}"
-    if condition and condition != "neutral":
-        head += f", RSI {a['rsi']} ({condition})"
-    lines = [head + f". Last close {crypto.money(a['price'])} {currency}."]
-    if parts:
-        lines.append("; ".join(parts) + ".")
-    lines.append(
-        "These are measurements of past closes, not a forecast. Say so if the "
-        "answer reads as a prediction. The reader sees the candles, so name a "
-        "couple of closing prices rather than describing every bar."
+    figures = analyse(bars)
+    subject = f"{name} ({symbol}) on {exchange}, {wording}, {len(bars)} bars"
+    text = trend_prose(
+        subject,
+        figures,
+        close=f"{money(figures['price'])} {currency}",
+        source=f"Yahoo Finance {wording} candles",
+        unit="day" if interval == "1d" else "bar",
     )
-    lines.append(f"Source: Yahoo Finance {INTERVALS[interval]} candles, as of "
-                 f"{crypto.when(int(time.time()))}.")
-    text = "\n".join(lines)[:MAX_CHARS]
+    url = PAGE_URL.format(symbol=symbol)
+    card = trend_card(figures, bars, symbol=symbol, quote=currency, source="Yahoo Finance",
+                      url=url, interval=interval, name=name, exchange=exchange)
+    row = source_row(url, f"{symbol} {wording} — Yahoo Finance")
+    return ToolResult.ok(text, sources=[row], card=card)
 
-    card = {
-        "symbol": symbol,
-        "quote": currency,
-        "name": name,
-        "exchange": exchange,
-        "verdict": verdict,
-        "condition": condition,
-        "price": a["price"],
-        "ma20": a["ma20"],
-        "ma50": a["ma50"],
-        "ma200": a["ma200"],
-        "above20": a["above20"],
-        "above50": a["above50"],
-        "above200": a["above200"],
-        "slope20": a["slope20"],
-        "rsi": a["rsi"],
-        "atr_pct": a["atr_pct"],
-        "range_high": a["range_high"],
-        "range_low": a["range_low"],
-        "range_pos": a["range_pos"],
-        "change_7": a["change_7"],
-        "change_30": a["change_30"],
-        "change_90": a["change_90"],
-        "rel_volume": a["rel_volume"],
-        "bar_count": len(bars),
-        "interval": interval,
-        "source": "Yahoo Finance",
-        "url": PAGE_URL.format(symbol=symbol),
-        "at": int(time.time()),
-        "candles": [[b["t"], b["o"], b["h"], b["l"], b["c"], b["v"]] for b in bars],
-        "ma20_series": market.ma_series(closes, 20),
-        "ma50_series": market.ma_series(closes, 50),
-        "chart_high": max(b["h"] for b in bars),
-        "chart_low": min(b["l"] for b in bars),
-        "change_window": market.change_of(closes, len(closes) - 1),
-    }
-    source_row = {
-        "source": card["url"],
-        "title": f"{symbol} {INTERVALS[interval]} — Yahoo Finance",
-        "kind": "web",
-        "read": False,
-    }
-    return True, text, "", {"sources": [source_row], "card": card}
+
+_RATE_LIMITED = "Yahoo Finance is rate-limiting right now. Try again in a minute."
+_UNREACHABLE = "Yahoo Finance did not answer in time."
+
+
+def _yahoo_error(e, missing=""):
+    """The tool's answer when a Yahoo call could not be made. A rate limit is a
+    wait and gets its own sentence; an `Unavailable` says why in the caller's
+    own words or in its own; a transport failure is an unreachable source."""
+    if isinstance(e, httpx.HTTPError):
+        return ToolResult.failed(TOOL_ERROR, _UNREACHABLE, reason="yahoo did not answer")
+    if e.limited:
+        return ToolResult.failed(TOOL_ERROR, _RATE_LIMITED, reason="yahoo is rate-limiting")
+    return ToolResult.failed(TOOL_ERROR, missing + f"{e.reason}." if missing else
+                             f"Yahoo Finance could not be reached: {e.reason}.",
+                             reason=e.reason)
 
 
 def _region(value):
@@ -540,26 +453,29 @@ def _region(value):
 
 
 async def read_screen(args):
-    """`(ok, text, reason, meta)` for the screener tool."""
-    args = as_args(args)
+    """Answer the screener tool, or say which failure stopped it."""
     region = _region(args.get("region"))
     if not region:
         names = ", ".join(f"{code} ({name})" for code, name in sorted(REGIONS.items()))
-        return (False,
-                f"No screen exists for that market. Yahoo's screener works one "
-                f"exchange at a time; the ones it covers are {names}. A screen "
-                f"across every market at once is not something it offers.",
-                "no screen for that market", {})
+        return ToolResult.failed(
+            TOOL_ERROR,
+            f"No screen exists for that market. Yahoo's screener works one "
+            f"exchange at a time; the ones it covers are {names}. A screen "
+            f"across every market at once is not something it offers.",
+            reason="no screen for that market",
+        )
 
     sort = str(args.get("sort") or "gainers").strip().lower()
     if sort not in SORTS:
-        return (False, f"Sort must be one of {', '.join(SORTS)}.",
-                "unsupported sort", {})
+        return ToolResult.failed(
+            TOOL_ERROR, f"Sort must be one of {', '.join(SORTS)}.",
+            reason="unsupported sort",
+        )
     try:
-        limit = int(args.get("limit") or 10)
+        limit = int(args.get("limit") or SCREEN_DEFAULT)
     except (TypeError, ValueError):
-        limit = 10
-    limit = min(max(limit, 5), 50)
+        limit = SCREEN_DEFAULT
+    limit = min(max(limit, SCREEN_MIN), SCREEN_MAX)
 
     field, direction, wording = SORTS[sort]
     query = {
@@ -583,47 +499,37 @@ async def read_screen(args):
             d = await _json(client, SCREEN_URL,
                             {"lang": "en-US", "region": "US"},
                             guarded=True, method="POST", body=body)
-    except Unavailable as e:
-        if e.limited:
-            text = "Yahoo Finance is rate-limiting right now. Try again in a minute."
-            return False, text, "yahoo is rate-limiting", {}
-        text = f"Yahoo Finance could not be reached: {e.reason}."
-        return False, text, e.reason, {}
-    except httpx.HTTPError:
-        return False, "Yahoo Finance did not answer in time.", "yahoo did not answer", {}
+    except (Unavailable, httpx.HTTPError) as e:
+        return _yahoo_error(e)
 
     result = ((d.get("finance") or {}).get("result") or [None])[0]
     if not result:
-        return (False, f"Yahoo's screen for {REGIONS[region]} came back empty.",
-                "the screen came back empty", {})
+        return ToolResult.failed(
+            TOOL_ERROR, f"Yahoo's screen for {REGIONS[region]} came back empty.",
+            reason="the screen came back empty",
+        )
 
     rows = []
     for q in result.get("quotes") or []:
-        if q.get("regularMarketPrice") is None:
+        row = _row(q)
+        if row["price"] is None:
             continue
-        rows.append({
-            "symbol": q.get("symbol") or "",
-            "name": q.get("shortName") or q.get("longName") or q.get("symbol") or "",
-            "quote": q.get("currency"),
-            "price": _num(q.get("regularMarketPrice")),
-            "change": _num(q.get("regularMarketChangePercent")),
-            "volume": _pos(_num(q.get("regularMarketVolume"))),
-            "market_cap": _pos(_num(q.get("marketCap"))),
-            "url": PAGE_URL.format(symbol=q.get("symbol") or ""),
-        })
+        rows.append(row)
     if not rows:
-        return (False, f"No priced rows came back for {REGIONS[region]}.",
-                "the screen came back empty", {})
+        return ToolResult.failed(
+            TOOL_ERROR, f"No priced rows came back for {REGIONS[region]}.",
+            reason="the screen came back empty",
+        )
 
     market_name = REGIONS[region]
     text = (f"{wording.capitalize()} on {market_name}, {len(rows)} of "
             f"{result.get('total') or len(rows)} listings:\n")
     for r in rows:
-        line = f"- {r['symbol']} {r['name']}: {crypto.money(r['price'])} {r['quote'] or ''}".rstrip()
+        line = f"- {r['symbol']} {r['name']}: {money(r['price'])} {r['quote'] or ''}".rstrip()
         if r["change"] is not None:
             line += f", {r['change']:+.2f}%"
         if r["volume"] is not None:
-            line += f", volume {crypto.big(r['volume'])}"
+            line += f", volume {big(r['volume'])}"
         text += line + "\n"
     text += (
         "Yahoo's ranking, read as it stood when the tool ran. Say the list is a "
@@ -640,124 +546,121 @@ async def read_screen(args):
         "source": "Yahoo Finance",
         "at": int(time.time()),
     }
-    source_row = {
-        "source": PAGE_URL.format(symbol=rows[0]["symbol"]),
-        "title": f"{wording.capitalize()} — {market_name}",
-        "kind": "web",
-        "read": False,
-    }
-    return True, text[:MAX_CHARS], "", {"sources": [source_row], "card": card}
+    row = source_row(PAGE_URL.format(symbol=rows[0]["symbol"]),
+                     f"{wording.capitalize()} — {market_name}")
+    return ToolResult.ok(text[:MAX_CHARS], sources=[row], card=card)
 
 
-TOOL = {
-    "type": "function",
-    "function": {
-        "name": "equity",
-        "description": (
-            "Current price of a share, index or ETF, with today's move, the day "
-            "and 52-week ranges, volume, market cap, P/E and dividend yield. "
-            "Covers the exchanges Yahoo Finance lists, which is most of the "
-            "world: give a name ('bank mandiri', 'toyota') or a ticker with its "
-            "exchange ('BBCA.JK', '7203.T', '^JKSE'). Several symbols may be "
-            "asked for in one call. Read-only."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": (
-                        "One symbol, or up to ten separated by commas. A name is "
-                        "searched, a ticker is taken as written. 'IHSG' and "
-                        "'LQ45' are recognised."
-                    ),
-                },
-            },
-            "required": ["symbol"],
+QUOTE_DESCRIPTION = (
+    "Current price of a share, index or ETF, with today's move, the day "
+    "and 52-week ranges, volume, market cap, P/E and dividend yield. "
+    "Covers the exchanges Yahoo Finance lists, which is most of the "
+    "world: give a name ('bank mandiri', 'toyota') or a ticker with its "
+    "exchange ('BBCA.JK', '7203.T', '^JKSE'). Several symbols may be "
+    "asked for in one call. Read-only."
+)
+TREND_DESCRIPTION = (
+    "Read the trend of a share or index from its candles and draw them: "
+    "moving averages, RSI, volatility, where price sits in its recent "
+    "range, and the move over 7, 30 and 90 bars. Use it when asked "
+    "whether a stock is trending, stretched or worth watching, or when "
+    "a chart answers better than a sentence. Read-only. It describes "
+    "past closes and does not forecast."
+)
+SCREEN_DESCRIPTION = (
+    "List shares on one exchange by how they moved: biggest gainers, "
+    "biggest losers, most traded, or largest by market cap. Use it for "
+    "'what is moving in Indonesia today' or 'the biggest shares on the "
+    "IDX'. It ranks listings Yahoo Finance covers; it is a snapshot, not "
+    "the whole market. Read-only."
+)
+
+QUOTE_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "symbol": {
+            "type": "string",
+            "description": (
+                f"One symbol, or up to {MAX_SYMBOLS} separated by commas. A "
+                "name is searched, a ticker is taken as written. "
+                f"{', '.join(repr(n) for n in ALIAS_NAMES)} are recognised."
+            ),
+        },
+    },
+    "required": ["symbol"],
+}
+TREND_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "symbol": {
+            "type": "string",
+            "description": "The listing: 'BBCA.JK', '^JKSE', 'AAPL', or a name.",
+        },
+        "interval": {
+            "type": "string",
+            "enum": list(INTERVALS),
+            "description": "Bar size. '1d' daily, '1wk' weekly, '1mo' monthly. Default 1d.",
+        },
+        "days": {
+            "type": "integer",
+            "description": f"Calendar days of history to read, {MIN_DAYS} to "
+                           f"{MAX_DAYS}. Default {DEFAULT_DAYS}.",
+        },
+    },
+    "required": ["symbol"],
+}
+SCREEN_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "region": {
+            "type": "string",
+            "description": (
+                f"Market: 'id' for Indonesia, or {', '.join(REGIONS)}. Default id."
+            ),
+        },
+        "sort": {
+            "type": "string",
+            "enum": list(SORTS),
+            "description": f"{', '.join(SORTS)}. Default gainers.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": (
+                f"Rows to return, {SCREEN_MIN} to {SCREEN_MAX}. Default {SCREEN_DEFAULT}."
+            ),
         },
     },
 }
 
 
-TREND_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "equity_trend",
-        "description": (
-            "Read the trend of a share or index from its candles and draw them: "
-            "moving averages, RSI, volatility, where price sits in its recent "
-            "range, and the move over 7, 30 and 90 bars. Use it when asked "
-            "whether a stock is trending, stretched or worth watching, or when "
-            "a chart answers better than a sentence. Read-only. It describes "
-            "past closes and does not forecast."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "symbol": {
-                    "type": "string",
-                    "description": "The listing: 'BBCA.JK', '^JKSE', 'AAPL', or a name.",
-                },
-                "interval": {
-                    "type": "string",
-                    "enum": list(INTERVALS),
-                    "description": "Bar size. '1d' daily, '1wk' weekly, '1mo' monthly. Default 1d.",
-                },
-                "days": {
-                    "type": "integer",
-                    "description": f"Calendar days of history to read, {MIN_DAYS} to "
-                                   f"{MAX_DAYS}. Default {DEFAULT_DAYS}.",
-                },
-            },
-            "required": ["symbol"],
-        },
-    },
-}
-
-
-SCREEN_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "screen",
-        "description": (
-            "List shares on one exchange by how they moved: biggest gainers, "
-            "biggest losers, most traded, or largest by market cap. Use it for "
-            "'what is moving in Indonesia today' or 'the biggest shares on the "
-            "IDX'. It ranks listings Yahoo Finance covers; it is a snapshot, not "
-            "the whole market. Read-only."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "region": {
-                    "type": "string",
-                    "description": (
-                        "Market: 'id' for Indonesia, or us, jp, hk, gb, de, in, "
-                        "br, ca, au, sg, kr, tw, my, th. Default id."
-                    ),
-                },
-                "sort": {
-                    "type": "string",
-                    "enum": list(SORTS),
-                    "description": "gainers, losers, active or largest. Default gainers.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Rows to return, 5 to 50. Default 10.",
-                },
-            },
-        },
-    },
-}
-
-
-async def run(args):
-    return (await read(args))[1]
-
-
-async def run_trend(args):
-    return (await read_trend(args))[1]
-
-
-async def run_screen(args):
-    return (await read_screen(args))[1]
+def register():
+    registry.add(Tool(
+        name=NAME,
+        description=QUOTE_DESCRIPTION,
+        parameters=QUOTE_PARAMETERS,
+        handler=read,
+        permission=EXTERNAL,
+        timeout=TIMEOUT_S,
+        tags=TAGS,
+        carded=True,
+    ))
+    registry.add(Tool(
+        name=TREND_NAME,
+        description=TREND_DESCRIPTION,
+        parameters=TREND_PARAMETERS,
+        handler=read_trend,
+        permission=EXTERNAL,
+        timeout=TREND_TIMEOUT_S,
+        tags=TAGS,
+        carded=True,
+    ))
+    registry.add(Tool(
+        name=SCREEN_NAME,
+        description=SCREEN_DESCRIPTION,
+        parameters=SCREEN_PARAMETERS,
+        handler=read_screen,
+        permission=EXTERNAL,
+        timeout=SCREEN_TIMEOUT_S,
+        tags=TAGS,
+        carded=True,
+    ))

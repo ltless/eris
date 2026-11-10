@@ -2,7 +2,11 @@ const $ = (id) => document.getElementById(id);
 const tabLogin = $("tabLogin"), tabReg = $("tabReg");
 const fLogin = $("fLogin"), fReg = $("fReg");
 
-if (fetch("/api/auth/me").then((r) => { if (r.ok) location.href = "/"; })) {}
+// A session that still works skips the form: this page is for signed-out
+// visitors, and the chat page is where a signed-in one belongs.
+fetch("/api/auth/me").then((r) => {
+  if (r.ok) location.href = "/";
+});
 
 function tab(login) {
   tabLogin.classList.toggle("on", login);

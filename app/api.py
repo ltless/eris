@@ -3,8 +3,7 @@
 This layer holds no execution logic. `/api/chat` builds a RunRequest, drives
 the shared engine, and hands its events to `sse`; the engine does the rest.
 Who the caller is comes from `deps`, and the model transports from `app/models`,
-re-exported here because the routes and the existing tests still refer to them
-by these names.
+imported here by the routes directly.
 """
 
 import asyncio
@@ -26,10 +25,8 @@ from pydantic import BaseModel
 
 from . import auth, chats, encoding, favicons, tokens
 from .config import settings
-from .deps import db_user, require_session, require_user
+from .deps import require_session, require_user
 from .models import (
-    FALLBACK_LADDER,
-    ModelError,
     cached_ladder,
     effort_label,
     healthy,
@@ -38,36 +35,31 @@ from .models import (
     model_label,
     model_stats,
     rung_index,
+    rungs_of,
     think_ladder,
     think_value,
-    # Re-exported for the tests, which reach the transport through this module.
-    stream_completion,
     title_for,
-    to_native,
+    warm,
 )
-from .runtime import events as ev
 from .runtime.budgets import Budget
-from .runtime.context import ContextBudget, assemble, recent
+from .runtime.context import TRUNCATED, assemble
 from .runtime.engine import Engine, RunRequest
-from .runtime.events import Emitter
-from .sse import sse, sse_frame
+from .sse import carded, sse, sse_frame
 from .tools import builtin as builtin_tools
-from .tools.registry import ToolContext
+from .tools import fetch
+from .tools.registry import ToolContext, source_view
 
 app = FastAPI(title="Eris")
 
-ROOT = encoding.ROOT
 STATIC_DIR = encoding.STATIC_DIR
 MEDIA_DIR = encoding.MEDIA_DIR
 
-builtin_tools.register_builtins()
+# The most context tokens a preference may ask for. The settings dialog reads
+# its field's `max` from here, so the bound the server enforces and the one the
+# browser shows are the same number.
+CTX_MAX = 262144
 
-# Ladder probes started in the background, by model id. The task is referenced
-# so it is not collected mid-flight, and an id is tried once per process: a
-# probe that answered nothing is not cached, and a poll every few seconds must
-# not turn that into a probe every few seconds.
-_WARMING: dict = {}
-_WARMED: set = set()
+builtin_tools.register_builtins()
 
 
 # Request models.
@@ -129,10 +121,7 @@ def _last_user_text(messages):
         if isinstance(c, str):
             return c
         if isinstance(c, list):
-            return next(
-                (p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"),
-                "",
-            )
+            return next((t for t in map(encoding.text_part_text, c) if t is not None), "")
     return ""
 
 
@@ -143,16 +132,24 @@ def _with_quote(content, quote):
     quote = (quote or "").strip()
     if not quote:
         return content
-    block = "\n".join("> " + line for line in quote.splitlines())
+    return _prepend_text(content, "\n".join("> " + line for line in quote.splitlines()))
+
+
+def _prepend_text(content, text):
+    """`content` with `text` and a blank line in front of its first words.
+
+    A turn is either a string or a list of parts, and the text belongs in the
+    first text part so the images keep their order.
+    """
     if isinstance(content, str):
-        return f"{block}\n\n{content}" if content else block
+        return f"{text}\n\n{content}" if content else text
     if isinstance(content, list):
         parts = [dict(p) for p in content]
         for p in parts:
             if isinstance(p, dict) and p.get("type") == "text":
-                p["text"] = f"{block}\n\n{p.get('text', '')}"
+                p["text"] = f"{text}\n\n{encoding.text_part_text(p)}"
                 return parts
-        return [{"type": "text", "text": block}, *parts]
+        return [{"type": "text", "text": text}, *parts]
     return content
 
 
@@ -182,14 +179,12 @@ def _clean_files(files):
     kept = []
     spent = 0
     for f in files or []:
-        text = f.text if isinstance(f, AttachedFile) else f.get("text")
-        text = text if isinstance(text, str) else ""
+        text = f.text
         if len(text) > MAX_FILE_CHARS:
-            text = text[:MAX_FILE_CHARS].rstrip() + "\n[... truncated]"
+            text = text[:MAX_FILE_CHARS].rstrip() + TRUNCATED
         if spent + len(text) > MAX_FILES_CHARS:
             break
-        raw_name = f.name if isinstance(f, AttachedFile) else f.get("name")
-        name = (raw_name or "file").strip()[:120] or "file"
+        name = (f.name or "file").strip()[:120] or "file"
         kept.append({"name": name, "text": text})
         spent += len(text)
         if len(kept) >= MAX_FILES:
@@ -220,33 +215,20 @@ def _with_files(content, files):
         # in it would end it.
         lang = lang if lang.isalnum() and len(lang) <= 12 else ""
         blocks.append(f"### File: {f['name']}\n```{lang}\n{f['text']}\n```")
-    text = "\n\n".join(blocks)
-    if isinstance(content, str):
-        return f"{text}\n\n{content}" if content else text
-    if isinstance(content, list):
-        parts = [dict(p) for p in content]
-        for p in parts:
-            if isinstance(p, dict) and p.get("type") == "text":
-                p["text"] = f"{text}\n\n{p.get('text', '')}"
-                return parts
-        return [{"type": "text", "text": text}, *parts]
-    return content
+    return _prepend_text(content, "\n\n".join(blocks))
 
 
-def _last_user_files(messages):
+def _last_user_files(messages, cleaned):
     """What was attached to the question being asked, in the order it was
     attached. Only the newest user turn: older files come back from storage
     when the chat is reopened."""
-    for m in reversed(messages):
-        # The caller passes the request models on one path and plain dicts on
-        # the other, so the field is read either way.
-        role = m.get("role") if isinstance(m, dict) else m.role
-        if role == "user":
-            return _clean_files(m.get("files") if isinstance(m, dict) else m.files)
+    for m, files in zip(reversed(messages), reversed(cleaned)):
+        if m.role == "user":
+            return files
     return None
 
 
-def _run_files(messages):
+def _run_files(messages, cleaned):
     """Every file this run may read, oldest turn first, so `read_file` can find
     any name the prompt shows. The prompt names a file from an earlier turn as
     well, and a tool that answers "no such attachment" to a name it was just
@@ -254,12 +236,10 @@ def _run_files(messages):
     resolves to the newer one, which is what the model reading the prompt sees
     last."""
     by_name = {}
-    for m in messages:
-        role = m.get("role") if isinstance(m, dict) else m.role
-        if role != "user":
+    for m, files in zip(messages, cleaned):
+        if m.role != "user":
             continue
-        raw = m.get("files") if isinstance(m, dict) else m.files
-        for f in _clean_files(raw) or ():
+        for f in files or ():
             by_name[f["name"]] = f
     return tuple(by_name.values())
 
@@ -278,21 +258,33 @@ def _last_user_images(messages):
         content = m.get("content")
         if not isinstance(content, list):
             return []
-        raws = [
-            chats.decode_data_url(p["image_url"]["url"])
-            for p in content
-            if isinstance(p, dict) and p.get("type") == "image_url"
-            and isinstance(p.get("image_url"), dict)
-        ]
+        raws = [chats.decode_data_url(encoding.image_part_url(p)) for p in content]
         return [raw for raw in raws if raw]
     return []
 
 
-def _build_request(req: ChatRequest, u, messages, files=None):
-    prefs = u.get("prefs") or {}
+def _prefs(u):
+    """The account's stored settings. A request names a model only when it
+    overrides one, and the stored pick is the one every route falls back to."""
+    return u.get("prefs") or {}
+
+
+def _asking_model(asked, prefs, fallback=None):
+    """The model a request names first, then the account's stored pick, then
+    whatever the caller answers for neither."""
+    return asked or prefs.get("model") or fallback
+
+
+def _wanted_ctx(prefs):
+    """The context the account asked for in the panel, or `None` for its
+    default. Stored as 0 when unset, which is not a context to ask for."""
+    return int(prefs.get("ctx") or 0) or None
+
+
+def _build_request(req: ChatRequest, u, messages, files):
+    prefs = _prefs(u)
     base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
     system = assemble(
-        ContextBudget(),
         base_prompt=base_prompt,
         today=date.today().isoformat(),
         instruction=(
@@ -303,8 +295,8 @@ def _build_request(req: ChatRequest, u, messages, files=None):
             "for a question you can simply answer."
         ),
     )
-    tool_ctx = ToolContext(user_id=u["id"], files=tuple(files or ()))
-    model = req.model or prefs.get("model") or None
+    tool_ctx = ToolContext(files=tuple(files))
+    model = _asking_model(req.model, prefs)
     # The stored effort is an index, and which value it means belongs to the
     # model being asked: a ladder is per model, so it is resolved here, against
     # this model's own, rather than sent as the index it was remembered as.
@@ -314,47 +306,45 @@ def _build_request(req: ChatRequest, u, messages, files=None):
     # panel's question; when the panel has not opened yet, `think_value` answers
     # for the unknown case with the value the request carried before any ladder.
     ladder = cached_ladder(model)
-    # A reopened chat sends its stored turns back with each question, so the
-    # window is what actually fits rather than everything the chat ever held.
-    window = recent(messages)
+    # A reopened chat sends its stored turns back with each question; the engine
+    # windows them, so what arrives here is everything the chat ever held.
     return RunRequest(
-        messages=[{"role": "system", "content": system}] + window,
+        messages=[{"role": "system", "content": system}] + messages,
         model=model,
         thinking=think_value(prefs.get("effort"), ladder),
-        ctx_tokens=int(prefs.get("ctx") or 0) or None,
-        tags=("chat",),
-        budget=Budget(
-            rounds=settings.max_tool_rounds,
-            extra_rounds=settings.extra_tool_rounds,
-            tool_output_chars=settings.tool_output_chars,
-        ),
+        ctx_tokens=_wanted_ctx(prefs),
+        budget=Budget(),
         tool_context=tool_ctx,
-        system_prompt=base_prompt,
     )
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest, u: dict = Depends(require_user)):
+    # The two readers below look only at role and content, and both want plain
+    # dicts rather than the request models, so the projection is made once.
+    plain = [{"role": m.role, "content": m.content} for m in req.messages]
     # The question is what was typed, the quote is what it answers. They are
     # stored apart so a reload can draw them as two things, and joined only for
     # the model, which reads a quoted line as the reader's own words.
-    query = _last_user_text([{"role": m.role, "content": m.content} for m in req.messages])
+    query = _last_user_text(plain)
     quoted = next((m.quote for m in reversed(req.messages)
                    if m.role == "user" and m.quote), None)
+    # Capped once: the same cleaned turn is what the model reads, what the run
+    # may hand to `read_file`, and what the database stores.
+    cleaned = [_clean_files(m.files) for m in req.messages]
     # A reply can be nothing but a selection, with no words typed under it. The
     # quote is what was said, then, and it names the chat when the question is
     # empty.
     # A file alone is a question too, so it can name the chat like a quote can.
-    files = _last_user_files(req.messages)
+    files = _last_user_files(req.messages, cleaned)
     subject = query or quoted or (files[0]["name"] if files else "")
     messages = [
-        {"role": m.role,
-         "content": _with_quote(_with_files(m.content, _clean_files(m.files)), m.quote)}
-        for m in req.messages
+        {"role": m.role, "content": _with_quote(_with_files(m.content, f), m.quote)}
+        for m, f in zip(req.messages, cleaned)
     ]
-    attached = _last_user_images([{"role": m.role, "content": m.content} for m in req.messages])
-    request = _build_request(req, u, messages, _run_files(req.messages))
-    engine = Engine(request, emitter=Emitter())
+    attached = _last_user_images(plain)
+    request = _build_request(req, u, messages, _run_files(req.messages, cleaned))
+    engine = Engine(request)
 
     async def gen():
         if req.regenerate:
@@ -381,13 +371,13 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
             if (query or quoted or attached or files) and not req.regenerate:
                 chats.save_turn(u["id"], req.chat_id, "user", query, quote=quoted,
                                 images=attached or None, files=files)
-                chats.touch_title(req.chat_id, query or quoted or subject, u["id"])
+                chats.touch_title(req.chat_id, subject, u["id"])
             answer = engine.result.answer
             if answer:
                 chats.save_turn(
                     u["id"], req.chat_id, "assistant", answer,
                     thinking=engine.result.thinking or None,
-                    sources=_number_sources(engine.sources),
+                    sources=_stored_sources(engine.result.sources),
                     web=[g for g in web_groups if g["items"]],
                     fetches=fetch_rows or None,
                     cards=card_rows or None,
@@ -399,59 +389,59 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         try:
             async for event in engine.run():
                 frame = sse_frame(event)
-                if frame is not None:
-                    if event.type == ev.TOOL_STARTED and frame.get("type") == "tool":
-                        web_groups.append({"r": frame["r"], "query": frame["query"], "items": []})
-                    elif event.type == ev.TOOL_STARTED and frame.get("type") == "fetch":
-                        # Recorded from the start frame, not the closing one: a
-                        # read that failed is still a read the user watched, and
-                        # the URL is only ever stated here.
-                        fetch_rows.append({"r": frame["r"], "url": frame["url"],
-                                           "chars": 0, "ok": True, "reason": ""})
-                    elif event.type == ev.TOOL_COMPLETED and frame.get("type") == "fetch_done":
-                        row = next((f for f in reversed(fetch_rows)
-                                    if f["r"] == frame["r"] and not f["chars"]), None)
-                        if row is not None:
-                            row["chars"] = frame["chars"]
-                    elif event.type == ev.TOOL_FAILED and frame.get("tool") == "fetch_url":
-                        row = next((f for f in reversed(fetch_rows)
-                                    if f["r"] == frame["r"] and f["ok"]), None)
-                        if row is not None:
-                            row["ok"] = False
-                            # Stored so the card says why after a reload; the
-                            # streamed frame is the only other place it exists.
-                            row["reason"] = frame.get("reason", "")
-                    elif event.type == ev.SOURCE_FOUND and frame.get("type") == "sources":
-                        items = [i for i in frame["items"] if i.get("kind") == "web"]
-                        if items:
-                            group = next((g for g in web_groups if g["r"] == frame["r"]), None)
-                            if group is None:
-                                group = {"r": frame["r"], "query": "", "items": []}
-                                web_groups.append(group)
-                            group["items"].extend(items)
-                            yield sse({"type": "sources", "r": frame["r"], "items": items})
-                    elif event.type == ev.TOOL_COMPLETED and frame.get("type") in (
-                        "weather", "wayback", "crypto", "crypto_trend",
-                        "equity", "equity_trend", "screen", "plan"
-                    ):
-                        # One row per card, in the order they were drawn, each
-                        # carrying the round it belongs to so a replay puts it
-                        # back among that round's other cards.
-                        card_rows.append({"r": frame["r"], "tool": frame["type"],
-                                          "card": frame["card"]})
-                    elif event.type == ev.TOOL_FAILED and frame.get("tool") in (
-                        "weather", "wayback", "crypto", "crypto_trend",
-                        "equity", "equity_trend", "screen", "plan"
-                    ):
-                        # A card still appears, in its failed state, so a reload
-                        # shows the failure rather than a gap where a call was.
-                        card_rows.append({"r": frame["r"], "tool": frame["tool"],
-                                          "card": None, "reason": frame.get("reason", "")})
-                    if frame.get("type") != "sources":
-                        yield sse(frame)
+                if frame is None:
+                    continue
+                # Branched on the frame's own type, never on the event's: which
+                # event became which frame is stated in `sse_frame` and nowhere
+                # else, so asking it a second time here would be a second copy
+                # of that mapping. A carded tool's frame is named after the tool,
+                # so `carded()` is what tells a card apart from any other frame.
+                kind = frame["type"]
+                if kind == "tool":
+                    web_groups.append({"r": frame["r"], "query": frame["query"], "items": []})
+                elif kind == "fetch":
+                    # Recorded from the start frame, not the closing one: a read
+                    # that failed is still a read the user watched, and the URL
+                    # is only ever stated here.
+                    fetch_rows.append({"r": frame["r"], "url": frame["url"],
+                                       "chars": 0, "ok": True, "reason": ""})
+                elif kind == "fetch_done":
+                    row = next((f for f in reversed(fetch_rows)
+                                if f["r"] == frame["r"] and not f["chars"]), None)
+                    if row is not None:
+                        row["chars"] = frame["chars"]
+                elif kind == "tool_error" and frame.get("tool") == fetch.NAME:
+                    row = next((f for f in reversed(fetch_rows)
+                                if f["r"] == frame["r"] and f["ok"]), None)
+                    if row is not None:
+                        row["ok"] = False
+                        # Stored so the card says why after a reload; the
+                        # streamed frame is the only other place it exists.
+                        row["reason"] = frame.get("reason", "")
+                elif kind == "tool_error" and frame.get("tool") in carded():
+                    # A card still appears, in its failed state, so a reload
+                    # shows the failure rather than a gap where a call was.
+                    card_rows.append({"r": frame["r"], "tool": frame["tool"],
+                                      "card": None, "reason": frame.get("reason", "")})
+                elif kind in carded():
+                    # One row per card, in the order they were drawn, each
+                    # carrying the round it belongs to so a replay puts it back
+                    # among that round's other cards.
+                    card_rows.append({"r": frame["r"], "tool": kind, "card": frame["card"]})
+                elif kind == "sources":
+                    items = [i for i in frame["items"] if i.get("kind") == "web"]
+                    if items:
+                        group = next((g for g in web_groups if g["r"] == frame["r"]), None)
+                        if group is None:
+                            group = {"r": frame["r"], "query": "", "items": []}
+                            web_groups.append(group)
+                        group["items"].extend(items)
+                        yield sse({"type": "sources", "r": frame["r"], "items": items})
+                    # The unfiltered frame would repeat rows that were dropped
+                    # as non-web, so this frame is the one that is not forwarded.
+                    continue
+                yield sse(frame)
             answered = True
-        except ModelError as e:
-            yield sse({"type": "error", "message": f"Cannot reach model server: {e}"})
         finally:
             # Persist even if the client hit Stop mid-stream: the turn happened
             # and should still be there after a refresh. No yields are allowed
@@ -479,12 +469,13 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-def _number_sources(sources):
-    out = []
-    for i, s in enumerate(sources):
-        out.append({"n": i + 1, "source": s.get("source", ""), "kind": s.get("kind", "web"),
-                    **({"title": s["title"]} if s.get("title") else {})})
-    return out
+def _stored_sources(sources):
+    """The `sources` rows a turn keeps. The run already numbered each one as it
+    found it, so the stored `n` is the one the live frames carried: renumbering
+    here would move every citation of a turn with more than one search. The
+    fields are `source_view`'s, so a rewound turn and a live one draw the same
+    row."""
+    return [{"n": s["n"], **source_view(s)} for s in sources]
 
 
 # Stored chats.
@@ -534,7 +525,7 @@ async def list_tokens(u: dict = Depends(require_session)):
     the reader cannot tell apart, and a token that could be read back would be a
     credential sitting in a page cache.
     """
-    return {"items": tokens.list_all(u["id"]), "max": tokens.MAX_TOKENS}
+    return {"items": tokens.list_all(u["id"])}
 
 
 @app.post("/api/tokens")
@@ -555,13 +546,20 @@ async def revoke_token(token_id: str, u: dict = Depends(require_session)):
 # Auth.
 
 
+def _set_session(res, token):
+    """Hand the browser its session cookie. One place states how a session is
+    carried, so a flag set here cannot be missing from one of the three routes
+    that sign someone in."""
+    res.set_cookie(auth.SESSION_COOKIE, token, httponly=True, samesite="lax",
+                   max_age=auth.SESSION_TTL, path="/")
+
+
 @app.post("/api/auth/register")
 async def register(req: RegisterRequest, res: Response):
     u, err = auth.create_user(req.name, req.email, req.password)
     if err:
         raise HTTPException(400, err)
-    res.set_cookie("session", auth.new_session(u["id"]), httponly=True, samesite="lax",
-                   max_age=auth.SESSION_TTL, path="/")
+    _set_session(res, auth.new_session(u["id"]))
     return u
 
 
@@ -570,8 +568,7 @@ async def login(req: LoginRequest, res: Response):
     u = auth.verify_user(req.email, req.password)
     if not u:
         raise HTTPException(401, "email/password salah")
-    res.set_cookie("session", auth.new_session(u["id"]), httponly=True, samesite="lax",
-                   max_age=auth.SESSION_TTL, path="/")
+    _set_session(res, auth.new_session(u["id"]))
     return u
 
 
@@ -582,7 +579,7 @@ async def update_profile(req: ProfileRequest, u: dict = Depends(require_session)
         if not name:
             raise HTTPException(400, "name required")
         auth.set_name(u["id"], name[:40])
-    return auth.profile(db_user(u["id"]))
+    return auth.profile(auth.user_row(u["id"]))
 
 
 @app.post("/api/auth/password")
@@ -590,8 +587,7 @@ async def update_password(req: PasswordRequest, res: Response, u: dict = Depends
     token, err = auth.change_password(u["id"], req.old, req.new)
     if err:
         raise HTTPException(400, err)
-    res.set_cookie("session", token, httponly=True, samesite="lax",
-                   max_age=auth.SESSION_TTL, path="/")
+    _set_session(res, token)
     return {"ok": True}
 
 
@@ -599,27 +595,15 @@ async def update_password(req: PasswordRequest, res: Response, u: dict = Depends
 async def models(u: dict = Depends(require_user)):
     items, caps = await asyncio.gather(list_models(), listed_capabilities())
     caps = caps or {}
-    prefs = u.get("prefs") or {}
-    default = prefs.get("model") or settings.model_name
+    prefs = _prefs(u)
+    default = _asking_model(None, prefs, settings.model_name)
     if default not in items:
         items.insert(0, default)
     # The ladder is a probe, and a probe on a cold model waits for the load, so
     # it runs after the answer instead of inside it. The effort control asks
     # `/api/effort`, which finds the answer already cached by the time a reader
     # opens it.
-    if default not in _WARMING and default not in _WARMED:
-        _WARMED.add(default)
-        task = asyncio.create_task(think_ladder(default))
-        _WARMING[default] = task
-
-        def _forget(t, mid=default):
-            _WARMING.pop(mid, None)
-            # A probe that raised must not surface as an unretrieved task
-            # exception; it changes nothing about the answer this route gives.
-            if not t.cancelled():
-                t.exception()
-
-        task.add_done_callback(_forget)
+    warm(default)
     # The id is what the endpoint accepts and what prefs store; the label is
     # what a person reads. Parallel rather than a list of objects, so a client
     # that only knows `items` keeps working unchanged.
@@ -635,8 +619,7 @@ async def models(u: dict = Depends(require_user)):
         "labels": {mid: model_label(mid) for mid in items},
         "default": default,
         "capabilities": {mid: caps[mid] for mid in items if mid in caps},
-        "effort": prefs.get("effort"),
-        "ctx": prefs.get("ctx"),
+        "ctx_max": CTX_MAX,
     }
 
 
@@ -648,13 +631,13 @@ async def effort(model: str | None = None, u: dict = Depends(require_user)):
     wait on a round trip; the answer is cached per model. The list is never
     empty, and `always` marks a model with one rung.
     """
-    prefs = u.get("prefs") or {}
-    mid = model or prefs.get("model") or settings.model_name
+    prefs = _prefs(u)
+    mid = _asking_model(model, prefs, settings.model_name)
     ladder = await think_ladder(mid)
     # Nothing could be asked, so the plain pair is offered: it is what the
     # request would carry anyway, and a control that vanished would be a
     # worse answer than one that works.
-    rungs = FALLBACK_LADDER if ladder is None else ladder
+    rungs = rungs_of(ladder)
     if not rungs:
         # This model cannot think at all, so the only honest step is off.
         rungs = [False]
@@ -674,9 +657,9 @@ async def server_stats(model: str | None = None, u: dict = Depends(require_user)
     token. `ctx` is passed because the KV figure is sized against it when the
     model is not loaded yet.
     """
-    prefs = u.get("prefs") or {}
-    mid = model or prefs.get("model") or settings.model_name
-    return await model_stats(mid, ctx=int(prefs.get("ctx") or 0) or None)
+    prefs = _prefs(u)
+    mid = _asking_model(model, prefs, settings.model_name)
+    return await model_stats(mid, ctx=_wanted_ctx(prefs))
 
 
 @app.post("/api/prefs")
@@ -689,7 +672,7 @@ async def update_prefs(req: PrefsRequest, u: dict = Depends(require_session)):
         if req.effort is not None:
             prefs["effort"] = max(0, int(req.effort))
         if req.ctx is not None:
-            prefs["ctx"] = max(0, min(int(req.ctx), 262144))
+            prefs["ctx"] = max(0, min(int(req.ctx), CTX_MAX))
         if req.system_prompt is not None:
             # Empty string clears the override; chat falls back to the env prompt.
             prompt = req.system_prompt.strip()
@@ -700,55 +683,55 @@ async def update_prefs(req: PrefsRequest, u: dict = Depends(require_session)):
 
     # The blob is shared with the media upload, so it is read and written as one
     # step rather than from a copy this request took earlier.
-    prefs = auth.update_prefs(u["id"], change)
-    return {"ok": True, "prefs": prefs}
+    auth.update_prefs(u["id"], change)
+    return {"ok": True}
 
 
-MEDIA_KINDS = ("avatar", "cover", "model")
+# The kinds an upload may name, read off the one place that says where each one
+# is kept, so a slot added there is accepted here without a second list.
+MEDIA_KINDS = tuple(auth.MEDIA_SLOTS)
 
 
-def media_url(u: dict, kind: str) -> str | None:
-    if kind in ("avatar", "cover"):
-        return u.get(kind)
-    return (u.get("prefs") or {}).get("model_avatar")
+def _swap_media(u: dict, kind: str, url: str | None):
+    """Point one of the account's pictures at `url`, deleting the file it
+    replaced. Only a stored `/uploads/` path is removed: anything else was not
+    put there by this route."""
+    old = auth.media_url(u, kind)
+    auth.set_media(u["id"], kind, url)
+    if old and old.startswith("/uploads/"):
+        (MEDIA_DIR / old.split("/")[-1]).unlink(missing_ok=True)
 
 
 @app.post("/api/auth/media")
 async def upload_media(file: UploadFile, kind: str = "avatar", u: dict = Depends(require_session)):
     if kind not in MEDIA_KINDS:
-        raise HTTPException(400, "kind must be avatar, cover, or model")
+        raise HTTPException(400, f"kind must be one of {', '.join(MEDIA_KINDS)}")
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(400, "image required")
     raw = await file.read()
     if len(raw) > 2_000_000:
         raise HTTPException(400, "image too large (max 2MB)")
     ext = encoding.image_extension(file.content_type)
-    name = f"{u['id']}-{kind}-{encoding.new_token(4)}.{ext}"
+    name = f"{u['id']}-{kind}-{encoding.new_token()}.{ext}"
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)
     (MEDIA_DIR / name).write_bytes(raw)
-    old_url = media_url(u, kind)
-    auth.set_media(u["id"], kind, f"/uploads/{name}")
-    if old_url and old_url.startswith("/uploads/"):
-        (MEDIA_DIR / old_url.split("/")[-1]).unlink(missing_ok=True)
+    _swap_media(u, kind, f"/uploads/{name}")
     return {"url": f"/uploads/{name}"}
 
 
 @app.delete("/api/auth/media")
 async def delete_media(kind: str = "avatar", u: dict = Depends(require_session)):
     if kind not in MEDIA_KINDS:
-        raise HTTPException(400, "kind must be avatar, cover, or model")
-    old_url = media_url(u, kind)
-    auth.set_media(u["id"], kind, None)
-    if old_url and old_url.startswith("/uploads/"):
-        (MEDIA_DIR / old_url.split("/")[-1]).unlink(missing_ok=True)
+        raise HTTPException(400, f"kind must be one of {', '.join(MEDIA_KINDS)}")
+    _swap_media(u, kind, None)
     return {"ok": True}
 
 
 @app.post("/api/auth/logout")
-async def logout(session: str | None = Cookie(None)):
+async def logout(session: str | None = Cookie(None, alias=auth.SESSION_COOKIE)):
     auth.drop_session(session)
     r = RedirectResponse("/", 303)
-    r.delete_cookie("session", path="/")
+    r.delete_cookie(auth.SESSION_COOKIE, path="/")
     return r
 
 
@@ -767,7 +750,7 @@ async def favicon(domain: str, u: dict = Depends(require_user)):
     if not icon:
         raise HTTPException(404, "no icon")
     raw, ctype = icon
-    return Response(raw, media_type=ctype, headers={"Cache-Control": "public, max-age=86400"})
+    return Response(raw, media_type=ctype, headers={"Cache-Control": favicons.CACHE_CONTROL})
 
 
 # Health.
@@ -775,9 +758,8 @@ async def favicon(domain: str, u: dict = Depends(require_user)):
 
 @app.get("/api/health")
 async def health():
-    """The sidebar's dots. Each dependency is reported as up, down, or unknown."""
-    out = {"model": "unknown", "search": "unknown"}
-    out["model"] = "up" if await healthy() else "down"
+    """Each dependency the chat needs, as up or down."""
+    out = {"model": "up" if await healthy() else "down"}
     try:
         async with httpx.AsyncClient(timeout=3) as c:
             r = await c.get(f"{settings.searxng_url}/healthz")
@@ -792,7 +774,7 @@ async def health():
 
 @app.get("/", include_in_schema=False)
 async def index(request: Request):
-    if not auth.get_session(request.cookies.get("session")):
+    if not auth.get_session(request.cookies.get(auth.SESSION_COOKIE)):
         return RedirectResponse("/auth.html", 303)
     return FileResponse(STATIC_DIR / "index.html")
 

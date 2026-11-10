@@ -53,6 +53,10 @@ const QUOTE_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 17l-5-5 5-5"/><path d="M4 12h11a5 5 0 0 1 5 5v3"/></svg>';
 const X_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>';
+// The title a chat carries until one is chosen, matching `chats.UNTITLED`
+// on the server: the header, the optimistic session and the fallback name
+// are one string, not three copies of it.
+const UNTITLED = "New chat";
 
 const quoteBtn = document.createElement("button");
 quoteBtn.type = "button";
@@ -181,10 +185,12 @@ function addRegen(body, s) {
   body.append(b);
 }
 
+// The empty state is markup in index.html, so it is stated once there and
+// copied here before any message can clear it.
+const EMPTY_HTML = document.getElementById("empty")?.outerHTML || "";
+
 function showEmpty() {
-  resetMessages(
-    '<div class="empty" id="empty"><p>Ask anything. Attach files or images. Markdown supported.</p></div>'
-  );
+  resetMessages(EMPTY_HTML);
 }
 
 // innerHTML wipes destroy the sticky scroll button; every message-area reset
@@ -204,31 +210,35 @@ function clearPlan() {
   els.planStrip.textContent = "";
 }
 
-// Every avatar in the app draws from the same two globals: the photo when the
-// account has one, initials otherwise. Background images need the sizing that
-// .avatar and .side-avatar declare, so the photo is set here, not in the markup.
-function paintAvatar(el) {
+// Every avatar in the app draws from the same rule: the picture when the
+// account has one, a short label otherwise. Background images need the sizing
+// that .avatar and .side-avatar declare, so the photo is set here, not in the
+// markup. The user's chip falls back to initials, the assistant's to its name.
+function paintFace(el, src, label) {
   if (!el) return;
-  if (userAvatar) {
-    el.style.backgroundImage = `url("${userAvatar}")`;
-    el.textContent = "";
-    return;
-  }
-  el.style.backgroundImage = "";
-  el.textContent = (userName || "ME").slice(0, 2).toUpperCase();
+  el.style.backgroundImage = src ? `url("${src}")` : "";
+  el.textContent = src ? "" : label;
 }
 
-// The assistant's chip carries the model picture when the account has one, and
-// the "AI" label when it does not. Same rule as the user avatar above.
-function paintRole(el) {
-  if (!el) return;
-  if (modelAvatar) {
-    el.style.backgroundImage = `url("${modelAvatar}")`;
-    el.textContent = "";
-    return;
-  }
-  el.style.backgroundImage = "";
-  el.textContent = "AI";
+const initials = () => (userName || "ME").slice(0, 2).toUpperCase();
+
+// One round's prose, in the same element live and after a reload. Live streams
+// it by re-rendering the accumulated text into the same node.
+function answerBlock(text) {
+  const a = document.createElement("div");
+  a.className = "ans";
+  a.innerHTML = ErisMarkdown.render(text);
+  return a;
+}
+
+// A run that failed says so in the transcript, and a screen reader is told the
+// moment it appears rather than finding it on the next pass.
+function errorBlock(message) {
+  const err = document.createElement("div");
+  err.className = "err";
+  err.setAttribute("role", "alert");
+  err.textContent = message;
+  return err;
 }
 
 // A file a turn carried, named rather than printed. It sits in the row between
@@ -259,9 +269,6 @@ function addMessage(role, text, images, quote, files) {
   document.getElementById("empty")?.remove();
   const wrap = document.createElement("div");
   wrap.className = `msg ${role}`;
-  const roleEl = document.createElement("div");
-  roleEl.className = "role";
-  roleEl.textContent = role === "user" ? "You" : "AI";
   const body = document.createElement("div");
   body.className = "body";
   if (images && images.length) {
@@ -300,14 +307,16 @@ function addMessage(role, text, images, quote, files) {
     }
     const av = document.createElement("div");
     av.className = "avatar";
-    paintAvatar(av);
+    paintFace(av, userAvatar, initials());
     wrap.append(av);
     // A turn that is only a file has nothing to put in the body, and an empty
     // one would still take the row's gap.
     if (body.childNodes.length) wrap.append(body);
   } else {
     body.innerHTML = ErisMarkdown.render(text);
-    paintRole(roleEl);
+    const roleEl = document.createElement("div");
+    roleEl.className = "role";
+    paintFace(roleEl, modelAvatar, "AI");
     wrap.append(roleEl, body);
   }
   els.messages.insertBefore(wrap, scrollBtn);
@@ -328,8 +337,10 @@ function refresh() {
 }
 
 function syncInput() {
+  // Grow to the content and let the stylesheet's `max-height` stop it: the cap
+  // is stated in one place, and this only asks how tall the text is.
   els.input.style.height = "auto";
-  els.input.style.height = Math.min(els.input.scrollHeight, 200) + "px";
+  els.input.style.height = els.input.scrollHeight + "px";
   refresh();
 }
 
@@ -338,7 +349,7 @@ function syncInput() {
 function blankChat() {
   activeId = null;
   ErisSidebar.setActive(null);
-  els.chatTitle.textContent = "New chat";
+  els.chatTitle.textContent = UNTITLED;
   ErisAttach.clear();
   setQuote("");
   resetMessages();
@@ -418,12 +429,7 @@ function loadSession(id) {
             th.done("Thought");
           }
           const text = answerRows.get(i);
-          if (text) {
-            const a = document.createElement("div");
-            a.className = "ans";
-            a.innerHTML = ErisMarkdown.render(text);
-            put(a);
-          }
+          if (text) put(answerBlock(text));
           for (const g of rows.get(i) || []) {
             const tc = ErisToolCall.webSearch(body);
             put(tc.el);
@@ -458,7 +464,11 @@ function loadSession(id) {
       // The answer can arrive after the reader moved to another chat; writing
       // it into this session and painting would redraw the chat they left.
       if (activeId !== id) return;
-      s.messages = (j.items || []).map((m) => ({ role: m.role, content: m.content, quote: m.quote, thinking: m.thinking, sources: m.sources, web: m.web, fetches: m.fetches, answers: m.answers, cards: m.cards, images: m.images, files: m.files }));
+      // The stored turn is already the shape this list holds: the server's
+      // `turns` replays exactly the fields it writes, and `toPayload` below
+      // sends only the ones a request takes. Restating the field list here is
+      // what would drop a future column on reopen.
+      s.messages = j.items || [];
       s.remote = false;
       paint();
     }).catch(paint);
@@ -496,7 +506,7 @@ function setStreaming(on) {
 async function send(text, regen = false, quote = "") {
   let s = current();
   if (!s) {
-    s = { id: crypto.randomUUID(), title: "New chat", messages: [] };
+    s = { id: crypto.randomUUID(), title: UNTITLED, messages: [] };
     sessions.unshift(s);
     activeId = s.id;
     ErisSidebar.setActive(activeId);
@@ -523,7 +533,7 @@ async function send(text, regen = false, quote = "") {
       ...(quote ? { quote } : {}),
     });
     if (s.messages.length === 1) {
-      s.title = (text || quote).slice(0, 40) || (files[0]?.name || (images.length ? "Image" : "New chat"));
+      s.title = (text || quote).slice(0, 40) || (files[0]?.name || (images.length ? "Image" : UNTITLED));
       els.chatTitle.textContent = s.title;
       ErisSidebar.setChats(sessions);
     }
@@ -768,9 +778,7 @@ async function send(text, regen = false, quote = "") {
             planCtl = ErisToolCall.plan(els.planStrip);
           }
           planCtl.done(evt.card);
-        } else if (evt.type === "weather" || evt.type === "wayback" || evt.type === "crypto"
-                   || evt.type === "crypto_trend" || evt.type === "equity"
-                   || evt.type === "equity_trend" || evt.type === "screen") {
+        } else if (ErisToolCall.isCard(evt.type)) {
           finishThink();
           clearStatus();
           closeAnswer(evt.r);
@@ -790,13 +798,17 @@ async function send(text, regen = false, quote = "") {
             if (evt.r === webR) webCtl?.addResults(web);
           }
         } else if (evt.type === "tool_error") {
+          // What the card says the tool failed at, stated once for every branch
+          // below: the tool's own reason when it gave one, else the message,
+          // else the code.
+          const reason = evt.reason || evt.message || evt.code;
           // A tool that failed still leaves the card it was drawing: the user
           // watching a search go by should see it end, not vanish.
           if (evt.tool === "fetch_url") {
             const i = fetchQ.findIndex((f) => f.g.r === evt.r);
             if (i >= 0) {
               const [f] = fetchQ.splice(i, 1);
-              f.ctl.fail(evt.reason || evt.message || evt.code);
+              f.ctl.fail(reason);
             }
           } else if (evt.tool === "plan") {
             // A failed revision leaves the plan on screen, and on the server,
@@ -805,22 +817,19 @@ async function send(text, regen = false, quote = "") {
             if (!planCtl) {
               els.planStrip.hidden = false;
               planCtl = ErisToolCall.plan(els.planStrip);
-              planCtl.fail(evt.reason || evt.message || evt.code);
+              planCtl.fail(reason);
             }
-          } else if (evt.tool === "weather" || evt.tool === "wayback" || evt.tool === "crypto"
-                    || evt.tool === "crypto_trend" || evt.tool === "equity"
-                    || evt.tool === "equity_trend" || evt.tool === "screen") {
+          } else if (ErisToolCall.isCard(evt.tool)) {
             // No card was drawn on start — these render their payload in one
             // pass — so the failure is what raises it, in its failed state.
             finishThink();
             clearStatus();
             closeAnswer(evt.r);
             const ctl = ErisToolCall[evt.tool](body);
-            ctl.fail(evt.reason || evt.message || evt.code);
-            cardRows.push({ r: evt.r, tool: evt.tool, card: null,
-                            reason: evt.reason || evt.message || evt.code });
+            ctl.fail(reason);
+            cardRows.push({ r: evt.r, tool: evt.tool, card: null, reason });
           } else if (webCtl && (!evt.tool || evt.tool === "web_search")) {
-            webCtl.fail(evt.message || evt.code);
+            webCtl.fail(reason);
             webCtl = null;
             webR = -1;
           }
@@ -853,8 +862,7 @@ async function send(text, regen = false, quote = "") {
             finishThink();
             finishWeb();
             clearStatus();
-            ans = document.createElement("div");
-            ans.className = "ans";
+            ans = answerBlock("");
             body.append(ans);
             ansRound = evt.r;
             ansText = "";
@@ -869,11 +877,7 @@ async function send(text, regen = false, quote = "") {
           ans.innerHTML = ErisMarkdown.render(ansText);
           autoScroll();
         } else if (evt.type === "error") {
-          const err = document.createElement("div");
-          err.className = "err";
-          err.setAttribute("role", "alert");
-          err.textContent = evt.message;
-          body.append(err);
+          body.append(errorBlock(evt.message));
         }
       }
     }
@@ -882,11 +886,7 @@ async function send(text, regen = false, quote = "") {
       aborted = true;
       if (!raw && !thinkAll && !webCtl) setStatus("Stopped.");
     } else {
-      const err = document.createElement("div");
-      err.className = "err";
-      err.setAttribute("role", "alert");
-      err.textContent = e.message;
-      body.append(err);
+      body.append(errorBlock(e.message));
     }
   } finally {
     controller = null;
@@ -1090,10 +1090,10 @@ function refreshAccount() {
     modelAvatar = (u.prefs || {}).model_avatar || "";
     const nm = document.getElementById("sideName");
     if (nm) nm.textContent = u.name;
-    paintAvatar(document.getElementById("sideAvatar"));
+    paintFace(document.getElementById("sideAvatar"), userAvatar, initials());
     // Messages can render before this resolves, so repaint what is already there.
-    els.messages.querySelectorAll(".avatar").forEach(paintAvatar);
-    els.messages.querySelectorAll(".msg.assistant .role").forEach(paintRole);
+    els.messages.querySelectorAll(".avatar").forEach((el) => paintFace(el, userAvatar, initials()));
+    els.messages.querySelectorAll(".msg.assistant .role").forEach((el) => paintFace(el, modelAvatar, "AI"));
   }).catch(() => {
     // A background repaint: a network blip must not raise, the next save fires
     // this again.

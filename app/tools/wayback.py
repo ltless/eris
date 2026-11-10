@@ -12,42 +12,43 @@ import re
 import httpx
 
 from ..config import settings
-from . import as_args
-from .fetch import HEADERS, fetch_page, is_public_url
+from ..errors import TOOL_ERROR
+from ..net import HEADERS, is_public_url
+from ..security import EXTERNAL
+from .fetch import fetch_page
+from .registry import (
+    TAGS, Tool, ToolResult, missing_arg, registry, source_row, unreadable, unreachable,
+)
 
 CDX_URL = "https://web.archive.org/cdx/search/cdx"
 ARCHIVE_URL = "https://web.archive.org/web/{stamp}id_/{url}"
 TIMEOUT = 20
 LIMIT = 5
-DATE_RE = re.compile(r"^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$")
+STAMP_RE = re.compile(r"^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$")
+NAME = "wayback"
+TIMEOUT_S = 40.0
 
-TOOL = {
-    "type": "function",
-    "function": {
-        "name": "wayback",
-        "description": (
-            "Read a URL from the Internet Archive, including pages that are "
-            "gone or answering 404 now. Use it when fetch_url returned an error, "
-            "or when the user asks for an old or deleted version of a page."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "The URL to find in the archive, as it was.",
-                },
-                "date": {
-                    "type": "string",
-                    "description": (
-                        "Ask for the snapshot nearest this date, as YYYY, "
-                        "YYYY-MM, or YYYY-MM-DD. Omit for the newest one."
-                    ),
-                },
-            },
-            "required": ["url"],
+DESCRIPTION = (
+    "Read a URL from the Internet Archive, including pages that are "
+    "gone or answering 404 now. Use it when fetch_url returned an error, "
+    "or when the user asks for an old or deleted version of a page."
+)
+PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "url": {
+            "type": "string",
+            "description": "The URL to find in the archive, as it was.",
+        },
+        "date": {
+            "type": "string",
+            "description": (
+                "Ask for the snapshot nearest this date, as YYYY, "
+                "YYYY-MM, or YYYY-MM-DD. Omit for the newest one."
+            ),
         },
     },
+    "required": ["url"],
 }
 
 
@@ -57,7 +58,7 @@ def _window(date):
     CDX has no timestamp parameter: asking for 2019 without a window answers
     with rows from 2002.
     """
-    m = DATE_RE.match(date.strip())
+    m = STAMP_RE.match(date.strip())
     if not m:
         return None
     year, month, day = m.group(1), m.group(2) or "01", m.group(3) or "01"
@@ -116,7 +117,6 @@ def _row(row):
     return {
         "when": _when(row),
         "url": original,
-        "type": row.get("mimetype") or "",
         "read": ARCHIVE_URL.format(stamp=row.get("timestamp", ""), url=original),
     }
 
@@ -131,25 +131,24 @@ def _row_text(rows):
 
 
 async def read(args):
-    """`(ok, text, reason, meta)`. `reason` is empty on success, and comes back
-    apart from the text so the caller can name the failure alone. `meta` is the
-    tool result's metadata: the source list, and the snapshot the card shows."""
-    args = as_args(args)
+    """Answer the wayback tool, or say which failure stopped it."""
     url = str(args.get("url", "") or "").strip()
     if not url:
-        return False, "No URL given.", "no URL was given", {}
+        return missing_arg("URL")
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
-    if not await _to_public(url):
-        return False, f"{url} is not a public http(s) address.", "not a public http(s) address", {}
+    if not await asyncio.to_thread(is_public_url, url):
+        return ToolResult.failed(
+            TOOL_ERROR, f"{url} is not a public http(s) address.",
+            reason="not a public http(s) address",
+        )
     date = str(args.get("date", "") or "").strip()
     window = _window(date) if date else None
     if date and window is None:
-        return (
-            False,
+        return ToolResult.failed(
+            TOOL_ERROR,
             f"{date!r} is not a date this tool can read. Use YYYY, YYYY-MM, or YYYY-MM-DD.",
-            "the date could not be read",
-            {},
+            reason="the date could not be read",
         )
 
     try:
@@ -165,30 +164,18 @@ async def read(args):
                 if rows:
                     note = f"Nothing archived in {date}; these are the snapshots it does hold.\n"
             if not rows:
-                return (
-                    False,
-                    f"The Internet Archive holds no snapshot of {url}.",
-                    "the archive holds no snapshot of that URL",
-                    {},
+                return ToolResult.failed(
+                    TOOL_ERROR, f"The Internet Archive holds no snapshot of {url}.",
+                    reason="the archive holds no snapshot of that URL",
                 )
             chosen = rows[0]
             stamp = str(chosen["timestamp"])
             archived = ARCHIVE_URL.format(stamp=stamp, url=chosen.get("original") or url)
             text, reason = await fetch_page(client, archived, settings.fetch_max_chars)
     except httpx.HTTPError as e:
-        return (
-            False,
-            f"The Internet Archive could not be reached ({type(e).__name__}).",
-            "the archive could not be reached",
-            {},
-        )
+        return unreachable("The Internet Archive", e, "the archive could not be reached")
     except ValueError:
-        return (
-            False,
-            "The Internet Archive sent a reply that could not be read.",
-            "the archive replied with something unreadable",
-            {},
-        )
+        return unreadable("The Internet Archive", "the archive replied with something unreadable")
 
     when = _when(chosen)
     original = chosen.get("original") or url
@@ -209,22 +196,23 @@ async def read(args):
             f"The snapshot is listed but its text could not be read ({reason}). "
             f"Snapshots held:\n{_row_text(rows)}"
         )
-        return True, head, "", {"card": card}
-    sources = [
-        {"source": archived, "title": f"archived {when}: {original}", "kind": "web", "read": True}
-    ]
+        return ToolResult.ok(head, card=card)
+    sources = [source_row(archived, f"archived {when}: {original}", read=True)]
     body = (
         f"{head}Snapshot {when} of {url} (Wayback Machine):\n{text}\n\n"
         f"Other snapshots:\n{_row_text(rows[1:]) or '  none'}"
     )
-    return True, body, "", {"sources": sources, "card": card}
+    return ToolResult.ok(body, sources=sources, card=card)
 
 
-async def _to_public(url):
-    """`is_public_url` resolves the host, which blocks, so it runs off-thread."""
-    return await asyncio.to_thread(is_public_url, url)
-
-
-async def run(args):
-    """Handler for the wayback tool. Returns text for the model, never raises."""
-    return (await read(args))[1]
+def register():
+    return registry.add(Tool(
+        name=NAME,
+        description=DESCRIPTION,
+        parameters=PARAMETERS,
+        handler=read,
+        permission=EXTERNAL,
+        timeout=TIMEOUT_S,
+        tags=TAGS,
+        carded=True,
+    ))

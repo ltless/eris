@@ -5,25 +5,22 @@ browser reads, health reports each dependency honestly, and every route
 refuses an anonymous caller.
 """
 
-import asyncio
 import json
 import os
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, ".")
 
-ROOT = Path(__file__).resolve().parents[1]
-
 from fastapi.testclient import TestClient
 
 from app import api, auth, chats, tokens
 from app.config import settings
+from app.models import providers
 
 
 def searches(payload):
@@ -228,7 +225,7 @@ class ChatStreamChecks(unittest.TestCase):
         naming = [p for p in self.h.stub.payloads
                   if p.get("messages", [{}])[0].get("content", "").startswith("Write the title")]
         self.assertEqual(len(naming), 1, [p.get("messages") for p in self.h.stub.payloads])
-        self.assertEqual(naming[0]["options"]["num_predict"], 24)
+        self.assertEqual(naming[0]["options"]["num_predict"], providers.TITLE_LIMIT)
         self.assertFalse(naming[0].get("tools"))
 
     def test_an_unnamed_chat_alone_is_never_named(self):
@@ -282,33 +279,32 @@ class ChatStreamChecks(unittest.TestCase):
 
     def test_the_search_frame_is_what_the_ui_draws(self):
         """The one frame the frontend still switches on, mapped from the event."""
-        from app.runtime.events import Emitter
+        from app.runtime.events import emit
         from app.runtime import events as ev
 
-        emitter = Emitter()
         frame = api.sse_frame(
-            emitter.emit(ev.TOOL_STARTED, tool="web_search", round=1, args={"query": "gold price"})
+            emit(ev.TOOL_STARTED, tool="web_search", round=1, args={"query": "gold price"})
         )
         self.assertEqual(frame, {"type": "tool", "r": 1, "query": "gold price"})
 
-        sources = api.sse_frame(emitter.emit(
+        sources = api.sse_frame(emit(
             ev.SOURCE_FOUND, n=1, source="https://a.com", title="A", kind="web"))
         self.assertEqual(sources["type"], "sources")
         self.assertEqual(sources["items"][0]["source"], "https://a.com")
 
-        self.assertEqual(api.sse_frame(emitter.emit(ev.MODEL_DELTA, text="hi", round=2)),
+        self.assertEqual(api.sse_frame(emit(ev.MODEL_DELTA, text="hi", round=2)),
                          {"type": "delta", "r": 2, "text": "hi"})
-        self.assertEqual(api.sse_frame(emitter.emit(ev.MODEL_THINKING, text="hmm", round=2)),
+        self.assertEqual(api.sse_frame(emit(ev.MODEL_THINKING, text="hmm", round=2)),
                          {"type": "thinking", "r": 2, "text": "hmm"})
         # No round stated still has to give the browser one to key on.
-        self.assertEqual(api.sse_frame(emitter.emit(ev.MODEL_THINKING, text="hmm")),
+        self.assertEqual(api.sse_frame(emit(ev.MODEL_THINKING, text="hmm")),
                          {"type": "thinking", "r": 0, "text": "hmm"})
 
     def test_a_tool_failure_reaches_the_browser(self):
-        from app.runtime.events import Emitter
+        from app.runtime.events import emit
         from app.runtime import events as ev
 
-        frame = api.sse_frame(Emitter().emit(
+        frame = api.sse_frame(emit(
             ev.TOOL_FAILED, tool="web_search", code="timeout", message="too slow"))
         self.assertEqual(frame["type"], "tool_error")
         self.assertIn("timeout", frame["code"])
@@ -316,10 +312,10 @@ class ChatStreamChecks(unittest.TestCase):
     def test_a_failed_fetch_carries_the_reason_the_card_replays(self):
         """After a reload the streamed frames are gone and only the stored row
         is left, so the reason has to travel on the frame that closes the read."""
-        from app.runtime.events import Emitter
+        from app.runtime.events import emit
         from app.runtime import events as ev
 
-        frame = api.sse_frame(Emitter().emit(
+        frame = api.sse_frame(emit(
             ev.TOOL_FAILED, tool="fetch_url", round=1,
             code="tool_error", message="Could not read https://a.com: the server answered 403.",
             reason="the server answered 403"))
@@ -330,26 +326,25 @@ class ChatStreamChecks(unittest.TestCase):
     def test_a_fetch_is_its_own_card_and_carries_its_round(self):
         """A read opened by the model, not by the search: two frames, and the
         round on both so the browser can close the right card."""
-        from app.runtime.events import Emitter
+        from app.runtime.events import emit
         from app.runtime import events as ev
 
-        e = Emitter()
-        opened = api.sse_frame(e.emit(
+        opened = api.sse_frame(emit(
             ev.TOOL_STARTED, tool="fetch_url", round=2, args={"url": "https://a.com/x"}))
         self.assertEqual(opened, {"type": "fetch", "r": 2, "url": "https://a.com/x"})
 
-        closed = api.sse_frame(e.emit(ev.TOOL_COMPLETED, tool="fetch_url", round=2, chars=1234))
-        self.assertEqual(closed, {"type": "fetch_done", "r": 2, "ok": True, "chars": 1234})
+        closed = api.sse_frame(emit(ev.TOOL_COMPLETED, tool="fetch_url", round=2, chars=1234))
+        self.assertEqual(closed, {"type": "fetch_done", "r": 2, "chars": 1234})
 
     def test_a_weather_card_travels_whole_on_the_frame_that_ends_the_tool(self):
         """The card is drawn in one pass, so the payload it draws from rides on
         the closing frame; without it the browser has a tool call and no card."""
-        from app.runtime.events import Emitter
+        from app.runtime.events import emit
         from app.runtime import events as ev
 
         card = {"place": "Bandung, Indonesia", "now": {"temp": 27.4},
                 "forecast": [{"date": "2026-11-03", "min": 22.0, "max": 30.0}]}
-        frame = api.sse_frame(Emitter().emit(
+        frame = api.sse_frame(emit(
             ev.TOOL_COMPLETED, tool="weather", round=1, chars=200, sources=1, card=card))
         self.assertEqual(frame["type"], "weather")
         self.assertEqual(frame["r"], 1)
@@ -362,7 +357,9 @@ class ChatStreamChecks(unittest.TestCase):
         after that round's prose. Hoisting it above text the reader already
         passed is what made a card look like it never showed up.
         """
-        from app.tools import weather as weather_mod
+        from dataclasses import replace
+
+        from app.tools.registry import ToolResult, registry
 
         class Preambling(StubModel):
             def reply(self, payload):
@@ -381,17 +378,21 @@ class ChatStreamChecks(unittest.TestCase):
         card = {"place": "Bandung", "now": {"temp": 27.0}, "forecast": []}
 
         async def fake_read(args):
-            return True, "Weather for Bandung", "", {"card": card}
+            return ToolResult.ok("Weather for Bandung", card=card)
 
         self.h.stub.stop()
         self.h.stub = Preambling()
         settings.model_base_url = self.h.stub.start()
-        old = weather_mod.read
-        weather_mod.read = fake_read
+        # The registry holds the handler the module registered, so the swap is
+        # made on the tool itself, and the real one goes back afterwards.
+        real = registry.get("weather")
+        registry.remove("weather")
+        registry.add(replace(real, handler=fake_read))
         try:
             events = sse_events(self.h.ask("cuaca bandung?"))
         finally:
-            weather_mod.read = old
+            registry.remove("weather")
+            registry.add(real)
 
         shape = [(e["type"], e["r"]) for e in events
                  if e["type"] in ("delta", "weather")]
@@ -402,27 +403,27 @@ class ChatStreamChecks(unittest.TestCase):
     def test_a_tool_with_no_card_sends_none(self):
         """`card` is absent on every other tool's closing frame, so the mapping
         keys off it rather than emitting an empty frame for the whole registry."""
-        from app.runtime.events import Emitter
+        from app.runtime.events import emit
         from app.runtime import events as ev
 
-        frame = api.sse_frame(Emitter().emit(
+        frame = api.sse_frame(emit(
             ev.TOOL_COMPLETED, tool="read_file", round=0, chars=10, sources=0))
         self.assertIsNone(frame)
 
     def test_a_source_states_its_round_and_whether_it_was_read(self):
         """The card files a result under the round that found it, and marks the
         few whose page text was actually pulled."""
-        from app.runtime.events import Emitter
+        from app.runtime.events import emit
         from app.runtime import events as ev
 
-        frame = api.sse_frame(Emitter().emit(
+        frame = api.sse_frame(emit(
             ev.SOURCE_FOUND, round=1, n=1, source="https://a.com", title="A",
             kind="web", read=True))
         self.assertEqual(frame["r"], 1)
         self.assertTrue(frame["items"][0]["read"])
 
         # A source that reached the list on a snippet alone says so.
-        plain = api.sse_frame(Emitter().emit(
+        plain = api.sse_frame(emit(
             ev.SOURCE_FOUND, round=1, n=2, source="https://b.com", kind="web"))
         self.assertFalse(plain["items"][0]["read"])
 
@@ -532,11 +533,10 @@ class ChatStreamChecks(unittest.TestCase):
         """The stub serves neither `/api/ps` nor `/api/show`, so every figure
         the readout would derive is absent rather than invented."""
         got = self.h.client.get("/api/stats").json()
-        for key in ("model", "loaded", "context", "kv", "gpu", "last"):
+        for key in ("model", "loaded", "context", "kv", "gpu"):
             self.assertIn(key, got)
         self.assertFalse(got["loaded"])
         self.assertIsNone(got["kv"]["bytes"])
-        self.assertIsNone(got["last"])
 
 
 class AnonymousChecks(unittest.TestCase):

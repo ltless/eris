@@ -17,3 +17,5 @@ AGENTS.md
 .impeccable/
 presets.db
 .codebase-memory/
+.scratch/
+docs/

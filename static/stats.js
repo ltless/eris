@@ -21,7 +21,6 @@
   from the chat stream and kept here until the next call replaces them.
 */
 const ErisStats = (() => {
-  const RING = 2 * Math.PI * 10; // r=10, the ring's own path length
   const POLL = 30000; // the unload countdown is the only thing that drifts
 
   let btn, panel, box;
@@ -81,18 +80,22 @@ const ErisStats = (() => {
 
   // --- the ring -------------------------------------------------------------
 
-  function draw() {
-    if (!btn) return;
+  // The allocated window is the denominator whenever the runner has stated one;
+  // before it loads, the context this account would ask for is the only honest
+  // stand-in, and the panel says which of the two it is showing. The ring and
+  // the panel both read the share from here rather than each deriving it.
+  function contextUse() {
     const ctx = (data && data.context) || {};
-    // The allocated window is the denominator whenever the runner has stated
-    // one; before it loads, the context this account would ask for is the only
-    // honest stand-in, and the panel says which of the two it is showing.
     const allocated = ctx.allocated || ctx.wanted || 0;
     const used = last ? Number(last.prompt_eval_count) || 0 : null;
-    const share = allocated && used !== null ? used / allocated : null;
+    return { allocated, used, share: allocated && used !== null ? used / allocated : null };
+  }
+
+  function draw() {
+    if (!btn) return;
+    const { allocated, used, share } = contextUse();
     const fill = share === null ? 0 : Math.min(1, share);
     btn.style.setProperty("--stat-fill", String(fill));
-    btn.style.setProperty("--stat-c", String(RING));
     // An empty ring is drawn too: 0% of the window is a fact, and a frame with
     // nothing in it reads as exactly that.
     btn.toggleAttribute("data-live", share !== null);
@@ -162,15 +165,14 @@ const ErisStats = (() => {
     }
 
     const ctx = data.context || {};
-    const allocated = ctx.allocated || ctx.wanted;
-    const used = (last && last.prompt_eval_count) ?? null;
-    const fill = allocated && used !== null ? Math.min(1, used / allocated) : 0;
+    const { share } = contextUse();
+    const fill = share === null ? 0 : Math.min(1, share);
 
     // The bar is the context, so it is drawn before the groups rather than
     // inside one: it is the shape of the first figure, not a section header.
     const bar = document.createElement("div");
     bar.className = "stat-bar";
-    if (used !== null && allocated && used > allocated) bar.dataset.over = "";
+    if (share !== null && share > 1) bar.dataset.over = "";
     bar.style.setProperty("--stat-fill", String(fill));
     bar.append(document.createElement("i"));
     panel.append(bar);

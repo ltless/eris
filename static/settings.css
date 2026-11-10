@@ -215,8 +215,7 @@
   color: var(--faint);
 }
 
-.set-modal input[type="radio"],
-.set-modal input[type="checkbox"] {
+.set-modal input[type="radio"] {
   width: auto;
 }
 
@@ -428,8 +427,105 @@
   margin-top: var(--sp-4);
 }
 
-#tokenEmpty {
-  padding: var(--sp-4);
+.lib-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+  /* Holds the block's height between load and first paint, so the panel does
+     not jump when the rows arrive. */
+  min-height: 128px;
+}
+
+.lib-row {
+  border-bottom: 1px solid var(--border);
+}
+
+.lib-line {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-2);
+  border-radius: 6px;
+  transition: background 120ms ease;
+}
+
+.lib-row:hover .lib-line {
+  background: var(--hover);
+}
+
+.lib-id {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.lib-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.lib-meta {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lib-acts {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.lib-btn {
+  height: 26px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.lib-btn:hover {
+  border-color: var(--text);
+}
+
+.lib-btn:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.lib-danger {
+  color: var(--danger);
+}
+
+.lib-danger:hover {
+  border-color: var(--danger);
+  background: var(--hover);
+}
+
+.lib-danger:focus-visible {
+  outline-color: var(--danger);
+}
+
+.lib-empty {
+  margin: 0;
+  padding: var(--sp-4) var(--sp-2);
+  font-size: 13.5px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.lib-empty[hidden] {
+  display: none;
 }
 
 /* Mobile: the grid drops to one column; the rail itself is dialog.css. */

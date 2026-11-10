@@ -1,7 +1,13 @@
 fastapi
-uvicorn[standard]
+# uvicorn[standard] spelled out: its pyyaml dependency has no wheel for 3.15
+# and the app never reads YAML. The rest of the extra is kept.
+uvicorn
+watchfiles
+httptools
+websockets
 httpx
 python-dotenv
 python-multipart
 pypdf
 beautifulsoup4
+jsonschema
