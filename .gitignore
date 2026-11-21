@@ -13,6 +13,7 @@ database/
 # swallowed app/models/ — the package app/api.py imports from.
 /models/
 AGENTS.md
+/.agents/
 .superpowers/
 .impeccable/
 presets.db
