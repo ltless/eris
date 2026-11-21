@@ -127,7 +127,7 @@ class Harness:
         for name in ("AUTH_DB", "CHAT_DB"):
             os.environ.pop(name, None)
 
-    def ask(self, message="weather in Bali today"):
+    def ask(self, message="Cari berita terbaru"):
         with TestClient(api.app) as c:
             c.post(
                 "/api/auth/register",
@@ -162,7 +162,7 @@ def check_answer_request_keeps_only_the_plan_tool():
     stub = StubModel()
     h = Harness(stub)
     try:
-        h.ask()
+        h.ask("Cari rujukan lalu baca https://example.com")
         assert len(stub.payloads) == settings.max_tool_rounds + 1, len(stub.payloads)
         assert searches(stub.payloads[0]), "first call should offer tools"
         last = {t.get("function", {}).get("name") for t in stub.payloads[-1].get("tools") or []}
@@ -176,7 +176,7 @@ def check_stops_when_model_answers_first():
     stub = StubModel(calls_per_round=0)
     h = Harness(stub)
     try:
-        events = h.ask()
+        events = h.ask("Jelasin cara kerja SSE")
         text = "".join(e.get("text", "") for e in events if e.get("type") == "delta")
         assert text.strip() == stub.answer, text
         assert len(stub.payloads) == 1, len(stub.payloads)

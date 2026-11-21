@@ -8,12 +8,15 @@ whole app depends on.
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, ".")
 
@@ -23,7 +26,9 @@ from app.runtime import events as ev
 from app.runtime.budgets import Budget, BudgetExceeded, clip
 from app.runtime.engine import Engine, RunRequest
 from app.runtime.events import emit
+from app.runtime.routing import select_route
 from app.security import permissions as perms
+from app.security.workspace import Access
 from app.tools import builtin
 from app.tools.registry import Registry, Tool, ToolContext, ToolResult, registry
 
@@ -39,8 +44,9 @@ class RegistryChecks(unittest.TestCase):
         builtin.register_builtins()
         self.assertEqual(sorted(registry.names()),
                          ["crypto", "crypto_trend", "equity", "equity_trend",
-                          "fetch_url", "plan", "read_file", "screen", "wayback",
-                          "weather", "web_search"])
+                          "fetch_url", "list_workspace", "plan", "read_file",
+                          "screen", "wayback", "weather", "web_search",
+                          "write_file"])
 
     def test_specs_carry_name_description_and_schema(self):
         spec = next(s for s in registry.specs_for(ToolContext(), ("chat",))
@@ -135,14 +141,19 @@ class PolicyChecks(unittest.TestCase):
                     permission=perms.READ_ONLY)
         self.assertIsNone(perms.authorize(tool))
 
-    def test_a_write_is_refused_for_want_of_a_way_to_ask(self):
+    def test_a_write_is_refused_without_workspace_access(self):
         tool = Tool(name="w", description="d", parameters={}, handler=lambda a: "",
                     permission=perms.WRITE)
-        # Only a read-only or external tool reaches the network; nothing here
-        # can stop and ask the person whether they meant a write.
         code, reason = perms.authorize(tool)
         self.assertEqual(code, "denied")
-        self.assertIn("changes state", reason)
+        self.assertIn("workspace", reason)
+
+    def test_a_write_requires_a_writable_workspace(self):
+        tool = Tool(name="w", description="d", parameters={}, handler=lambda a: "",
+                    permission=perms.WRITE)
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(perms.authorize(tool, Access(Path(directory)))[0], "denied")
+            self.assertIsNone(perms.authorize(tool, Access(Path(directory), writable=True)))
 
     def test_an_unknown_permission_is_refused(self):
         tool = Tool(name="x", description="d", parameters={}, handler=lambda a: "",
@@ -398,15 +409,10 @@ class LoopChecks(unittest.TestCase):
         self.assertEqual(offered(self.stub.payloads[-1]), {"plan"},
                          "the final call still offered the searching tools")
 
-    def test_the_last_call_asks_for_no_thinking(self):
-        """A reasoning model with no tools can reason to the token limit and
-        answer nothing, which reaches the user as "No answer came back" with
-        the prose sitting in a thinking card. The pass that must produce the
-        answer is the one that must not be asked to think first."""
+    def test_the_last_call_keeps_the_selected_effort(self):
         self.drive(self.request(thinking=True))
         self.assertTrue(self.stub.payloads[0].get("think"))
-        self.assertFalse(self.stub.payloads[-1].get("think"),
-                         "the final call still asked the model to think")
+        self.assertTrue(self.stub.payloads[-1].get("think"))
 
     def test_round_budget_is_enforced(self):
         events, _ = self.drive(self.request())
@@ -730,11 +736,16 @@ class LoopChecks(unittest.TestCase):
         self.stub = Caller()
         settings.model_base_url = self.stub.start()
 
-    def test_a_round_runs_its_calls_together_and_reports_them_in_order(self):
+    def test_a_round_runs_its_calls_together_and_reports_each_as_it_ends(self):
         """The calls in a round are independent, so they run at once: a round
         that asked for a fast call and a slow one should cost the slow one, not
-        the sum. What the model reads and what the browser is told must still
-        follow the order it asked in, because the cards are matched by round."""
+        the sum.
+
+        They are also reported as each one finishes, which is what lets a fast
+        card close while a slow one is still running. What the model reads stays
+        in the order it asked, because a model handed its results out of
+        sequence answers its own calls out of sequence on the next round.
+        """
         order = []
 
         async def slow(args):
@@ -755,10 +766,10 @@ class LoopChecks(unittest.TestCase):
         self.assertEqual(order, ["fast", "slow"], "the calls did not overlap")
         self.assertLess(elapsed, 0.26, "the round cost the sum of its calls")
         completed = [e for e in events if e.type == ev.TOOL_COMPLETED]
-        self.assertEqual([e.data["tool"] for e in completed], ["slow", "fast"],
-                         "events did not follow the order asked")
-        # The message the model reads follows the order it asked in too, so a
-        # model that named its calls 1 and 2 is not answered 2 then 1.
+        self.assertEqual([e.data["tool"] for e in completed], ["fast", "slow"],
+                         "events did not follow completion")
+        # The message the model reads follows the order it asked in, so a model
+        # that named its calls 1 and 2 is not answered 2 then 1.
         fed = [m for m in self.stub.payloads[1]["messages"] if m.get("role") == "tool"]
         self.assertEqual([m["content"] for m in fed], ["slow text", "fast text"], fed)
 
@@ -798,6 +809,197 @@ class LoopChecks(unittest.TestCase):
         self.assertEqual(tries["read"], 2, "a retryable network read was not retried")
         # The write never ran at all: `authorize` refuses it before its handler.
         self.assertEqual(tries["write"], 0, "a state-changing call reached its handler")
+
+
+class RoutingChecks(unittest.TestCase):
+    def drive(self, route, replies, *, context=None, tool_results=(), budget=None):
+        builtin.register_builtins()
+        prompts = []
+
+        async def model(messages, *, tools, **kwargs):
+            index = len(prompts)
+            names = tuple(spec["function"]["name"] for spec in tools or ())
+            prompts.append((names, list(messages)))
+            for reply in replies[index]:
+                yield reply
+
+        async def run():
+            request = RunRequest(
+                messages=[{"role": "system", "content": "sys"},
+                          {"role": "user", "content": "request"}],
+                budget=budget or Budget(rounds=3, model_calls=7),
+                tool_context=context, routing=route,
+            )
+            engine = Engine(request)
+            events = [event async for event in engine.run()]
+            return events, engine.result
+
+        tool = AsyncMock(side_effect=tool_results)
+        with (patch("app.runtime.engine.stream_completion", model),
+              patch("app.runtime.engine.cached_capabilities", return_value=None),
+              patch.object(registry, "call", tool)):
+            events, result = asyncio.run(run())
+        return prompts, events, result, tool
+
+    @staticmethod
+    def call(name, args):
+        return ("tool_calls", [{"id": name, "function": {"name": name, "arguments": args}}])
+
+    def test_routes_indonesian_prompts_and_carries_an_explicit_follow_up(self):
+        self.assertEqual(select_route("Jelasin cara kerja SSE").tools, ())
+        self.assertEqual(select_route("Apa itu Bitcoin?").tools, ())
+        self.assertEqual(select_route("Cuaca Singapura besok?").tools, ("weather",))
+        follow_up = select_route("Kalau besok?", previous="Cuaca Singapura hari ini?")
+        self.assertEqual(follow_up.tools, ("weather",))
+        self.assertEqual(select_route("Grafik BTC minggu ini").tools, ("crypto_trend",))
+        self.assertEqual(select_route("Screener saham paling naik").tools, ("screen",))
+        self.assertEqual(select_route("Ringkas https://example.com lalu bandingkan dengan lampiran",
+                                      has_attachments=True).tools, ("fetch_url", "read_file", "plan"))
+        self.assertEqual(select_route("Tulis catatan.md").tools, ("write_file",))
+        self.assertEqual(select_route("Lanjutkan", previous="Tulis catatan.md").tools, ("web_search",))
+
+    def test_widening_discards_the_unsourced_draft_and_unlocks_page_reads(self):
+        route = select_route("Cuaca Singapura besok?")
+        source = {"source": "https://example.com/forecast", "title": "Forecast", "kind": "web"}
+        prompts, events, result, tool = self.drive(
+            route,
+            [[("delta", "unverified draft")],
+             [self.call("web_search", {"query": "Singapore forecast tomorrow"})],
+             [("delta", "answer with source")]],
+            tool_results=[ToolResult.ok("forecast", sources=[source])],
+        )
+        self.assertEqual([p[0] for p in prompts],
+                         [("weather",), ("weather", "web_search"), ("fetch_url", "web_search", "weather")])
+        self.assertNotIn("unverified draft", [e.data.get("text") for e in events])
+        self.assertEqual(result.answer, "answer with source")
+        self.assertEqual(tool.await_count, 1)
+
+    def test_a_short_clarification_does_not_trigger_widening(self):
+        prompts, _, result, tool = self.drive(
+            select_route("Cuaca besok?"), [[("delta", "Di kota mana?")]],
+        )
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(result.answer, "Di kota mana?")
+        tool.assert_not_awaited()
+
+    def test_invalid_arguments_get_one_focused_repair_round(self):
+        route = select_route("Cuaca Singapura besok?")
+        invalid = ToolResult.failed(errors.INVALID_ARGUMENTS, "'location' is required")
+        prompts, _, result, tool = self.drive(
+            route,
+            [[self.call("weather", {})],
+             [self.call("weather", {})],
+             [self.call("weather", {"location": "Singapore"})],
+             [("delta", "could not verify")]],
+            tool_results=[invalid, invalid],
+        )
+        self.assertEqual([p[0] for p in prompts], [("weather",), ("weather",), ("web_search",), ()])
+        self.assertIn("Correct it once", prompts[1][1][-1]["content"])
+        self.assertEqual(tool.await_count, 2)
+        self.assertEqual(result.answer, "could not verify")
+
+    def test_corrected_arguments_can_complete_the_tool_call(self):
+        invalid = ToolResult.failed(errors.INVALID_ARGUMENTS, "'location' is required")
+        _, events, result, tool = self.drive(
+            select_route("Cuaca Singapura besok?"),
+            [[self.call("weather", {})],
+             [self.call("weather", {"location": "Singapore"})],
+             [("delta", "forecast from tool")]],
+            tool_results=[invalid, ToolResult.ok("forecast")],
+        )
+        self.assertEqual(tool.await_args.args[1], {"location": "Singapore"})
+        self.assertTrue(any(event.type == ev.TOOL_COMPLETED for event in events))
+        self.assertEqual(result.answer, "forecast from tool")
+
+    def test_even_a_permitted_write_is_rejected_if_it_was_not_offered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            context = ToolContext(workspace=Access(Path(directory), writable=True))
+            _, events, _, tool = self.drive(
+                select_route("Cari dokumentasi SQLite"),
+                [[self.call("write_file", {"path": "x.txt", "content": "test"})],
+                 [("delta", "could not verify")]],
+                context=context,
+            )
+        tool.assert_not_awaited()
+        self.assertIn(errors.TOOL_NOT_OFFERED, [event.data.get("code") for event in events])
+
+    def test_a_dependent_write_is_offered_after_search_returns_data(self):
+        route = select_route("Cari berita terbaru lalu simpan ke laporan.md")
+        source = {"source": "https://example.com/article", "kind": "web", "read": True}
+        with tempfile.TemporaryDirectory() as directory:
+            context = ToolContext(workspace=Access(Path(directory), writable=True))
+            prompts, _, _, _ = self.drive(
+                route,
+                [[self.call("web_search", {"query": "news"})],
+                 [self.call("write_file", {"path": "laporan.md", "content": "test"})],
+                 [("delta", "saved")]],
+                context=context,
+                tool_results=[ToolResult.ok("news", sources=[source]), ToolResult.ok("saved")],
+            )
+        self.assertNotIn("write_file", prompts[0][0])
+        self.assertIn("write_file", prompts[1][0])
+        self.assertNotIn("fetch_url", prompts[1][0])
+
+    def test_chart_then_prose_still_runs_the_explicit_news_request(self):
+        route = select_route("Cek apakah harga BBCA.JK di atas MA50, lalu cari berita terbaru tentang BBCA.")
+        self.assertEqual(route.tools[:2], ("equity_trend", "web_search"))
+        source = {"kind": "web", "source": "https://example.com/bbca", "title": "BBCA news"}
+        _, events, result, tool = self.drive(
+            route,
+            [[self.call("equity_trend", {"symbol": "BBCA.JK"})],
+             [("delta", "Mencari berita terbaru BBCA…")],
+             [("delta", "Berikut berita yang ditemukan.")]],
+            tool_results=[
+                ToolResult.ok("technical data", card={"symbol": "BBCA.JK", "candles": [[1]]}),
+                ToolResult.ok("news result", sources=[source]),
+            ],
+        )
+        self.assertEqual([call.args[0] for call in tool.await_args_list], ["equity_trend", "web_search"])
+        self.assertEqual(tool.await_args.args[1], {"query": "BBCA latest news"})
+        self.assertTrue(any(e.type == ev.SOURCE_FOUND and e.data["source"] == source["source"]
+                            for e in events))
+        self.assertEqual(result.answer, "Berikut berita yang ditemukan.")
+
+    def test_news_gets_the_reserved_tool_at_the_round_limit(self):
+        route = select_route("Cek grafik BBCA.JK lalu cari berita terbaru.")
+        technical_search = self.call("web_search", {"query": "BBCA MA50 hari ini"})
+        technical_search[1][0]["id"] = "technical-search"
+        prompts, _, result, tool = self.drive(
+            route,
+            [[self.call("equity_trend", {"symbol": "BBCA.JK"}), technical_search],
+             [("delta", "Chart and news summary")]],
+            tool_results=[
+                ToolResult.ok("technical data", card={"symbol": "BBCA.JK", "candles": [[1]]}),
+                ToolResult.failed(errors.TOOL_ERROR, "News service unavailable"),
+            ],
+            budget=Budget(rounds=1, extra_rounds=0, model_calls=2, tool_calls=2),
+        )
+        self.assertEqual([call.args[0] for call in tool.await_args_list], ["equity_trend", "web_search"])
+        self.assertEqual(tool.await_args.args[1], {"query": "BBCA.JK latest news"})
+        self.assertTrue(any("News service unavailable" in m.get("content", "") for m in prompts[-1][1]))
+        self.assertEqual(result.answer, "Chart and news summary")
+
+    def test_news_follow_up_uses_the_previous_ticker_and_avoids_quote_lookup(self):
+        route = select_route("Cari berita terbaru", previous="Tolong cek grafik BBCA.JK")
+        self.assertEqual(route.tools, ("web_search",))
+        self.assertEqual(route.news_hint, "BBCA.JK latest news")
+        self.assertEqual(select_route("Cari berita terbaru soal NVDA", previous="Grafik BBCA.JK").news_query,
+                         "NVDA latest news")
+        self.assertIsNone(select_route("Cek grafik BBCA.JK, jangan cari berita terbaru").news_query)
+
+    def test_a_model_news_search_with_category_does_not_repeat(self):
+        route = select_route("Cek grafik BBCA.JK lalu cari berita terbaru.")
+        _, _, result, tool = self.drive(
+            route,
+            [[self.call("equity_trend", {"symbol": "BBCA.JK"})],
+             [self.call("web_search", {"query": "BBCA", "categories": "news"})],
+             [("delta", "Chart and news summary")]],
+            tool_results=[ToolResult.ok("technical data"), ToolResult.ok("news result")],
+            budget=Budget(rounds=2, extra_rounds=0, model_calls=3, tool_calls=2),
+        )
+        self.assertEqual([call.args[0] for call in tool.await_args_list], ["equity_trend", "web_search"])
+        self.assertEqual(tool.await_args.args[1], {"query": "BBCA", "categories": "news"})
+        self.assertEqual(result.answer, "Chart and news summary")
 
 
 if __name__ == "__main__":

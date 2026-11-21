@@ -7,6 +7,6 @@ Only the names a caller outside this package reads are re-exported. The rest of
 the levels live in `permissions` and are reached from there.
 """
 
-from .permissions import EXTERNAL, READ_ONLY, authorize
+from .permissions import ALLOWED, EXTERNAL, READ_ONLY, WRITE, authorize
 
-__all__ = ["EXTERNAL", "READ_ONLY", "authorize"]
+__all__ = ["ALLOWED", "EXTERNAL", "READ_ONLY", "WRITE", "authorize"]

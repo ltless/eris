@@ -21,6 +21,7 @@ from ..errors import (
     ToolError,
 )
 from ..security import READ_ONLY, authorize
+from ..security.workspace import Access
 
 
 # What every tool in this app is. A tuple rather than a string because
@@ -61,6 +62,7 @@ class ToolContext:
     # Shared by the tools and the engine, which is the point: whoever files a
     # source takes the next number from here rather than counting its own.
     numbers: SourceNumbers = field(default_factory=SourceNumbers)
+    workspace: Access | None = None
 
 
 @dataclass(frozen=True)
@@ -194,7 +196,7 @@ class Registry:
         if err:
             return ToolResult.failed(err.code, err.message, err.retryable)
 
-        refusal = authorize(tool)
+        refusal = authorize(tool, ctx.workspace)
         if refusal:
             return ToolResult.failed(*refusal)
 
@@ -225,7 +227,7 @@ class Registry:
         """
         wanted = set(tags) if tags else None
         return [t.spec() for t in self.all()
-                if authorize(t) is None and t.offered(ctx)
+                if authorize(t, ctx.workspace) is None and t.offered(ctx)
                 and (not wanted or wanted & set(t.tags))]
 
 

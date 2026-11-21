@@ -21,43 +21,38 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StrictBool, StrictInt, StrictStr
 
 from . import auth, chats, encoding, favicons, tokens
 from .config import settings
 from .deps import require_session, require_user
 from .models import (
-    cached_ladder,
-    effort_label,
     healthy,
     listed_capabilities,
     list_models,
     model_label,
     model_stats,
-    rung_index,
-    rungs_of,
-    think_ladder,
-    think_value,
     title_for,
-    warm,
+)
+from .models.ladder import cached_reasoning, effort_label, reasoning, saved_effort, supports
+from .models.metadata import (
+    cached_model_info, cached_properties, cached_window, configured_context,
+    llama_window, model_context, model_info, positive_int, requested_context, server_properties,
 )
 from .runtime.budgets import Budget
 from .runtime.context import TRUNCATED, assemble
 from .runtime.engine import Engine, RunRequest
+from .runtime.routing import select_route
+from .security import workspace
 from .sse import carded, sse, sse_frame
 from .tools import builtin as builtin_tools
-from .tools import fetch
+from .tools import fetch, search
 from .tools.registry import ToolContext, source_view
 
 app = FastAPI(title="Eris")
 
 STATIC_DIR = encoding.STATIC_DIR
 MEDIA_DIR = encoding.MEDIA_DIR
-
-# The most context tokens a preference may ask for. The settings dialog reads
-# its field's `max` from here, so the bound the server enforces and the one the
-# browser shows are the same number.
-CTX_MAX = 262144
 
 builtin_tools.register_builtins()
 
@@ -87,14 +82,16 @@ class PasswordRequest(BaseModel):
 
 class PrefsRequest(BaseModel):
     model: str | None = None
-    effort: int | None = None
-    ctx: int | None = None
+    effort: StrictBool | StrictStr | StrictInt | None = None
+    effort_model: str | None = None
+    ctx: int | None = Field(default=None, ge=0, le=2**31 - 1)
     system_prompt: str | None = None
 
 
 class ChatRequest(BaseModel):
     messages: list[Message]
     model: str | None = None
+    effort: StrictBool | StrictStr | None = None
     chat_id: str | None = None
     regenerate: bool = False
 
@@ -144,7 +141,10 @@ def _prepend_text(content, text):
     if isinstance(content, str):
         return f"{text}\n\n{content}" if content else text
     if isinstance(content, list):
-        parts = [dict(p) for p in content]
+        # A part that is not an object carries no text and cannot be given any,
+        # so it is dropped rather than handed to `dict()`, which raises on a
+        # string, a number, or None and turns the whole request into a 500.
+        parts = [dict(p) for p in content if isinstance(p, dict)]
         for p in parts:
             if isinstance(p, dict) and p.get("type") == "text":
                 p["text"] = f"{text}\n\n{encoding.text_part_text(p)}"
@@ -275,51 +275,67 @@ def _asking_model(asked, prefs, fallback=None):
     return asked or prefs.get("model") or fallback
 
 
+def _request_model(asked, u):
+    """The model this run will use, from the request, then the account, then
+    the configured one.
+
+    One resolver for every caller that has to name it: `/api/chat` stores the
+    answer on the run, and a caller that resolved it with a different fallback
+    would report one model while the server ran another.
+    """
+    return _asking_model(asked, _prefs(u), settings.model_name)
+
+
 def _wanted_ctx(prefs):
     """The context the account asked for in the panel, or `None` for its
     default. Stored as 0 when unset, which is not a context to ask for."""
-    return int(prefs.get("ctx") or 0) or None
+    return positive_int(prefs.get("ctx"))
 
 
-def _build_request(req: ChatRequest, u, messages, files):
+def _saved_effort(prefs, model, profile):
+    legacy_model = prefs.get("effort_legacy_model") or _asking_model(None, prefs, settings.model_name)
+    return saved_effort(prefs, model, legacy_model, profile)
+
+
+def _build_request(req: ChatRequest, u, messages, files, workspace_access=None, routing=None):
     prefs = _prefs(u)
     base_prompt = (prefs.get("system_prompt") or "").strip() or settings.system_prompt
     system = assemble(
         base_prompt=base_prompt,
         today=date.today().isoformat(),
         instruction=(
-            "For anything current or recent, answer only from the search results you "
-            "receive, never from training memory. "
-            "When a task takes more than one step, write the steps down with the plan "
-            "tool before you start, and call it again as each step finishes. Skip it "
-            "for a question you can simply answer."
+            "Use relevant tool results for current facts. If the data could not be "
+            "verified, say so. Ask a short question if a required detail is missing. "
+            "Use the plan tool, when offered, for tasks with dependent steps."
         ),
     )
-    tool_ctx = ToolContext(files=tuple(files))
-    model = _asking_model(req.model, prefs)
-    # The stored effort is an index, and which value it means belongs to the
-    # model being asked: a ladder is per model, so it is resolved here, against
-    # this model's own, rather than sent as the index it was remembered as.
-    #
-    # The ladder is read from the cache and never asked for here. A probe on a
-    # model that is not loaded costs the load, and a chat must not wait on the
-    # panel's question; when the panel has not opened yet, `think_value` answers
-    # for the unknown case with the value the request carried before any ladder.
-    ladder = cached_ladder(model)
+    tool_ctx = ToolContext(files=tuple(files), workspace=workspace_access)
+    model = _request_model(req.model, u)
+    profile = cached_reasoning(model)
+    thinking = _saved_effort(prefs, model, profile)
+    if "effort" in req.model_fields_set:
+        thinking = req.effort if supports(profile, req.effort) else None
+    shown = cached_model_info(model)
+    fixed = llama_window(cached_properties(model))
+    maximum = model_context(shown)
+    context = None if fixed else requested_context(_wanted_ctx(prefs), maximum)
+    window = fixed or context or configured_context(shown) or cached_window(model)
     # A reopened chat sends its stored turns back with each question; the engine
     # windows them, so what arrives here is everything the chat ever held.
     return RunRequest(
         messages=[{"role": "system", "content": system}] + messages,
         model=model,
-        thinking=think_value(prefs.get("effort"), ladder),
-        ctx_tokens=_wanted_ctx(prefs),
+        thinking=thinking,
+        ctx_tokens=context,
+        window_tokens=requested_context(window, maximum),
         budget=Budget(),
         tool_context=tool_ctx,
+        routing=routing,
     )
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest, u: dict = Depends(require_user)):
+async def chat(req: ChatRequest, request: Request, u: dict = Depends(require_user)):
     # The two readers below look only at role and content, and both want plain
     # dicts rather than the request models, so the projection is made once.
     plain = [{"role": m.role, "content": m.content} for m in req.messages]
@@ -327,8 +343,8 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
     # stored apart so a reload can draw them as two things, and joined only for
     # the model, which reads a quoted line as the reader's own words.
     query = _last_user_text(plain)
-    quoted = next((m.quote for m in reversed(req.messages)
-                   if m.role == "user" and m.quote), None)
+    latest_user = next((m for m in reversed(req.messages) if m.role == "user"), None)
+    quoted = ((latest_user.quote or "").strip() or None) if latest_user else None
     # Capped once: the same cleaned turn is what the model reads, what the run
     # may hand to `read_file`, and what the database stores.
     cleaned = [_clean_files(m.files) for m in req.messages]
@@ -343,51 +359,72 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
         for m, f in zip(req.messages, cleaned)
     ]
     attached = _last_user_images(plain)
-    request = _build_request(req, u, messages, _run_files(req.messages, cleaned))
-    engine = Engine(request)
+    access = workspace.for_user(u["id"]) if getattr(request.state, "session_auth", False) else None
+    routing = None
+    if settings.dynamic_tools:
+        user_turns = [m for m in plain if m["role"] == "user"]
+        routing = select_route(query, previous=_last_user_text(user_turns[:-1]),
+                               has_attachments=bool(files))
+    model = _request_model(req.model, u)
+    prefs = _prefs(u)
+    if req.effort is not None or prefs.get("efforts") or "effort" in prefs or _wanted_ctx(prefs):
+        profile = await reasoning(model)
+        if req.effort is not None and profile.source != "unavailable" and not supports(profile, req.effort):
+            raise HTTPException(422, "That effort is not supported by this model.")
+    run_request = _build_request(req, u, messages, _run_files(req.messages, cleaned), access, routing)
+    engine = Engine(run_request)
+
+    chat_run = None
+    name_this = False
+    if req.chat_id and req.regenerate:
+        chat_run = chats.start_regeneration(u["id"], req.chat_id)
+        if chat_run is None:
+            raise HTTPException(409, "There is no current answer to regenerate.")
+    elif req.chat_id and (query.strip() or quoted or attached or files):
+        name_this = bool(subject and chats.untitled(req.chat_id, u["id"]))
+        chat_run = chats.save_turn(
+            u["id"], req.chat_id, "user", query, quote=quoted,
+            images=attached or None, files=files,
+        )
+        if chat_run is None:
+            raise HTTPException(404, "Chat not found.")
+        chats.touch_title(req.chat_id, subject, u["id"], instance=chat_run.instance)
 
     async def gen():
-        if req.regenerate:
-            chats.drop_last_assistant(u["id"], req.chat_id)
-        # Asked before the run, because the run's own turns rename the chat: a
-        # title may only replace the placeholder the first user message wrote.
-        name_this = bool(req.chat_id and subject and not req.regenerate
-                         and chats.untitled(req.chat_id, u["id"]))
-        # Started with the run, not after it: the name reads the first message,
-        # so the two overlap instead of queueing one behind the other.
         title_task = (
-            asyncio.create_task(title_for(subject, model=request.model))
+            asyncio.create_task(title_for(subject, model=run_request.model, ctx=run_request.ctx_tokens))
             if name_this else None
         )
         web_groups = []
         fetch_rows = []
         card_rows = []
-        answered = False
-        # Written here, not in `finally`: a client that signs out or refreshes
-        # before the stream ends would otherwise lose the turn it just asked.
-        async def remember():
-            if not req.chat_id:
-                return
-            if (query or quoted or attached or files) and not req.regenerate:
-                chats.save_turn(u["id"], req.chat_id, "user", query, quote=quoted,
-                                images=attached or None, files=files)
-                chats.touch_title(req.chat_id, subject, u["id"])
-            answer = engine.result.answer
-            if answer:
-                chats.save_turn(
-                    u["id"], req.chat_id, "assistant", answer,
-                    thinking=engine.result.thinking or None,
-                    sources=_stored_sources(engine.result.sources),
-                    web=[g for g in web_groups if g["items"]],
-                    fetches=fetch_rows or None,
-                    cards=card_rows or None,
-                    # Only worth storing when a turn has more than one: with one
-                    # round the stored text is already exactly what was drawn.
-                    answers=engine.result.answers if len(engine.result.answers) > 1 else None,
-                )
+        answer_rounds = {}
+        thinking_rounds = {}
+        completed = False
+        saved = None
 
+        def remember():
+            if not chat_run or (chat_run.regenerate and not completed):
+                return None
+            answers = [{"r": r, "text": "".join(parts)} for r, parts in answer_rounds.items()]
+            answer = "\n\n".join(row["text"] for row in answers)
+            if not answer.strip():
+                return None
+            thinking = ["".join(thinking_rounds.get(r, ()))
+                        for r in range(max(thinking_rounds, default=-1) + 1)]
+            return chats.finish_run(
+                chat_run, answer,
+                thinking=thinking or None,
+                sources=_stored_sources(engine.result.sources),
+                web=[g for g in web_groups if g["items"] or not g.get("ok", True)],
+                fetches=fetch_rows or None,
+                cards=card_rows or None,
+                answers=answers if len(answers) > 1 else None,
+            )
+
+        stream = engine.run()
         try:
-            async for event in engine.run():
+            async for event in stream:
                 frame = sse_frame(event)
                 if frame is None:
                     continue
@@ -397,27 +434,43 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                 # of that mapping. A carded tool's frame is named after the tool,
                 # so `carded()` is what tells a card apart from any other frame.
                 kind = frame["type"]
-                if kind == "tool":
-                    web_groups.append({"r": frame["r"], "query": frame["query"], "items": []})
+                if kind == "delta":
+                    answer_rounds.setdefault(frame["r"], []).append(frame["text"])
+                elif kind == "thinking":
+                    thinking_rounds.setdefault(frame["r"], []).append(frame["text"])
+                elif kind == "tool":
+                    web_groups.append({"r": frame["r"], "id": frame.get("id", ""),
+                                       "query": frame["query"], "items": [],
+                                       "ok": True, "reason": ""})
                 elif kind == "fetch":
                     # Recorded from the start frame, not the closing one: a read
                     # that failed is still a read the user watched, and the URL
                     # is only ever stated here.
-                    fetch_rows.append({"r": frame["r"], "url": frame["url"],
-                                       "chars": 0, "ok": True, "reason": ""})
+                    fetch_rows.append({"r": frame["r"], "id": frame.get("id", ""),
+                                       "url": frame["url"], "chars": 0, "ok": True,
+                                       "reason": ""})
                 elif kind == "fetch_done":
-                    row = next((f for f in reversed(fetch_rows)
-                                if f["r"] == frame["r"] and not f["chars"]), None)
+                    row = _fetch_row(fetch_rows, frame, opened=True)
                     if row is not None:
                         row["chars"] = frame["chars"]
                 elif kind == "tool_error" and frame.get("tool") == fetch.NAME:
-                    row = next((f for f in reversed(fetch_rows)
-                                if f["r"] == frame["r"] and f["ok"]), None)
+                    row = _fetch_row(fetch_rows, frame, opened=False)
                     if row is not None:
                         row["ok"] = False
                         # Stored so the card says why after a reload; the
                         # streamed frame is the only other place it exists.
                         row["reason"] = frame.get("reason", "")
+                elif kind == "tool_error" and frame.get("tool") == search.NAME:
+                    # A search that failed drew its card and said why, and the
+                    # streamed frame is the only place that sentence exists. A
+                    # reload reads the stored turn, so without this the card is
+                    # simply gone and the turn reads as if nothing was asked.
+                    group = next((g for g in web_groups
+                                  if g["r"] == frame["r"]
+                                  and g["id"] == frame.get("id", "")), None)
+                    if group is not None:
+                        group["ok"] = False
+                        group["reason"] = frame.get("reason", "")
                 elif kind == "tool_error" and frame.get("tool") in carded():
                     # A card still appears, in its failed state, so a reload
                     # shows the failure rather than a gap where a call was.
@@ -431,28 +484,36 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
                 elif kind == "sources":
                     items = [i for i in frame["items"] if i.get("kind") == "web"]
                     if items:
-                        group = next((g for g in web_groups if g["r"] == frame["r"]), None)
-                        if group is None:
-                            group = {"r": frame["r"], "query": "", "items": []}
-                            web_groups.append(group)
-                        group["items"].extend(items)
-                        yield sse({"type": "sources", "r": frame["r"], "items": items})
+                        # A group is opened by a search's own `tool` frame and
+                        # filed into by the rows that carry its id. Every tool
+                        # that reports a source labels it `web`, so a crypto or
+                        # weather row in the same round used to be appended to
+                        # the search group and came back as a result of a search
+                        # nobody ran. No group, no filing: it is still a
+                        # citation, and still forwarded below.
+                        group = next((g for g in web_groups
+                                      if g["r"] == frame["r"]
+                                      and g["id"] == frame.get("id", "")), None)
+                        if group is not None:
+                            group["items"].extend(items)
+                        yield sse({"type": "sources", "r": frame["r"],
+                                   "id": frame.get("id", ""), "items": items})
                     # The unfiltered frame would repeat rows that were dropped
                     # as non-web, so this frame is the one that is not forwarded.
                     continue
                 yield sse(frame)
-            answered = True
+            completed = engine.result.stop_reason == "answered"
         finally:
-            # Persist even if the client hit Stop mid-stream: the turn happened
-            # and should still be there after a refresh. No yields are allowed
-            # in here, which is why the sources are collected above instead.
-            await remember()
-            if title_task is not None and not answered:
-                # The run failed or the client stopped — this is also where a
-                # disconnect lands, as GeneratorExit through the finally — and
-                # nothing is left to read the name.
-                title_task.cancel()
-        if title_task is not None and answered:
+            try:
+                saved = remember()
+            finally:
+                if title_task is not None and (not completed or saved is False):
+                    title_task.cancel()
+                await stream.aclose()
+        if saved is False:
+            yield sse({"type": "error", "code": "chat_changed",
+                       "message": "This chat changed before the answer could be saved."})
+        if title_task is not None and completed and saved is not False:
             try:
                 title = await asyncio.wait_for(title_task, TITLE_WAIT)
             except Exception:
@@ -462,11 +523,39 @@ async def chat(req: ChatRequest, u: dict = Depends(require_user)):
             if title:
                 # Dropped when the stored name is no longer the opening words:
                 # a name someone chose, typed while the answer streamed, wins.
-                if chats.name_from_model(u["id"], req.chat_id, title, subject):
+                if chats.name_from_model(u["id"], req.chat_id, title, subject,
+                                         instance=chat_run.instance):
                     yield sse({"type": "title", "chat_id": req.chat_id, "title": title})
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+def _fetch_row(rows, frame, *, opened):
+    """The stored fetch row a closing frame belongs to, or `None`.
+
+    Matched by the call's own id first. A round runs its calls together and
+    reports them as they finish, so two reads in one round arrive in either
+    order; the round alone would close whichever row happened to be first, and
+    a stored turn would then say the wrong page was the one that failed.
+
+    `opened` says which side the frame is: a `fetch_done` closes a row that has
+    no size yet, a `tool_error` closes one that has not failed yet. Older turns
+    and servers that name no id fall back to the round, which is what the
+    previous version matched on and is still right whenever a round holds one
+    read.
+    """
+    call = frame.get("id", "")
+    for row in reversed(rows):
+        if row["r"] != frame["r"]:
+            continue
+        if call and row.get("id") != call:
+            continue
+        # A row that already carries a size or already failed is a row some
+        # earlier frame closed, so it is not this one's.
+        if (row["chars"] == 0) if opened else row["ok"]:
+            return row
+    return None
 
 
 def _stored_sources(sources):
@@ -593,17 +682,19 @@ async def update_password(req: PasswordRequest, res: Response, u: dict = Depends
 
 @app.get("/api/models")
 async def models(u: dict = Depends(require_user)):
-    items, caps = await asyncio.gather(list_models(), listed_capabilities())
-    caps = caps or {}
+    # `return_exceptions` because the picker needs both, and one of them
+    # failing should cost the other: a listing that throws would otherwise take
+    # the model ids down with it, and the ids are what the composer cannot do
+    # without. `list_models` answers `[]` for a server it cannot reach, which is
+    # the same shape this hand-back produces.
+    items, caps = await asyncio.gather(
+        list_models(), listed_capabilities(), return_exceptions=True)
+    items = items if isinstance(items, list) else []
+    caps = caps if isinstance(caps, dict) else {}
     prefs = _prefs(u)
     default = _asking_model(None, prefs, settings.model_name)
     if default not in items:
         items.insert(0, default)
-    # The ladder is a probe, and a probe on a cold model waits for the load, so
-    # it runs after the answer instead of inside it. The effort control asks
-    # `/api/effort`, which finds the answer already cached by the time a reader
-    # opens it.
-    warm(default)
     # The id is what the endpoint accepts and what prefs store; the label is
     # what a person reads. Parallel rather than a list of objects, so a client
     # that only knows `items` keeps working unchanged.
@@ -619,33 +710,26 @@ async def models(u: dict = Depends(require_user)):
         "labels": {mid: model_label(mid) for mid in items},
         "default": default,
         "capabilities": {mid: caps[mid] for mid in items if mid in caps},
-        "ctx_max": CTX_MAX,
     }
 
 
 @app.get("/api/effort")
 async def effort(model: str | None = None, u: dict = Depends(require_user)):
-    """The effort steps this model offers, for the control to draw.
-
-    Probed here rather than on `/api/models`, because the model list must not
-    wait on a round trip; the answer is cached per model. The list is never
-    empty, and `always` marks a model with one rung.
-    """
+    """The selected model's declared controls and the account's preference."""
     prefs = _prefs(u)
     mid = _asking_model(model, prefs, settings.model_name)
-    ladder = await think_ladder(mid)
-    # Nothing could be asked, so the plain pair is offered: it is what the
-    # request would carry anyway, and a control that vanished would be a
-    # worse answer than one that works.
-    rungs = rungs_of(ladder)
-    if not rungs:
-        # This model cannot think at all, so the only honest step is off.
-        rungs = [False]
+    profile = await reasoning(mid)
+    choices = []
+    if len(profile.values) > 1:
+        default = effort_label(profile.default) if profile.default is not None else None
+        choices = [{"value": None, "label": f"Default ({default})" if default else "Default"}]
+        choices.extend({"value": value, "label": effort_label(value)} for value in profile.values)
     return {
         "model": mid,
-        "efforts": [{"value": i, "label": effort_label(v)} for i, v in enumerate(rungs)],
-        "always": len(rungs) == 1,
-        "current": rung_index(prefs.get("effort"), rungs),
+        "efforts": choices,
+        "current": _saved_effort(prefs, mid, profile),
+        "default": profile.default,
+        "source": profile.source,
     }
 
 
@@ -664,15 +748,46 @@ async def server_stats(model: str | None = None, u: dict = Depends(require_user)
 
 @app.post("/api/prefs")
 async def update_prefs(req: PrefsRequest, u: dict = Depends(require_session)):
+    stored = _prefs(u)
+    selected = (_request_model(None, u) if req.model is None
+                else req.model.strip()[:200] or settings.model_name)
+    effort_model = (req.effort_model or selected).strip()[:200] or selected
+    value = req.effort
+    if value is not None:
+        profile = await reasoning(effort_model)
+        if type(value) is int and 0 <= value < len(profile.values):
+            value = profile.values[value]
+        if not supports(profile, value):
+            raise HTTPException(422, "That effort is not supported by this model.")
+    ctx = req.ctx
+    if ctx:
+        shown = await model_info(selected)
+        props = await server_properties(selected) if shown is None else None
+        if llama_window(props):
+            raise HTTPException(422, "This server sets its context at startup.")
+        ctx = requested_context(ctx, model_context(shown))
+
     def change(prefs):
+        if type(prefs.get("effort")) is int and "effort_legacy_model" not in prefs:
+            prefs["effort_legacy_model"] = _asking_model(None, prefs, settings.model_name)
         if req.model is not None:
             # A Hugging Face GGUF id runs past 80 characters, and a cut one is an
             # id the server does not have: 404 on the next question.
-            prefs["model"] = req.model[:200]
-        if req.effort is not None:
-            prefs["effort"] = max(0, int(req.effort))
-        if req.ctx is not None:
-            prefs["ctx"] = max(0, min(int(req.ctx), CTX_MAX))
+            model = req.model.strip()[:200]
+            # An empty id is the one value that cannot mean "use the configured
+            # model": it would sit in prefs ahead of that fallback and every run
+            # would ask the server for a model named "". Clearing the key is what
+            # forgetting a choice looks like; storing nothing is refused.
+            if model:
+                prefs["model"] = model
+            else:
+                prefs.pop("model", None)
+        if "effort" in req.model_fields_set:
+            efforts = dict(prefs["efforts"]) if isinstance(prefs.get("efforts"), dict) else {}
+            efforts[effort_model] = value
+            prefs["efforts"] = efforts
+        if ctx is not None:
+            prefs["ctx"] = ctx
         if req.system_prompt is not None:
             # Empty string clears the override; chat falls back to the env prompt.
             prompt = req.system_prompt.strip()
@@ -683,8 +798,11 @@ async def update_prefs(req: PrefsRequest, u: dict = Depends(require_session)):
 
     # The blob is shared with the media upload, so it is read and written as one
     # step rather than from a copy this request took earlier.
-    auth.update_prefs(u["id"], change)
-    return {"ok": True}
+    prefs = auth.update_prefs(u["id"], change)
+    # The answer states the model the account is on now, resolved the same way
+    # a run resolves it. A client that only kept the id it wrote would show a
+    # pick that a later fallback had already moved away from.
+    return {"ok": True, "model": _request_model(None, {**u, "prefs": prefs})}
 
 
 # The kinds an upload may name, read off the one place that says where each one
@@ -708,8 +826,12 @@ async def upload_media(file: UploadFile, kind: str = "avatar", u: dict = Depends
         raise HTTPException(400, f"kind must be one of {', '.join(MEDIA_KINDS)}")
     if not (file.content_type or "").startswith("image/"):
         raise HTTPException(400, "image required")
-    raw = await file.read()
-    if len(raw) > 2_000_000:
+    # Read in chunks so the size is refused while it is still small. Reading
+    # the whole upload first would buffer however much a client sent into
+    # memory before the check could reject it.
+    MAX_UPLOAD = 2_000_000
+    raw = await file.read(MAX_UPLOAD + 1)
+    if len(raw) > MAX_UPLOAD:
         raise HTTPException(400, "image too large (max 2MB)")
     ext = encoding.image_extension(file.content_type)
     name = f"{u['id']}-{kind}-{encoding.new_token()}.{ext}"

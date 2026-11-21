@@ -6,12 +6,13 @@ token, and a token is read scope: it may ask the app questions, and it may not
 rewrite the account that issued it.
 """
 
-from fastapi import Cookie, Header, HTTPException
+from fastapi import Cookie, Header, HTTPException, Request
 
 from . import auth, tokens
 
 
-def require_user(session: str | None = Cookie(None, alias=auth.SESSION_COOKIE),
+def require_user(request: Request,
+                 session: str | None = Cookie(None, alias=auth.SESSION_COOKIE),
                  authorization: str | None = Header(None)):
     """The account making this call, from a cookie or a bearer token.
 
@@ -21,6 +22,7 @@ def require_user(session: str | None = Cookie(None, alias=auth.SESSION_COOKIE),
     """
     u = auth.get_session(session)
     if u:
+        request.state.session_auth = True
         return u
     if authorization and authorization.lower().startswith("bearer "):
         user_id = tokens.resolve(authorization.split(" ", 1)[1].strip())

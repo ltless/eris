@@ -40,16 +40,17 @@ def sse_frame(event):
     if t == ev.MODEL_THINKING:
         return {"type": "thinking", "r": d.get("round", 0), "text": d.get("text", "")}
     if t == ev.SOURCE_FOUND:
-        # `r` rides along so the browser can file a result under the round that
-        # found it without guessing from arrival order, which is what lets a
-        # round's searches and its fetches be written back as one record.
-        return {"type": "sources", "r": d.get("round", 0),
+        # `id` rides along so the browser files a result under the call that
+        # found it rather than the round it landed in: two searches in one
+        # round finish in either order, and arrival order across calls is not
+        # an ordering either of them has.
+        return {"type": "sources", "r": d.get("round", 0), "id": d.get("id", ""),
                 "items": [{"n": d.get("n"), **source_view(d)}]}
     if t == ev.TOOL_STARTED and d.get("tool") == search.NAME:
         # `args` is whatever the model sent, and a JSON array is valid JSON, so
         # it is checked for shape before being read as a mapping.
         a = d.get("args") if isinstance(d.get("args"), dict) else {}
-        return {"type": "tool", "r": d.get("round", 0),
+        return {"type": "tool", "r": d.get("round", 0), "id": d.get("id", ""),
                 "query": str(a.get("query", "") or "")}
     # A fetch is its own step, not part of the search card: it is the model
     # going back for one page in depth, and it has a URL the search never
@@ -58,11 +59,16 @@ def sse_frame(event):
     # tool ends rather than when the run does.
     if t == ev.TOOL_STARTED and d.get("tool") == fetch.NAME:
         a = d.get("args") if isinstance(d.get("args"), dict) else {}
-        return {"type": "fetch", "r": d.get("round", 0),
+        return {"type": "fetch", "r": d.get("round", 0), "id": d.get("id", ""),
                 "url": str(a.get("url", "") or "")}
     if t == ev.TOOL_COMPLETED and d.get("tool") == fetch.NAME:
-        return {"type": "fetch_done", "r": d.get("round", 0),
-                "chars": d.get("chars", 0)}
+        # `id` is on the closing frame too: a round's calls finish in the
+        # order they complete, not the order they were asked in, and two
+        # fetches of the same URL would carry the same one, so a round with
+        # more than one read can only be matched by the id the model gave it.
+        a = d.get("args") if isinstance(d.get("args"), dict) else {}
+        return {"type": "fetch_done", "r": d.get("round", 0), "id": d.get("id", ""),
+                "url": str(a.get("url", "") or ""), "chars": d.get("chars", 0)}
     # These cards are drawn whole, once, when the tool ends: unlike a fetch
     # there is nothing to watch arrive, and the payload is the figures the tool
     # computed rather than anything the run knows.
@@ -71,7 +77,11 @@ def sse_frame(event):
     if t == ev.TOOL_FAILED:
         # `reason` is the short phrase the card replays; `message` is the full
         # sentence the model got, kept for anything that shows it verbatim.
+        # `id` names which call failed, for the same reason the closing fetch
+        # frame carries one: a round's calls finish out of order.
+        a = d.get("args") if isinstance(d.get("args"), dict) else {}
         return {"type": "tool_error", "tool": d.get("tool", ""), "r": d.get("round", 0),
+                "id": d.get("id", ""), "url": str(a.get("url", "") or ""),
                 "code": d.get("code", ""), "message": d.get("message", ""),
                 "reason": d.get("reason", "")}
     if t == ev.MODEL_METRICS:

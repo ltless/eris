@@ -212,7 +212,10 @@ async def read(args):
                 failures.append(e)
                 continue
             except httpx.HTTPError as e:
-                failures.append(Unavailable(f"{type(e).__name__}"))
+                failures.append(Unavailable(
+                    f"{type(e).__name__}",
+                    unreached=isinstance(e, httpx.TransportError),
+                ))
                 continue
             except ValueError:
                 failures.append(Unavailable("an unreadable reply"))
@@ -231,7 +234,8 @@ async def read(args):
     # Every source was asked and none answered. What they said decides which
     # sentence fits: a rate limit is a wait, an unknown coin is a correction.
     text, reason = no_source(
-        bool(failures) and all(f.limited for f in failures), "price", f"{base} against {quote}"
+        bool(failures) and all(f.limited for f in failures), "price", f"{base} against {quote}",
+        unreached=bool(failures) and all(f.unreached for f in failures),
     )
     return ToolResult.failed(TOOL_ERROR, text, reason=reason)
 

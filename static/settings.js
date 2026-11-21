@@ -271,11 +271,16 @@ function bind() {
       return;
     }
     const ctx = parseInt(els.inpCtx.value, 10);
+    // Only what the form actually holds. The model select is filled from the
+    // endpoint, and when that list was short of the stored id, or the frame
+    // holds no select at all, sending the field's value would write "" over a
+    // choice the picker made. A control that was never drawn has no answer to
+    // give, so it is left out of the request instead.
     const prefs = {
-      model: els.selModel.value,
-      ctx: Number.isNaN(ctx) ? 0 : ctx,
       system_prompt: els.taPrompt.value,
     };
+    if (!els.inpCtx.disabled) prefs.ctx = Number.isNaN(ctx) ? 0 : ctx;
+    if (els.selModel && els.selModel.value) prefs.model = els.selModel.value;
     try {
       await jpost("/api/prefs", prefs);
       msg(els.modelMsg, "Saved.", true);
@@ -284,6 +289,7 @@ function bind() {
       msg(els.modelMsg, err.message);
     }
   });
+  els.selModel.addEventListener("change", () => loadContextLimit(els.selModel.value));
 
   $("fToken").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -323,6 +329,31 @@ function bind() {
   });
 }
 
+let contextTicket = 0;
+async function loadContextLimit(model) {
+  const ticket = ++contextTicket;
+  const note = $("ctxNote");
+  els.inpCtx.removeAttribute("max");
+  els.inpCtx.disabled = false;
+  note.textContent = "";
+  if (!model) return;
+  try {
+    const { context } = await jget(`/api/stats?model=${encodeURIComponent(model)}`);
+    if (ticket !== contextTicket || !context) return;
+    if (context.editable === false) {
+      els.inpCtx.disabled = true;
+      note.textContent = context.configured
+        ? `The server sets this window to ${context.configured.toLocaleString()} tokens at startup.`
+        : "The server sets this window at startup.";
+    } else if (context.max) {
+      els.inpCtx.max = context.max;
+      note.textContent = `Model maximum: ${context.max.toLocaleString()} tokens.`;
+    }
+  } catch {
+    if (ticket === contextTicket) note.textContent = "The server did not report a context limit.";
+  }
+}
+
 async function init() {
   const u = await jget("/api/auth/me");
   paintProfile(u);
@@ -331,9 +362,6 @@ async function init() {
   els.selModel.innerHTML = "";
   const items = (j && Array.isArray(j.items)) ? j.items : [];
   const labels = (j && j.labels) || {};
-  // The server owns the ceiling and states it here, so the field and the
-  // route that clamps the value cannot disagree about it.
-  if (j && j.ctx_max) els.inpCtx.max = j.ctx_max;
   for (const id of items) {
     const opt = document.createElement("option");
     // The value is the id, because that is what the endpoint takes back and
@@ -353,7 +381,8 @@ async function init() {
     els.selModel.append(opt);
   }
   if (prefModel) els.selModel.value = prefModel;
-  if (u.prefs && u.prefs.ctx) els.inpCtx.value = u.prefs.ctx;
+  els.inpCtx.value = u.prefs?.ctx || "";
+  loadContextLimit(els.selModel.value);
   ready = true;
   // A note from an earlier failed open no longer applies.
   for (const stale of els.root.querySelectorAll(".s-fatal")) stale.remove();

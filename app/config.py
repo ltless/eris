@@ -32,6 +32,7 @@ class Settings:
     # OLLAMA_KV_CACHE_TYPE, or the panel's KV figure is off by the ratio.
     kv_cache_type = os.getenv("KV_CACHE_TYPE", "f16")
     max_tool_rounds = int(os.getenv("MAX_TOOL_ROUNDS", "3"))
+    dynamic_tools = os.getenv("DYNAMIC_TOOLS", "1") == "1"
     # Rounds the model may earn past the allowance by finding new sources.
     extra_tool_rounds = int(os.getenv("EXTRA_TOOL_ROUNDS", "4"))
     system_prompt = os.getenv(

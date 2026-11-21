@@ -7,6 +7,7 @@ reading still answers when the handshake itself is broken. Nothing here places
 an order: every request reads a public page of market data.
 """
 
+import asyncio
 import re
 import time
 
@@ -150,7 +151,7 @@ async def _client():
             client.cookies.set(name, value, domain=".yahoo.com")
         async with client:
             if not _cache["crumb"] and not await _handshake(client):
-                raise Unavailable("yahoo refused the session")
+                raise Unavailable("yahoo refused the session", unreached=True)
             yield client
     finally:
         await client.aclose()
@@ -174,8 +175,14 @@ async def _json(client, url, params=None, guarded=False, method="GET", body=None
         if r.status_code in (429, 999):
             raise Unavailable("yahoo is rate-limiting", limited=True)
         r.raise_for_status()
-        return r.json()
-    raise Unavailable("yahoo refused the session")
+        try:
+            return r.json()
+        except ValueError:
+            # A 200 whose body is not JSON is a service that answered with
+            # something else, which is the same kind of failure as a refusal
+            # and is reported as one rather than as a decoder message.
+            raise Unavailable("yahoo sent a reply that could not be read")
+    raise Unavailable("yahoo refused the session", unreached=True)
 
 
 async def _search(client, text):
@@ -294,10 +301,16 @@ async def read(args):
 
     try:
         async with _client() as client:
+            # Resolved together, not one after another: each name that is not a
+            # bare ticker costs a search round trip, and ten of them in turn is
+            # ten times the wait for no reason, since nothing here depends on
+            # the order. The order of the answers is the order of the names, so
+            # the sentence that lists what was not found still reads the way the
+            # question was asked.
+            found = await asyncio.gather(*(_resolve(client, p) for p in parts))
             symbols = []
             missing = []
-            for part in parts:
-                symbol = await _resolve(client, part)
+            for part, symbol in zip(parts, found):
                 (symbols if symbol else missing).append(symbol or part)
             if not symbols:
                 text = (f"Nothing on Yahoo Finance matches {', '.join(parts)}. "
@@ -375,6 +388,8 @@ async def _bars(client, symbol, day_span, interval):
 
 
 INTERVALS = {"1d": "daily", "1wk": "weekly", "1mo": "monthly"}
+# Calendar days of prehistory for the 50-bar average in each interval.
+TREND_PREHISTORY = {"1d": 100, "1wk": 360, "1mo": 1550}
 
 
 async def read_trend(args):
@@ -393,7 +408,7 @@ async def read_trend(args):
     try:
         async with _client() as client:
             symbol = await _resolve(client, raw) or raw.upper()
-            bars, meta = await _bars(client, symbol, day_span, interval)
+            bars, meta = await _bars(client, symbol, day_span + TREND_PREHISTORY[interval], interval)
     except (Unavailable, httpx.HTTPError) as e:
         return _yahoo_error(e, f"No {INTERVALS[interval]} history came back for {raw}: ")
 
@@ -411,33 +426,44 @@ async def read_trend(args):
     currency = meta.get("currency") or ""
     exchange = meta.get("fullExchangeName") or meta.get("exchangeName") or ""
     figures = analyse(bars)
-    subject = f"{name} ({symbol}) on {exchange}, {wording}, {len(bars)} bars"
+    cutoff = bars[-1]["t"] - day_span * 86_400
+    visible = [bar for bar in bars if bar["t"] > cutoff]
+    subject = f"{name} ({symbol}) on {exchange}, {wording}, {len(visible)} chart bars"
     text = trend_prose(
         subject,
         figures,
         close=f"{money(figures['price'])} {currency}",
         source=f"Yahoo Finance {wording} candles",
-        unit="day" if interval == "1d" else "bar",
+        unit="session" if interval == "1d" else "bar",
     )
+    if figures["ma50"] is None:
+        text += (f"\nMA50 is unavailable. It requires 50 {wording} closes, and the source "
+                 f"returned {len(bars)}. Do not infer the close's position relative to MA50.")
     url = PAGE_URL.format(symbol=symbol)
-    card = trend_card(figures, bars, symbol=symbol, quote=currency, source="Yahoo Finance",
-                      url=url, interval=interval, name=name, exchange=exchange)
+    card = trend_card(figures, visible, symbol=symbol, quote=currency, source="Yahoo Finance",
+                      url=url, interval=interval, name=name, exchange=exchange, history=bars)
     row = source_row(url, f"{symbol} {wording} — Yahoo Finance")
     return ToolResult.ok(text, sources=[row], card=card)
 
 
 _RATE_LIMITED = "Yahoo Finance is rate-limiting right now. Try again in a minute."
 _UNREACHABLE = "Yahoo Finance did not answer in time."
+# A session Yahoo itself refused is neither a timeout nor a bad symbol, so it
+# gets its own sentence instead of borrowing either one.
+_NO_SESSION = "Yahoo Finance refused the session, so nothing could be read."
 
 
 def _yahoo_error(e, missing=""):
-    """The tool's answer when a Yahoo call could not be made. A rate limit is a
-    wait and gets its own sentence; an `Unavailable` says why in the caller's
-    own words or in its own; a transport failure is an unreachable source."""
+    """The tool's answer when a Yahoo call could not be made. A transport
+    failure and a refused session both mean Yahoo never answered, so neither
+    wears the caller's "no history for X" prefix; a rate limit gets its own
+    sentence; anything else is the caller's words about the symbol itself."""
     if isinstance(e, httpx.HTTPError):
         return ToolResult.failed(TOOL_ERROR, _UNREACHABLE, reason="yahoo did not answer")
     if e.limited:
         return ToolResult.failed(TOOL_ERROR, _RATE_LIMITED, reason="yahoo is rate-limiting")
+    if e.unreached:
+        return ToolResult.failed(TOOL_ERROR, _NO_SESSION, reason="yahoo refused the session")
     return ToolResult.failed(TOOL_ERROR, missing + f"{e.reason}." if missing else
                              f"Yahoo Finance could not be reached: {e.reason}.",
                              reason=e.reason)
@@ -603,8 +629,9 @@ TREND_PARAMETERS = {
         },
         "days": {
             "type": "integer",
-            "description": f"Calendar days of history to read, {MIN_DAYS} to "
-                           f"{MAX_DAYS}. Default {DEFAULT_DAYS}.",
+            "description": f"Calendar days shown on the chart, {MIN_DAYS} to "
+                           f"{MAX_DAYS}. Default {DEFAULT_DAYS}. Moving averages use "
+                           "earlier closes when available.",
         },
     },
     "required": ["symbol"],

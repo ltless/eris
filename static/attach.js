@@ -41,6 +41,8 @@ const ErisAttach = (() => {
   const row = document.getElementById("atts");
   let items = [];
   let seq = 0;
+  // Bumped by `clear`, so a read still in flight knows its list is gone.
+  let gen = 0;
   let changed = () => {};
   // Whether the model in use declared it can see an image. A chip is still
   // shown when it cannot, marked as refused, because a file that vanished
@@ -122,7 +124,14 @@ const ErisAttach = (() => {
   }
 
   async function add(fileList) {
+    // Reading a file takes a moment, and `clear` can land inside it — a send,
+    // or a switch to another chat. The token says which generation of the list
+    // this run is filling; one that wakes up to find the list cleared writes
+    // nothing, instead of pushing a chip back onto an emptied row after the
+    // question it belonged to has already gone.
+    const mine = ++gen;
     for (const f of [...fileList]) {
+      if (mine !== gen) return;
       if (items.length >= MAX_ATTS) break;
       const kind = classify(f);
       const a = { id: ++seq, name: f.name || "file", kind, status: "ok" };
@@ -149,10 +158,12 @@ const ErisAttach = (() => {
         render();
         try {
           const out = await readText(f);
+          if (mine !== gen) return;
           a.text = out.text;
           a.status = "ok";
           a.msg = out.cut ? "truncated" : "";
         } catch {
+          if (mine !== gen) return;
           a.status = "err";
           a.msg = "read failed";
         }
@@ -173,9 +184,11 @@ const ErisAttach = (() => {
       render();
       try {
         a.dataUrl = await shrinkToDataURL(f);
+        if (mine !== gen) return;
         a.status = "ok";
         a.msg = "";
       } catch {
+        if (mine !== gen) return;
         a.status = "err";
         a.msg = "read failed";
       }
@@ -236,6 +249,7 @@ const ErisAttach = (() => {
   }
 
   function clear() {
+    gen++;
     items = [];
     render();
   }

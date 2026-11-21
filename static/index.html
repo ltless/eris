@@ -284,7 +284,9 @@
               <select id="selModel"></select>
             </label>
             <label>Context window (tokens)
-              <input id="inpCtx" type="number" min="2048" step="1024" placeholder="Server default" />
+              <input id="inpCtx" type="number" min="1" step="1" placeholder="Server default"
+                aria-describedby="ctxNote" />
+              <span id="ctxNote" class="s-note"></span>
             </label>
 
             <div class="s-prompt">

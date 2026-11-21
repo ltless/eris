@@ -78,8 +78,14 @@ def extract_text(raw, max_chars):
         tag.decompose()
     if soup.head:
         soup.head.decompose()
-    best = soup.find("main") or soup.find("article") or soup.body or soup
-    text = re.sub(r"\s+", " ", best.get_text(" ")).strip()
+    # The first container that exists is not the one holding the prose: a site
+    # can ship an empty <main> and put the article elsewhere, and picking by
+    # presence then returned a few words and called the page unreadable. The
+    # fullest container wins instead.
+    candidates = [c for c in (soup.find("main"), soup.find("article"), soup.body, soup)
+                  if c is not None]
+    texts = [re.sub(r"\s+", " ", c.get_text(" ")).strip() for c in candidates]
+    text = max(texts, key=len) if texts else ""
     return text[:max_chars] if text else None
 
 
@@ -116,7 +122,10 @@ async def fetch_page(client, url, max_chars):
                         break
         except httpx.HTTPError as e:
             return None, f"the request failed ({type(e).__name__})"
-        except ValueError:
+        except (httpx.InvalidURL, ValueError):
+            # `InvalidURL` descends from neither `HTTPError` nor `ValueError`,
+            # and a port or host that will not parse reaches it: the address
+            # guard asks the resolver, which ignores the port.
             return None, "the URL could not be followed"
         raw = b"".join(chunks)
         if "pdf" in ctype:

@@ -2,7 +2,7 @@ services:
   searxng:
     image: searxng/searxng:latest
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080"
     volumes:
       - ./searxng:/etc/searxng
     environment:

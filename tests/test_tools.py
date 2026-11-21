@@ -466,7 +466,7 @@ def check_a_long_file_is_named_not_inlined():
     assert "```txt\nhello\n```" in short, short
 
 
-def check_drop_last_assistant():
+def check_regeneration_only_replaces_the_answer_it_started_from():
     import os
     import tempfile
     from app import chats
@@ -482,15 +482,17 @@ def check_drop_last_assistant():
     chats.save_turn(1, "c1", "user", "q2")
     chats.save_turn(1, "c1", "assistant", "ans2")
 
-    chats.drop_last_assistant(1, "c1")
-    turns = chats.turns(1, "c1")
-    assert [x["content"] for x in turns] == ["q", "ans1", "q2"], turns
+    run = chats.start_regeneration(1, "c1")
+    assert [x["content"] for x in chats.turns(1, "c1")] == ["q", "ans1", "q2", "ans2"]
+    assert chats.finish_run(run, "new answer")
+    assert not chats.finish_run(run, "stale answer")
+    assert chats.start_regeneration(9, "c1") is None
+    assert [x["content"] for x in chats.turns(1, "c1")] == ["q", "ans1", "q2", "new answer"]
 
-    chats.drop_last_assistant(1, "c1")
-    assert [x["content"] for x in chats.turns(1, "c1")] == ["q", "q2"], chats.turns(1, "c1")
-    chats.drop_last_assistant(1, "c1")
-    assert [x["content"] for x in chats.turns(1, "c1")] == ["q", "q2"], chats.turns(1, "c1")
-    chats.drop_last_assistant(9, "nope")
+    stale = chats.save_turn(1, "c1", "user", "another question")
+    chats.delete(1, "c1")
+    chats.save_turn(1, "c1", "user", "a new chat")
+    assert not chats.finish_run(stale, "old answer")
 
     chats._db.close()
     chats._db = None
@@ -532,6 +534,16 @@ def check_extract_text():
         "<main><p>real content here</p></main><footer>copyright</footer></body></html>"
     )
     assert fetch.extract_text(page, 100) == "real content here"
+
+    # An empty <main> exists but holds nothing; the prose is in the body. The
+    # fuller container wins, so the page is not called unreadable because a
+    # framework shipped the tag without filling it.
+    hollow = (
+        "<html><head><title>T</title></head><body><main></main>"
+        "<div><p>" + "the article itself " * 10 + "</p></div></body></html>"
+    )
+    assert fetch.extract_text(hollow, 1000).startswith("the article itself"), \
+        fetch.extract_text(hollow, 1000)
 
 
 def check_render_page_content():
@@ -682,6 +694,28 @@ def _crypto_client(answers):
             Client.asked.append(url)
             status, payload = answers.get(url, (404, {}))
             return Resp(status, payload)
+
+    return Client
+
+
+def _refusing_client(error_type):
+    """A client whose every request fails at the transport, the way a blocked
+    host or a dead connection does before any status line exists."""
+    class Client:
+        asked = []
+
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None):
+            Client.asked.append(url)
+            raise error_type("refused", request=None)
 
     return Client
 
@@ -887,6 +921,9 @@ def check_market_rotates_to_coinbase_and_reports_short_history():
         crypto.httpx.AsyncClient = old
     assert ok, (reason, text)
     assert meta["card"]["source"] == "Coinbase", meta["card"]
+    # Binance and its market-data host are both asked before the next source,
+    # so a name-blocked one is retried under a name the filter misses.
+    assert Client.asked[:2] == [market.KLINE_URL, market.VISION_URL], Client.asked
     # Coinbase sends newest first and as [time, low, high, open, close, volume];
     # both are corrected before anything reads the bar.
     assert meta["card"]["price"] == 11.0, meta["card"]["price"]
@@ -910,19 +947,34 @@ def check_market_says_when_no_candle_source_answers():
 
     old = crypto.httpx.AsyncClient
     try:
+        # Every source asked and every one said the pair is not listed. The
+        # new hosts are named here too: a stub that answers 404 for an unknown
+        # URL would otherwise make "not listed" look like a missing answer.
         crypto.httpx.AsyncClient = _crypto_client({
             market.KLINE_URL: (400, {}),
+            market.VISION_URL: (400, {}),
+            market.GATE_URL: (400, {}),
             market.CANDLE_URL.format(pair="ZZZZ-USD"): (404, {}),
         })
         ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "ZZZZ"})))
         assert not ok and "No candle source lists" in text, text
+        assert "reached" not in text, text
 
         crypto.httpx.AsyncClient = _crypto_client({
             market.KLINE_URL: (429, {}),
+            market.VISION_URL: (429, {}),
+            market.GATE_URL: (429, {}),
             market.CANDLE_URL.format(pair="BTC-USD"): (429, {}),
         })
         ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "BTC"})))
         assert not ok and "rate-limiting" in text, text
+
+        # A host that never answers is a network fault. Blaming the pair sends
+        # the model looking for another ticker when no ticker would have worked.
+        crypto.httpx.AsyncClient = _refusing_client(crypto.httpx.TransportError)
+        ok, text, reason, meta = unpack(asyncio.run(market.read({"symbol": "BTC"})))
+        assert not ok and "could be reached" in text, text
+        assert "lists" not in text, text
 
         ok, text, reason, meta = unpack(asyncio.run(market.read({})))
         assert not ok and text == "No coin given.", text
@@ -1148,9 +1200,9 @@ def check_every_carded_tool_reaches_the_browser():
 def check_registry_chat_tools():
     from app.tools.registry import registry
     chat_tools = {t.name for t in registry.all() if "chat" in t.tags}
-    assert chat_tools == {"web_search", "fetch_url", "read_file", "weather", "wayback",
-                          "crypto", "crypto_trend", "equity", "equity_trend", "screen",
-                          "plan"}
+    assert chat_tools == {"web_search", "fetch_url", "read_file", "list_workspace",
+                          "weather", "wayback", "crypto", "crypto_trend", "equity",
+                          "equity_trend", "screen", "plan", "write_file"}
 
 
 def check_native_stream():
@@ -2106,6 +2158,44 @@ def check_equity_trend_drops_a_bar_that_never_traded():
     # It is a reading of the past and the text says so.
     assert "not a forecast" in text, text
 
+def check_equity_trend_has_ma50_on_a_short_chart_when_history_exists():
+    from contextlib import asynccontextmanager
+    from datetime import date, timedelta
+    from unittest.mock import patch
+    from app.tools import equity
+
+    first = date(2025, 1, 1)
+    sessions = [first + timedelta(days=i) for i in range(150)
+                if (first + timedelta(days=i)).weekday() < 5]
+    bars = [{"t": (day - date(1970, 1, 1)).days * 86400, "o": 5000 + i,
+             "h": 5010 + i, "l": 4990 + i, "c": 5000 + i, "v": 1000}
+            for i, day in enumerate(sessions)]
+
+    @asynccontextmanager
+    async def client():
+        yield None
+
+    async def resolve(_, symbol):
+        return symbol
+
+    async def fetch(_, symbol, span, interval):
+        assert (symbol, span, interval) == ("BBCA.JK", 160, "1d")
+        return bars, {"currency": "IDR"}
+
+    with (patch.object(equity, "_client", client), patch.object(equity, "_resolve", resolve),
+          patch.object(equity, "_bars", fetch)):
+        result = asyncio.run(equity.read_trend({"symbol": "BBCA.JK", "days": 60}))
+
+    assert result.success, result.text
+    card = result.metadata["card"]
+    assert 0 < len(card["candles"]) < 50
+    assert card["history_count"] == len(bars)
+    expected_ma50 = sum(bar["c"] for bar in bars[-50:]) / 50
+    assert card["ma50"] == expected_ma50 == card["ma50_series"][-1]
+    assert card["ma50_series"][0] is not None
+    assert "MA50" in result.text
+
+
 def check_equity_trend_rebuilds_a_session_the_crumb_aged_out_of():
     """A 401 means the crumb went stale, so the session is rebuilt once and the
     call retried. Without it the reading would fail on a cookie's lifetime."""
@@ -2193,6 +2283,219 @@ def check_equity_intraday_change_the_yahoo_shape_carries():
     halted = equity._row({"symbol": "X", "regularMarketPrice": 1.0,
                           "regularMarketVolume": 0, "marketCap": 0})
     assert halted["volume"] is None and halted["market_cap"] is None, halted
+
+def check_the_write_guard_holds_the_path_inside_the_root():
+    """The path guard is the whole boundary on the one tool that writes, so it
+    is checked directly rather than only through the tool that calls it."""
+    import os
+    import tempfile
+    from app.security import workspace
+
+    root = tempfile.mkdtemp()
+    prev = os.environ.get("WORKSPACE_DIR")
+    os.environ["WORKSPACE_DIR"] = root
+    try:
+        # A name under the root is placed under it, whatever separator it used.
+        for name, want in [("notes/a.md", "notes/a.md"),
+                           ("./notes/a.md", "notes/a.md"),
+                           ("sub\\deep\\f.txt", "sub/deep/f.txt"),
+                           ("sub/./ok.txt", "sub/ok.txt")]:
+            got, err = workspace.resolve(name)
+            assert err is None, (name, err)
+            assert str(got.relative_to(root)).replace("\\", "/") == want, got
+
+        # Everything that would land somewhere else, refused before an open.
+        for name in ["../up.txt", "..\\up.txt", "sub/../../up.txt",
+                     "/abs.txt", "C:\\win.txt", "C:/win.txt",
+                     "\\\\server\\share\\x.txt", "a:b.txt",
+                     'a"b.txt', "a<b.txt", "a\x00b.txt",
+                     "nul", "NUL.txt", "aux.log", "com1", "lpt9.txt",
+                     "trail.", "notes /a.txt", "..."]:
+            got, err = workspace.resolve(name)
+            assert got is None and err, (name, got, err)
+
+        # A name nothing could hold, and the empty call.
+        assert workspace.resolve("x" * 250)[0] is None
+        assert workspace.resolve("   ")[0] is None
+    finally:
+        if prev is None:
+            os.environ.pop("WORKSPACE_DIR", None)
+        else:
+            os.environ["WORKSPACE_DIR"] = prev
+
+    # No root named: nothing resolves, because there is nowhere it would go.
+    os.environ.pop("WORKSPACE_DIR", None)
+    got, err = workspace.resolve("a.txt")
+    assert got is None and "workspace" in err, (got, err)
+
+
+def check_the_write_tool_refuses_an_escape_and_a_silent_replace():
+    import tempfile
+    from pathlib import Path
+
+    from app.security.workspace import Access
+    from app.tools import write as W
+    from app.tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as root:
+        ctx = ToolContext(workspace=Access(Path(root), writable=True))
+        wrote = W.write({"path": "notes/a.md", "content": "hello"}, ctx)
+        assert wrote.success, wrote
+        assert wrote.metadata["card"] == {"path": "notes/a.md", "bytes": 5,
+                                          "replaced": False}, wrote.metadata
+        assert (Path(root) / "notes" / "a.md").read_text(encoding="utf-8") == "hello"
+
+        # Replacing costs an explicit overwrite: a name the model guessed wrong
+        # should refuse, not delete somebody's file.
+        clash = W.write({"path": "notes/a.md", "content": "no"}, ctx)
+        assert not clash.success and "already exists" in clash.error["message"], clash
+        assert (Path(root) / "notes" / "a.md").read_text(encoding="utf-8") == "hello"
+        again = W.write({"path": "notes/a.md", "content": "no", "overwrite": True}, ctx)
+        assert again.success and again.metadata["card"]["replaced"], again
+
+        # A structure the model sent instead of a string is written as the JSON
+        # it meant, not coerced to a repr.
+        blob = W.write({"path": "d.json", "content": {"a": 1}}, ctx)
+        assert blob.success and (Path(root) / "d.json").read_text(encoding="utf-8") == (
+            '{\n  "a": 1\n}'), blob
+
+        escape = W.write({"path": "../pwned.txt", "content": "x"}, ctx)
+        assert not escape.success, escape
+
+
+def check_read_file_reaches_the_workspace_through_the_same_guard():
+    """A workspace file is read the way a written one is reached: through the
+    guard, with the same paging an attachment gets, and refused where the guard
+    refuses."""
+    import tempfile
+    from pathlib import Path
+
+    from app.security.workspace import Access
+    from app.tools import files
+    from app.tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as root:
+        ctx = ToolContext(workspace=Access(Path(root)))
+        text = "".join(f"line {i}\n" for i in range(2_000))
+        (Path(root) / "notes").mkdir()
+        (Path(root) / "notes" / "a.md").write_text(text, encoding="utf-8")
+
+        ok, body, reason, _ = unpack(files.read({"name": "notes/a.md"}, ctx))
+        assert ok and reason == "", (ok, reason, body)
+        assert f"characters 0-{files.DEFAULT_LENGTH} of {len(text)}" in body, body
+        assert "call read_file with name='notes/a.md' and offset=" in body, body
+
+        # The offset the note gave picks up exactly where the first call stopped.
+        end = files.DEFAULT_LENGTH
+        ok, more, _, _ = unpack(files.read({"name": "notes/a.md", "offset": end}, ctx))
+        assert ok and more.startswith(f"File: notes/a.md (characters {end}-"), more[:80]
+
+        # The guard decides, not the tool: an escape is refused before an open.
+        def why(result):
+            return result.metadata.get("reason")
+
+        assert why(files.read({"name": "../up.txt"}, ctx)) == (
+            "path may not climb out of the workspace")
+        assert why(files.read({"name": "notes"}, ctx)) == (
+            "that path is a directory")
+        assert why(files.read({"name": "absent.txt"}, ctx)) == (
+            "no such workspace file")
+
+    # No root and nothing attached: the sentence that was there before a root
+    # could ever be named is still the one a caller gets.
+    assert files.read({"name": "x"}, ToolContext()).metadata["reason"] == "no file is attached"
+
+
+def check_list_workspace_shows_what_a_run_can_read_back():
+    """A run writes a file, then asks what is there: the listing names folders
+    and files, and refuses exactly what the guard refuses."""
+    import tempfile
+    from pathlib import Path
+
+    from app.security.workspace import Access
+    from app.tools import files
+    from app.tools.registry import ToolContext
+
+    with tempfile.TemporaryDirectory() as root:
+        ctx = ToolContext(workspace=Access(Path(root)))
+        ok, body, reason, _ = unpack(files.listing({}, ctx))
+        assert ok and body == "the workspace is empty.", (ok, reason, body)
+
+        (Path(root) / "notes").mkdir()
+        (Path(root) / "notes" / "a.md").write_text("hello", encoding="utf-8")
+        (Path(root) / "b.txt").write_text("x" * 1500, encoding="utf-8")
+
+        ok, body, _, _ = unpack(files.listing({}, ctx))
+        assert ok and body.startswith("the workspace holds 2 entries:\n"), body
+        # Folders sort before files, so a name is found where it is looked for.
+        assert body.index("notes/") < body.index("b.txt"), body
+        assert "b.txt (1.5 KB)" in body, body
+
+        ok, body, _, _ = unpack(files.listing({"path": "notes"}, ctx))
+        assert ok and "a.md (5 B)" in body, (ok, body)
+
+        def why(result):
+            return result.metadata.get("reason")
+
+        assert why(files.listing({"path": "b.txt"}, ctx)) == "that path is not a folder"
+        assert why(files.listing({"path": "nope"}, ctx)) == "that path is not a folder"
+        assert why(files.listing({"path": "../"}, ctx)) == "path may not climb out of the workspace"
+
+    # Neither tool is offered while no root is named: there is no folder to
+    # list and no path a read could resolve.
+    assert files.listing({}, ToolContext()).metadata["reason"] == "no workspace directory"
+    assert not files._in_workspace(ToolContext())
+
+
+def check_equity_says_a_refused_session_is_not_a_bad_symbol():
+    """The chart endpoint needs no cookie, so a trend reading on a network that
+    filters Yahoo must not report the symbol as having no history."""
+    from app.tools import equity
+
+    class Resp:
+        def __init__(self, status, payload, text=""):
+            self.status_code, self._payload, self.text = status, payload, text
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise equity.httpx.HTTPStatusError("bad", request=None, response=None)
+
+        def json(self):
+            return self._payload
+
+    class Client:
+        cookies = {}
+
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def aclose(self):
+            pass
+
+        async def get(self, url, params=None):
+            return {equity.CONSENT_URL: Resp(404, {}, ""),
+                    equity.CRUMB_URL: Resp(200, {}, "")}.get(url, Resp(404, {}))
+
+        async def post(self, url, params=None, json=None):
+            return Resp(404, {})
+
+    old_client, old_cache = equity.httpx.AsyncClient, dict(equity._cache)
+    equity._cache.update({"crumb": "", "cookies": {}})
+    equity.httpx.AsyncClient = Client
+    try:
+        ok, text, reason, _ = unpack(asyncio.run(equity.read_trend({"symbol": "AAPL"})))
+        assert not ok and reason == "yahoo refused the session", (ok, reason, text)
+        assert "refused the session" in text and "AAPL" not in text, text
+    finally:
+        equity.httpx.AsyncClient = old_client
+        equity._cache.update(old_cache)
+
 
 for name, fn in sorted(globals().items()):
     if name.startswith("check_"):

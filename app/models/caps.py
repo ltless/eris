@@ -41,13 +41,19 @@ async def _read_listing():
     if r.status_code >= 400:
         return None
     try:
-        rows = r.json().get("models")
+        rows = r.json()
     except ValueError:
         return None
-    if not isinstance(rows, list):
+    # A body that parses as anything but an object says nothing about models.
+    # Read as one anyway it raises `AttributeError`, which the route this feeds
+    # does not catch, so a server answering `[]` would take down the picker.
+    if not isinstance(rows, dict):
+        return None
+    models = rows.get("models")
+    if not isinstance(models, list):
         return None
     out = {}
-    for row in rows:
+    for row in models:
         if not isinstance(row, dict):
             continue
         # The listing names the model twice, and the id is the one this app

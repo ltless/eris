@@ -74,26 +74,42 @@ def coinbase_pair(base, quote):
     return f"{base}-{quote}"
 
 
+def gate_pair(base, quote):
+    """The currency pair Gate.io lists this coin under. It quotes in stablecoins
+    the way Binance does, so it maps the same quotes."""
+    return f"{base}_{_BINANCE_QUOTE.get(quote, quote)}"
+
+
 class Unavailable(Exception):
     """One source could not answer. `limited` tells a rate limit apart from a
-    source that simply does not list the symbol."""
+    source that simply does not list the symbol; `unreached` is set when the
+    host never answered at all, which is a network fault, not a bad pair."""
 
-    def __init__(self, reason, limited=False):
+    def __init__(self, reason, limited=False, unreached=False):
         super().__init__(reason)
         self.reason = reason
         self.limited = limited
+        self.unreached = unreached
 
 
-def no_source(limited, kind, pair):
+def no_source(limited, kind, pair, unreached=False):
     """The last word when every source refused, as `(text, reason)`.
 
-    A limit everywhere is a wait, anything else is the pair not being listed,
-    so the tool that asked decides nothing beyond which of the two it heard.
+    A limit everywhere is a wait. A source that never answered is a network
+    problem wearing the same failures as a pair that is not listed, so the
+    caller says which one it heard and the sentence does not blame the pair for
+    an unreachable host.
     """
     if limited:
         return (
             f"Every {kind} source is rate-limiting right now. Try again in a minute.",
             f"every {kind} source is rate-limiting",
+        )
+    if unreached:
+        return (
+            f"No {kind} source could be reached, so {pair} could not be checked. "
+            "The network is refusing the connection, not the pair.",
+            f"no {kind} source could be reached",
         )
     return f"No {kind} source lists {pair}.", f"no {kind} source lists {pair}"
 
@@ -299,7 +315,7 @@ def trend_prose(subject, a, *, close, source, unit="day"):
             line += f", MA20 slope {a['slope20']:+.2f}% over 10 {unit}s"
         parts.append(line)
 
-    suffix = "d" if unit == "day" else " bars"
+    suffix = "d" if unit == "day" else f" {unit}s"
     changes = [
         f"{label} {a[key]:+.2f}%"
         for key, label in (("change_7", f"7{suffix}"), ("change_30", f"30{suffix}"),
@@ -330,7 +346,7 @@ def trend_prose(subject, a, *, close, source, unit="day"):
 
 
 def trend_card(a, bars, *, symbol, quote, source, url, interval="1d",
-               name=None, exchange=None):
+               name=None, exchange=None, history=None):
     """The trend card's payload, field for field, from the figures and the bars.
 
     Both price tools draw the same chart, so the card is built once here rather
@@ -341,7 +357,8 @@ def trend_card(a, bars, *, symbol, quote, source, url, interval="1d",
     than listed again: a figure added to the analysis reaches the card without a
     second edit, and a list here could only fall behind it.
     """
-    closes = [b["c"] for b in bars]
+    closes = [b["c"] for b in (history if history is not None else bars)]
+    count = len(bars)
     card = {
         # `a` first, so a figure can never shadow one of the keys stated below.
         **a,
@@ -354,13 +371,11 @@ def trend_card(a, bars, *, symbol, quote, source, url, interval="1d",
         "source": source,
         "url": url,
         "at": int(time.time()),
-        # The same bars the verdict was read from, so the chart under it can
-        # never show a different window than the sentence above it.
         "candles": [[b["t"], b["o"], b["h"], b["l"], b["c"], b["v"]] for b in bars],
-        # The averages are computed once, here. The browser draws these numbers
-        # rather than recomputing them, so the line and the facts agree.
-        "ma20_series": ma_series(closes, 20),
-        "ma50_series": ma_series(closes, 50),
+        # Earlier closes supply the averages at the start of the visible range.
+        "ma20_series": ma_series(closes, 20)[-count:],
+        "ma50_series": ma_series(closes, 50)[-count:],
+        "history_count": len(closes),
         "chart_high": max(b["h"] for b in bars),
         "chart_low": min(b["l"] for b in bars),
     }

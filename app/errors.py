@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 # Codes the runtime emits. The frontend switches on these.
 UNKNOWN_TOOL = "unknown_tool"
+TOOL_NOT_OFFERED = "tool_not_offered"
 INVALID_ARGUMENTS = "invalid_arguments"
 TOOL_ERROR = "tool_error"
 TIMEOUT = "timeout"

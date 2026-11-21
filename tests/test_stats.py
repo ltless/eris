@@ -6,13 +6,21 @@ it is checked against a model whose architecture makes the answer checkable by
 hand — and against a real measurement taken from the same family.
 """
 
+import json
 import sys
 import unittest
+from unittest.mock import AsyncMock, patch
+
+import httpx
 
 sys.path.insert(0, ".")
 
-from app.models import stats
-from app.models.providers import parse_chunk, parse_metrics
+from app.models import ladder, stats
+from app.models.metadata import configured_context, model_context
+from app.models.providers import (
+    _call_metrics, _chat_payload, normalize_call, parse_chunk, parse_metrics, stream_completion,
+)
+from app.runtime.context import history_budget, recent
 
 
 def info(**over):
@@ -169,24 +177,151 @@ class MetricsChecks(unittest.TestCase):
         self.assertEqual(parse_chunk('{"message":{"content":"hi"},"done":false}'), [("delta", "hi")])
         self.assertIsNone(parse_metrics({"message": {"content": "hi"}}))
 
+    def test_compatible_usage_reports_prompt_completion_and_cached_subset(self):
+        reported = parse_metrics({"usage": {"prompt_tokens": 900, "completion_tokens": 120,
+                                            "prompt_tokens_details": {"cached_tokens": 600}}})
+        self.assertEqual(reported, {"prompt_eval_count": 900, "eval_count": 120,
+                                    "prompt_eval_cached_count": 600})
+
+    def test_compatible_tool_arguments_are_joined_before_parsing(self):
+        fragments = {}
+        first = '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t","function":{"name":"weather","arguments":"{\\"loc"}}]}}]}'
+        second = '{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ation\\":\\"Jakarta\\"}"}}]}}]}'
+        self.assertEqual(parse_chunk(first, tool_fragments=fragments), [])
+        self.assertEqual(parse_chunk(second, tool_fragments=fragments), [])
+        self.assertEqual(normalize_call(fragments[0])["function"]["arguments"], {"location": "Jakarta"})
+
     def test_the_first_frame_reports_an_empty_write_and_nothing_else(self):
-        # A server that closes the stream with an empty message still states
-        # the counts on it, so the frame is read for them rather than skipped.
         events = parse_chunk('{"message":{"content":""},"done":true,"eval_count":0}')
         self.assertEqual(events, [("metrics", {"eval_count": 0})])
 
     def test_a_string_where_a_count_belongs_is_dropped(self):
-        # Only numbers are kept; a server that spells a count differently
-        # loses the row rather than putting text where a number belongs.
         self.assertIsNone(parse_metrics({"done": True, "prompt_eval_count": "497"}))
-        # The reader that turns the endpoint's own fields into numbers is
-        # separate, because those can arrive as strings.
         self.assertEqual(stats._num("497"), 497)
         self.assertIsNone(stats._num("many"))
 
     def test_the_frame_with_no_counts_at_all_is_not_a_metrics_event(self):
         self.assertIsNone(parse_metrics({"done": True}))
         self.assertEqual(parse_chunk('{"message":{"content":"bye"},"done":true}'), [("delta", "bye")])
+
+
+class ReasoningChecks(unittest.TestCase):
+    def test_exact_names_and_default_come_from_metadata(self):
+        declared = ladder._ollama({"thinking": {"values": ["economy", "intensive"], "default": "economy"},
+                                   "capabilities": ["completion"]})
+        self.assertEqual(declared.values, ("economy", "intensive"))
+        self.assertEqual(declared.default, "economy")
+        self.assertIsNone(ladder.request_effort(declared, None))
+
+    def test_legacy_switch_is_based_on_capabilities(self):
+        self.assertEqual(ladder._ollama({"capabilities": ["thinking"]}).values, (False, True))
+        self.assertEqual(ladder._ollama({"capabilities": ["completion"]}).values, ())
+        self.assertEqual(ladder._ollama({}).source, "unavailable")
+
+    def test_llama_levels_and_fixed_window_use_props(self):
+        profile = ladder._llama({
+            "chat_template_caps": {"reasoning_effort_levels": ["low", "high", "none"],
+                                   "reasoning_effort_rejected": ["none"]},
+            "default_generation_settings": {"params": {"reasoning_effort": "low"}},
+        })
+        self.assertEqual(profile.values, ("low", "high"))
+        with patch("app.models.providers.cached_reasoning", return_value=profile):
+            body = _chat_payload([], "local", "high", None, 16000, None, compatible=True)
+        self.assertEqual(body["reasoning_effort"], "high")
+        self.assertNotIn("options", body)
+
+    def test_off_stays_off_when_native_call_has_tools(self):
+        profile = ladder.Reasoning((False, True), True, "metadata")
+        with patch("app.models.providers.cached_reasoning", return_value=profile):
+            body = _chat_payload([], "local", False, [{"type": "function"}], 8192, None)
+            default = _chat_payload([], "local", None, None, None, None)
+        self.assertIs(body["think"], False)
+        self.assertEqual(body["options"]["num_ctx"], 8192)
+        self.assertNotIn("think", default)
+
+
+class ContextChecks(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_window_is_joined_to_completed_metrics(self):
+        with patch("app.models.providers.runtime_status", new_callable=AsyncMock,
+                   side_effect=[{"context_length": 8192}, {"context_length": 16384}]):
+            first = await _call_metrics({"prompt_eval_count": 900}, "a", 8192, None)
+            second = await _call_metrics({"prompt_eval_count": 1000}, "a", None, None)
+        self.assertEqual((first["context_window"], first["context_source"]), (8192, "runner"))
+        self.assertEqual(second["context_window"], 16384)
+
+    async def test_a_later_runner_allocation_is_not_used_for_a_different_request(self):
+        with patch("app.models.providers.runtime_status", new_callable=AsyncMock,
+                   return_value={"context_length": 16384}):
+            usage = await _call_metrics({"prompt_eval_count": 1000}, "a", 4096, None)
+        self.assertEqual((usage["context_window"], usage["context_source"]), (4096, "requested"))
+
+    async def test_training_limit_is_never_used_as_runner_capacity(self):
+        with (patch("app.models.stats.model_info", new_callable=AsyncMock,
+                    return_value={"model_info": {"qwen.context_length": 131072}}),
+              patch("app.models.stats.runner_report", new_callable=AsyncMock, return_value=(True, None)),
+              patch("app.models.stats.gpu_info", new_callable=AsyncMock, return_value={})):
+            report = await stats.model_stats("a")
+        self.assertEqual(report["context"]["max"], 131072)
+        self.assertIsNone(report["context"]["allocated"])
+        self.assertIsNone(report["kv"]["ctx"])
+
+    async def test_unknown_capacity_stays_unknown_and_request_is_marked(self):
+        with (patch("app.models.providers.cached_model_info", return_value={}),
+              patch("app.models.providers.runtime_status", new_callable=AsyncMock, return_value=None)):
+            unknown = await _call_metrics({"prompt_eval_count": 900}, "a", None, None)
+            wanted = await _call_metrics({"prompt_eval_count": 900}, "a", 4096, None)
+        self.assertIsNone(unknown["context_window"])
+        self.assertEqual((wanted["context_window"], wanted["context_source"]), (4096, "requested"))
+
+    def test_context_metadata_and_adaptive_history_keep_tool_pairs(self):
+        shown = {"model_info": {"general.architecture": "qwen", "qwen.context_length": 131072,
+                                "vision.context_length": 7936}, "parameters": "num_ctx   16384\n"}
+        self.assertEqual(model_context(shown), 131072)
+        self.assertEqual(configured_context(shown), 16384)
+        system = {"role": "system", "content": "instructions"}
+        messages = [
+            {"role": "user", "content": "x" * 4000},
+            {"role": "user", "content": "latest query"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "one"}]},
+            {"role": "tool", "content": "é" * 4000, "tool_call_id": "one"},
+        ]
+        small = recent(messages, history_budget(1024, system))
+        large = recent(messages, history_budget(8192, system))
+        self.assertEqual([m["role"] for m in small], ["user", "assistant", "tool"])
+        self.assertEqual(small[-1]["tool_call_id"], "one")
+        self.assertLess(len(small[-1]["content"]), len(messages[-1]["content"]))
+        self.assertEqual(large, messages)
+
+    async def test_llama_uses_compatible_stream_with_its_fixed_window(self):
+        requests = []
+        async_client = httpx.AsyncClient
+
+        def handle(request):
+            requests.append((request.url.path, json.loads(request.content)))
+            if request.url.path == "/api/chat":
+                return httpx.Response(404)
+            frame = {"choices": [{"delta": {"content": "answer"}}],
+                     "usage": {"prompt_tokens": 11, "completion_tokens": 3}}
+            return httpx.Response(200, text=f"data: {json.dumps(frame)}\n\ndata: [DONE]\n\n")
+
+        def mock_client(**kwargs):
+            return async_client(transport=httpx.MockTransport(handle), **kwargs)
+
+        props = {"default_generation_settings": {"n_ctx": 8192}}
+        profile = ladder.Reasoning(("low", "high"), "low", "metadata")
+        with (patch("app.models.providers.cached_model_info", return_value=None),
+              patch("app.models.providers.cached_properties", return_value=None),
+              patch("app.models.providers.cached_reasoning", return_value=profile),
+              patch("app.models.providers.server_properties", new_callable=AsyncMock, return_value=props),
+              patch("app.models.providers.httpx.AsyncClient", side_effect=mock_client)):
+            events = dict([event async for event in stream_completion(
+                [{"role": "user", "content": "q"}], model="llama", thinking="high", ctx=65536
+            )])
+        self.assertEqual([path for path, _ in requests], ["/api/chat", "/v1/chat/completions"])
+        self.assertEqual(requests[-1][1]["reasoning_effort"], "high")
+        self.assertNotIn("options", requests[-1][1])
+        self.assertEqual(events["metrics"]["context_window"], 8192)
+        self.assertEqual(events["delta"], "answer")
 
 
 if __name__ == "__main__":

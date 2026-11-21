@@ -6,6 +6,8 @@ dead link still gives up its text.
 """
 
 import asyncio
+import calendar
+import datetime
 import json
 import re
 
@@ -56,18 +58,26 @@ def _window(date):
     """`(from, to)` CDX stamps for a partial date, or None if unreadable.
 
     CDX has no timestamp parameter: asking for 2019 without a window answers
-    with rows from 2002.
+    with rows from 2002. A month or day that is not a real one is unreadable
+    too: the timestamp is passed through to the archive, so `2019-13` would
+    otherwise be handed over as a range that can never match.
     """
     m = STAMP_RE.match(date.strip())
     if not m:
         return None
     year, month, day = m.group(1), m.group(2) or "01", m.group(3) or "01"
     if m.group(3):
+        try:
+            datetime.date(int(year), int(month), int(day))
+        except ValueError:
+            return None
         return f"{year}{month}{day}", f"{year}{month}{day}"
     if m.group(2):
-        last = {"01": "31", "02": "29", "03": "31", "04": "30", "05": "31", "06": "30",
-                "07": "31", "08": "31", "09": "30", "10": "31", "11": "30", "12": "31"}[month]
-        return f"{year}{month}01", f"{year}{month}{last}"
+        month_no = int(month)
+        if not 1 <= month_no <= 12:
+            return None
+        last = calendar.monthrange(int(year), month_no)[1]
+        return f"{year}{month}01", f"{year}{month}{last:02d}"
     return f"{year}0101", f"{year}1231"
 
 

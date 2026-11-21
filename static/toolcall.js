@@ -26,6 +26,14 @@
 
   ---
 
+  ErisToolCall.write_file(parentElement, { open: false })
+
+  const wc = ErisToolCall.write_file(messageEl);
+  wc.done({ path: 'notes/plan.md', bytes: 8214, replaced: false });
+  wc.fail('the file already exists');
+
+  ---
+
   ErisToolCall.weather / wayback / crypto / crypto_trend / equity /
   equity_trend / screen / plan
 
@@ -58,6 +66,8 @@ const ErisToolCall = (() => {
     rank: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></svg>',
     // A checklist: the run's own steps, ticked as it goes.
     plan: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M4 6l2 2 3-3M12 7h8M4 12l2 2 3-3M12 13h8M4 18l2 2 3-3M12 19h8" /></svg>',
+    // A page with a pen on it: the card says a file was written, not read.
+    write: '<svg class="tc-ico" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9" /><path d="M18.5 3.5l2 2L14 12l-3 1 1-3z" /></svg>',
   };
   const domainOf = (u) => {
     try {
@@ -82,6 +92,11 @@ const ErisToolCall = (() => {
   const plural = (n) => (n === 1 ? "1 source" : n + " sources");
   const sizeText = (n) =>
     n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k chars" : n + " chars";
+
+  // The same rounding as `sizeText`, for a file rather than a page of it.
+  const bytesText = (n) =>
+    typeof n !== "number" ? ""
+      : n >= 1024 ? (n / 1024).toFixed(n >= 10240 ? 0 : 1) + " KB" : n + " bytes";
 
   function shell(parent, ico, labelText, opts) {
     const id = "tc-" + ++uid;
@@ -734,7 +749,7 @@ const ErisToolCall = (() => {
   const SVG = "http://www.w3.org/2000/svg";
 
   const shortDate = (epoch) =>
-    new Date(epoch * 1000).toLocaleDateString([], { day: "numeric", month: "short" });
+    new Date(epoch * 1000).toLocaleDateString([], { day: "numeric", month: "short", timeZone: "UTC" });
 
   // What one bar covers, in the card's own words. A weekly or monthly equity
   // chart says so; anything without an interval is crypto's daily one.
@@ -765,17 +780,75 @@ const ErisToolCall = (() => {
       return root;
     }
 
+    const toolbar = document.createElement("div");
+    toolbar.className = "tc-cc-toolbar";
+    const rangeLabel = document.createElement("span");
+    rangeLabel.className = "tc-cc-range-label";
+    const ranges = document.createElement("div");
+    ranges.className = "tc-cc-ranges";
+    ranges.setAttribute("role", "group");
+    ranges.setAttribute("aria-label", "Chart range");
+    const frame = document.createElement("div");
+    const options = new Map();
+    const lastTime = bars.at(-1)[0];
+    const available = new Set([0]);
+    for (const [label, days] of [["1M", 30], ["3M", 90], ["1Y", 365]]) {
+      const start = bars.findIndex((b) => b[0] > lastTime - days * 86400);
+      if (start > 0 && bars.length - start >= 2 && !available.has(start)) {
+        options.set(label, start);
+        available.add(start);
+      }
+    }
+    options.set("All", 0);
+    const buttons = new Map();
+    const show = (label) => {
+      const start = options.get(label);
+      for (const [key, button] of buttons) button.setAttribute("aria-pressed", String(key === label));
+      rangeLabel.textContent = (bars.length - start) + " " + barWord(card.interval);
+      frame.replaceChildren(marketPlot(card, bars.slice(start), start));
+    };
+    if (options.size > 1) {
+      for (const label of options.keys()) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        button.addEventListener("click", () => show(label));
+        buttons.set(label, button);
+        ranges.appendChild(button);
+      }
+      toolbar.appendChild(ranges);
+    }
+    toolbar.appendChild(rangeLabel);
+    root.append(toolbar, frame);
+    show("All");
+    return root;
+  }
+
+  function marketPlot(card, bars, start) {
+    const root = document.createElement("div");
     const n = bars.length;
+    const averages = [
+      ["ma20", "MA20", card.ma20_series],
+      ["ma50", "MA50", card.ma50_series],
+    ].map(([key, name, values]) => [key, name, Array.isArray(values) ? values.slice(start, start + n) : []])
+      .filter(([, , values]) => values.filter(Number.isFinite).length >= 2);
     let lo = Infinity;
     let hi = -Infinity;
     for (const b of bars) {
       if (b[3] < lo) lo = b[3];
       if (b[2] > hi) hi = b[2];
     }
+    for (const [, , values] of averages) {
+      for (const value of values) {
+        if (!Number.isFinite(value)) continue;
+        lo = Math.min(lo, value);
+        hi = Math.max(hi, value);
+      }
+    }
     // A flat series would divide by zero; give it a band to sit in.
     const span = hi - lo || hi * 0.01 || 1;
-    lo -= span * 0.04;
-    hi += span * 0.04;
+    lo -= span * 0.08;
+    hi += span * 0.08;
     const y = (v) => 100 - ((v - lo) / (hi - lo)) * 100;
     const x = (i) => 1000 * ((i + 0.5) / n);
     const slot = 1000 / n;
@@ -785,28 +858,35 @@ const ErisToolCall = (() => {
     head.className = "tc-cc-head";
     const legend = document.createElement("div");
     legend.className = "tc-chart-legend";
-    const read = document.createElement("div");
+    const read = document.createElement("dl");
     read.className = "tc-cc-read";
-    read.setAttribute("aria-live", "polite");
-    head.append(legend, read);
+    const fields = ["Date", "Open", "High", "Low", "Close", "Volume"].map((label) => {
+      const item = document.createElement("div");
+      const name = document.createElement("dt");
+      name.textContent = label;
+      const value = document.createElement("dd");
+      item.append(name, value);
+      read.appendChild(item);
+      return value;
+    });
+    head.append(read, legend);
 
     const body = document.createElement("div");
     body.className = "tc-cc-body";
     const plot = document.createElement("div");
     plot.className = "tc-cc-plot";
     plot.tabIndex = 0;
-    plot.setAttribute("role", "img");
-    plot.setAttribute(
-      "aria-label",
-      (card.symbol || "") + " " + barWord(card.interval) + ", " + n + " bars, from " +
-      money(card.chart_low) + " to " + money(card.chart_high) +
-      ". Use the arrow keys to step through the bars."
-    );
+    plot.setAttribute("role", "slider");
+    plot.setAttribute("aria-label", (card.symbol || "Price") + " chart candle");
+    plot.setAttribute("aria-valuemin", "1");
+    plot.setAttribute("aria-valuemax", String(n));
+    plot.setAttribute("aria-orientation", "horizontal");
 
     const svg = document.createElementNS(SVG, "svg");
     svg.setAttribute("class", "tc-cc-svg");
     svg.setAttribute("viewBox", "0 0 1000 100");
     svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("aria-hidden", "true");
 
     // Bars as filled rects rather than strokes: a stroke would inherit the
     // stretch of the viewBox and come out uneven across the chart.
@@ -861,8 +941,7 @@ const ErisToolCall = (() => {
       line.setAttribute("vector-effect", "non-scaling-stroke");
       svg.appendChild(line);
     };
-    ma(card.ma20_series, "tc-cc-ma tc-cc-ma20");
-    ma(card.ma50_series, "tc-cc-ma tc-cc-ma50");
+    for (const [key, , values] of averages) ma(values, "tc-cc-ma tc-cc-" + key);
     // The last close, as a dashed rule across the plot. It is what the eye looks
     // for first, and it is also stated as a figure on the price column.
     const lastY = y(bars[n - 1][4]);
@@ -880,6 +959,8 @@ const ErisToolCall = (() => {
     // number beside it.
     const priceCol = document.createElement("div");
     priceCol.className = "tc-cc-price";
+    priceCol.setAttribute("aria-hidden", "true");
+    let longestPrice = money(bars.at(-1)[4]).length;
     for (const v of axisTicks(lo, hi, 4)) {
       const pct = y(v);
       // A tick near the edge would be clipped by the card, and one sitting on
@@ -893,12 +974,14 @@ const ErisToolCall = (() => {
       tag.className = "tc-cc-pricetag";
       tag.style.top = pct + "%";
       tag.textContent = money(v);
+      longestPrice = Math.max(longestPrice, tag.textContent.length);
       priceCol.appendChild(tag);
     }
     const lastTag = document.createElement("span");
     lastTag.className = "tc-cc-lasttag";
     lastTag.style.top = lastY + "%";
     lastTag.textContent = money(bars[n - 1][4]);
+    priceCol.style.setProperty("--tick-width", Math.max(5, longestPrice + 2) + "ch");
     priceCol.appendChild(lastTag);
 
     // Time labels are placed by percentage, which the SVG cannot do for text at
@@ -906,9 +989,9 @@ const ErisToolCall = (() => {
     // hang off either edge.
     const timeRow = document.createElement("div");
     timeRow.className = "tc-cc-time";
-    const tickIndex = (k) => Math.round(n * 0.06 + (n * 0.88 * k) / 3);
-    for (let k = 0; k < 4; k++) {
-      const i = Math.min(n - 1, Math.max(0, tickIndex(k)));
+    timeRow.setAttribute("aria-hidden", "true");
+    const ticks = [...new Set([0, Math.round((n - 1) / 3), Math.round((n - 1) * 2 / 3), n - 1])];
+    for (const i of ticks) {
       const pct = ((i + 0.5) / n) * 100;
       const vline = document.createElement("div");
       vline.className = "tc-cc-vline";
@@ -916,7 +999,9 @@ const ErisToolCall = (() => {
       plot.prepend(vline);
       const tag = document.createElement("span");
       tag.className = "tc-cc-timetag";
-      tag.style.left = pct + "%";
+      if (i === 0) tag.dataset.edge = "start";
+      else if (i === n - 1) tag.dataset.edge = "end";
+      tag.style.left = (i === 0 ? 0 : i === n - 1 ? 100 : pct) + "%";
       tag.textContent = shortDate(bars[i][0]);
       timeRow.appendChild(tag);
     }
@@ -928,11 +1013,13 @@ const ErisToolCall = (() => {
     volSvg.setAttribute("class", "tc-cc-volsvg");
     volSvg.setAttribute("viewBox", "0 0 1000 100");
     volSvg.setAttribute("preserveAspectRatio", "none");
-    const volMax = Math.max(...bars.map((b) => b[5] || 0)) || 1;
+    volSvg.setAttribute("aria-hidden", "true");
+    const volMax = Math.max(...bars.map((b) => b[5] || 0));
     const upVol = [];
     const downVol = [];
     bars.forEach((b, i) => {
-      const h = Math.max(0.6, ((b[5] || 0) / volMax) * 100);
+      if (!(b[5] > 0)) return;
+      const h = Math.max(0.6, b[5] / volMax * 100);
       (b[4] >= b[1] ? upVol : downVol).push(
         `<rect x="${x(i) - bodyW / 2}" y="${100 - h}" width="${bodyW}" height="${h}"/>`
       );
@@ -944,39 +1031,36 @@ const ErisToolCall = (() => {
 
     const vol = document.createElement("div");
     vol.className = "tc-cc-vol";
-    vol.appendChild(volSvg);
+    if (volMax > 0) vol.appendChild(volSvg);
+    else vol.hidden = true;
 
     // The crosshair. Its readings are also on the row above and in the facts
     // under the chart, so it never holds a number the reader cannot get another
     // way, which is what lets it be an enhancement rather than the only path.
     const cursor = document.createElement("div");
     cursor.className = "tc-cc-cursor";
-    cursor.hidden = true;
-    plot.appendChild(cursor);
+    const crossline = document.createElement("div");
+    crossline.className = "tc-cc-crossline";
+    plot.append(cursor, crossline);
     const dot = document.createElement("span");
     dot.className = "tc-cc-dot";
-    dot.hidden = true;
     priceCol.appendChild(dot);
 
-    let at = -1;
+    let at = n - 1;
     const show = (i) => {
-      if (i == null || i < 0 || i >= n) {
-        at = -1;
-        cursor.hidden = true;
-        dot.hidden = true;
-        read.textContent = "";
-        return;
-      }
-      at = i;
-      const b = bars[i];
-      cursor.hidden = false;
-      cursor.style.left = ((i + 0.5) / n) * 100 + "%";
-      dot.hidden = false;
-      dot.style.top = y(b[4]) + "%";
-      const dir = b[4] >= b[1] ? "up" : "down";
-      read.dataset.dir = dir;
-      read.textContent = shortDate(b[0]) + "  O " + money(b[1]) + "  H " + money(b[2]) +
-        "  L " + money(b[3]) + "  C " + money(b[4]) + "  Vol " + big(b[5]);
+      at = Math.max(0, Math.min(n - 1, i));
+      const b = bars[at];
+      cursor.style.left = ((at + 0.5) / n) * 100 + "%";
+      crossline.style.top = dot.style.top = y(b[4]) + "%";
+      crossline.hidden = at === n - 1;
+      const date = new Date(b[0] * 1000).toLocaleDateString(undefined, {
+        month: "short", day: "numeric", year: "numeric", timeZone: "UTC",
+      });
+      [date, money(b[1]), money(b[2]), money(b[3]), money(b[4]), big(b[5])]
+        .forEach((value, k) => { fields[k].textContent = value; });
+      fields[4].dataset.dir = b[4] >= b[1] ? "up" : "down";
+      plot.setAttribute("aria-valuenow", String(at + 1));
+      plot.setAttribute("aria-valuetext", `${date}. Open ${money(b[1])}, high ${money(b[2])}, low ${money(b[3])}, close ${money(b[4])}, volume ${big(b[5])}.`);
     };
     const fromPointer = (e) => {
       const r = plot.getBoundingClientRect();
@@ -984,18 +1068,18 @@ const ErisToolCall = (() => {
       show(Math.max(0, Math.min(n - 1, Math.round(((e.clientX - r.left) / r.width) * n - 0.5))));
     };
     plot.addEventListener("pointermove", fromPointer);
-    plot.addEventListener("pointerleave", () => show(-1));
+    plot.addEventListener("pointerdown", fromPointer);
+    plot.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse" && document.activeElement !== plot) show(n - 1);
+    });
     plot.addEventListener("keydown", (e) => {
-      const step = { ArrowLeft: -1, ArrowRight: 1, Home: -n, End: n }[e.key];
-      if (step === undefined) {
-        if (e.key === "Escape") show(-1);
-        return;
-      }
+      const next = { ArrowLeft: at - 1, ArrowDown: at - 1, ArrowRight: at + 1,
+        ArrowUp: at + 1, Home: 0, End: n - 1 }[e.key];
+      if (next === undefined) return;
       e.preventDefault();
-      const next = at < 0 ? (step < 0 ? n - 1 : 0) : Math.max(0, Math.min(n - 1, at + step));
       show(next);
     });
-    plot.addEventListener("blur", () => show(-1));
+    show(n - 1);
 
     const key = (cls, text) => {
       const item = document.createElement("span");
@@ -1005,8 +1089,8 @@ const ErisToolCall = (() => {
       item.append(sw, document.createTextNode(text));
       legend.appendChild(item);
     };
-    key("is-ma20", "MA20");
-    key("is-ma50", "MA50");
+    for (const [series, label] of averages) key("is-" + series, label);
+    legend.hidden = !averages.length;
 
     body.append(plot, priceCol, vol, timeRow);
     root.append(head, body);
@@ -1024,8 +1108,6 @@ const ErisToolCall = (() => {
     const doneLabel = opts.done || "Read the market";
     // A window of 30 bars is 30 days only on a daily series; a weekly equity
     // chart would otherwise label a 30-week move "30d".
-    const window30 = opts.words ? "30 bars" : "30d";
-    const rangeWord = opts.words ? "30-bar" : "30-day";
 
     function fail(reason) {
       failCard(
@@ -1038,15 +1120,30 @@ const ErisToolCall = (() => {
 
     function done(card) {
       card = card || {};
-      markDone(s, doneLabel, card.symbol);
+      const dailyEquity = opts.words && (!card.interval || card.interval === "1d");
+      const window30 = dailyEquity ? "30 sessions" : opts.words ? "30 bars" : "30d";
+      const rangeWord = dailyEquity ? "30-session" : opts.words ? "30-bar" : "30-day";
+      const close = Number.isFinite(card.price) ? [money(card.price), card.quote].filter(Boolean).join(" ") : "";
+      markDone(s, doneLabel, [card.symbol, close].filter(Boolean).join(" · "));
 
       const head = document.createElement("div");
       head.className = "tc-td-head";
-      const verdict = document.createElement("span");
-      verdict.className = "tc-td-verdict";
-      verdict.dataset.trend = card.verdict || "sideways";
-      verdict.textContent = card.verdict || "sideways";
-      head.appendChild(verdict);
+      const listing = document.createElement("div");
+      listing.className = "tc-td-listing";
+      const ticker = document.createElement("strong");
+      ticker.textContent = card.symbol || doneLabel;
+      const listingMeta = document.createElement("span");
+      listingMeta.textContent = [card.name !== card.symbol ? card.name : "", card.exchange]
+        .filter(Boolean).join(" · ");
+      listing.append(ticker, listingMeta);
+      head.appendChild(listing);
+      if (card.verdict) {
+        const verdict = document.createElement("span");
+        verdict.className = "tc-td-verdict";
+        verdict.dataset.trend = card.verdict;
+        verdict.textContent = card.verdict;
+        head.appendChild(verdict);
+      }
       if (card.condition && card.condition !== "neutral") {
         const cond = document.createElement("span");
         cond.className = "tc-td-cond";
@@ -1062,24 +1159,17 @@ const ErisToolCall = (() => {
       hero.className = "tc-cr-hero";
       const price = document.createElement("span");
       price.className = "tc-cr-price";
-      price.textContent = money(card.price) + (card.quote ? " " + card.quote : "");
+      price.textContent = close || "—";
       hero.appendChild(price);
-      const chg = move(card.change_30);
-      const move30 = document.createElement("span");
-      move30.className = "tc-cr-move";
-      move30.dataset.dir = chg.dir;
-      move30.textContent = chg.text + " " + window30;
-      hero.appendChild(move30);
-      s.panel.appendChild(hero);
-
-      // The listing's own name and exchange, when the tool sent them. A ticker
-      // alone means nothing to a reader who does not trade that market.
-      if (opts.words && card.name && card.name !== card.symbol) {
-        const sub = document.createElement("div");
-        sub.className = "tc-cr-name";
-        sub.textContent = card.name + (card.exchange ? " · " + card.exchange : "");
-        s.panel.appendChild(sub);
+      if (Number.isFinite(card.change_30)) {
+        const chg = move(card.change_30);
+        const move30 = document.createElement("span");
+        move30.className = "tc-cr-move";
+        move30.dataset.dir = chg.dir;
+        move30.textContent = chg.text + " · " + window30;
+        hero.appendChild(move30);
       }
+      s.panel.appendChild(hero);
 
       s.panel.appendChild(marketChart(card));
 
@@ -1088,6 +1178,9 @@ const ErisToolCall = (() => {
       if (typeof card.range_pos === "number") {
         const row = document.createElement("div");
         row.className = "tc-td-range";
+        const label = document.createElement("span");
+        label.className = "tc-td-range-title";
+        label.textContent = rangeWord + " range";
         const bar = document.createElement("div");
         bar.className = "tc-td-rangebar";
         bar.setAttribute("role", "img");
@@ -1102,7 +1195,7 @@ const ErisToolCall = (() => {
         lo.textContent = money(card.range_low);
         const hi = document.createElement("span");
         hi.textContent = money(card.range_high);
-        row.append(lo, bar, hi);
+        row.append(label, lo, bar, hi);
         s.panel.appendChild(row);
       }
 
@@ -1114,14 +1207,15 @@ const ErisToolCall = (() => {
           : ""));
       facts.append(
         maRow("MA20", card.ma20, card.above20),
-        maRow("MA50", card.ma50, card.above50)
+        Number.isFinite(card.ma50) ? maRow("MA50", card.ma50, card.above50)
+          : fact("MA50", "Requires 50 closes")
       );
       if (typeof card.ma200 === "number") {
         facts.append(maRow("MA200", card.ma200, card.above200));
       }
       facts.append(
-        fact(opts.words ? "7 bars" : "7d", move(card.change_7).text),
-        fact(opts.words ? "90 bars" : "90d", move(card.change_90).text),
+        fact(dailyEquity ? "7 sessions" : opts.words ? "7 bars" : "7d", move(card.change_7).text),
+        fact(dailyEquity ? "90 sessions" : opts.words ? "90 bars" : "90d", move(card.change_90).text),
         fact("Volatility", typeof card.atr_pct === "number"
           ? card.atr_pct.toFixed(2) + "% ATR"
           : "–")
@@ -1412,6 +1506,39 @@ const ErisToolCall = (() => {
     return { el: s.el, done, fail };
   }
 
+  // A file that left the browser's reach. The path is the headline, because
+  // that is the one thing the reader has to check: the run wrote somewhere, and
+  // only they know whether that was the place they meant. No link is drawn: the
+  // file is on the server's disk, and a URL for it does not exist.
+  function writeFile(parent, opts = {}) {
+    const s = shell(parent, I.write, "Writing a file", opts);
+
+    function fail(reason) {
+      failCard(s, "Could not write the file", reason, because("The file could not be written"));
+    }
+
+    function done(card) {
+      card = card || {};
+      markDone(s, card.replaced ? "Replaced a file" : "Wrote a file",
+               bytesText(card.bytes));
+
+      const path = document.createElement("div");
+      path.className = "tc-wf-path";
+      // The path comes from the model, so it is set as text, never as markup.
+      path.textContent = card.path || "(unnamed)";
+      s.panel.appendChild(path);
+
+      const note = document.createElement("p");
+      note.className = "tc-td-note";
+      note.textContent = card.replaced
+        ? "The file already existed and was replaced."
+        : "The file was created in the workspace.";
+      s.panel.appendChild(note);
+    }
+
+    return { el: s.el, done, fail };
+  }
+
   // The tools whose result is one card, drawn whole. Keyed by the tool name,
   // because a replay does `ErisToolCall[tool](body)` with whatever the server
   // stored, and the stream dispatches on the same names.
@@ -1433,6 +1560,7 @@ const ErisToolCall = (() => {
       }),
     screen,
     plan,
+    write_file: writeFile,
   };
   const isCard = (name) => typeof cards[name] === "function";
 

@@ -13,6 +13,11 @@ const els = {
   planStrip: document.getElementById("planStrip"),
 };
 
+// The model the next turn will name, kept from the last answer that resolved
+// one. Naming it on the request is what makes the model the composer shows the
+// model the server runs, instead of two resolutions that can disagree.
+let currentModel = "";
+
 marked.setOptions({ breaks: true, gfm: true });
 
 // Sticky "jump to latest" button. While streaming we only auto-scroll when the
@@ -160,8 +165,13 @@ const MAX = 4000;
 
 let sessions = [];
 let activeId = null;
-let controller = null;
-let sending = false;
+let chatListPending = true;
+// One run per chat, keyed by the chat it writes into. A single pair of globals
+// made the composer's Stop button belong to whichever chat happened to be open:
+// switching chats mid-run left the new one showing Stop, and pressing it
+// aborted the answer still streaming into the chat left behind.
+const runs = new Map();
+const isSending = () => runs.has(activeId);
 let userName = "";
 let userAvatar = "";
 let modelAvatar = "";
@@ -176,11 +186,11 @@ function addRegen(body, s) {
   b.textContent = "Regenerate";
   b.title = "Re-answer the last question (replaces this response)";
   b.addEventListener("click", () => {
-    if (sending) return;
+    if (isSending()) return;
     const last = s.messages.at(-1);
     const q = s.messages.at(-2);
     if (!last || last.role !== "assistant" || !q || q.role !== "user" || typeof q.content !== "string" || !q.content || (q.images && q.images.length) || (q.files && q.files.length)) return;
-    send(q.content, true);
+    send(q.content, true, "", body);
   });
   body.append(b);
 }
@@ -330,7 +340,7 @@ function refresh() {
   const has =
     els.input.value.trim().length > 0 || ErisAttach.hasImage() || ErisAttach.hasFile() || !!pendingQuote;
   const over = len > MAX;
-  els.send.disabled = !sending && (!has || over);
+  els.send.disabled = !isSending() && (!has || over || chatListPending || current()?.remote);
   els.count.textContent = len + " / " + MAX;
   els.count.classList.toggle("show", len > MAX * 0.8);
   els.count.classList.toggle("over", over);
@@ -356,10 +366,31 @@ function blankChat() {
   showEmpty();
   els.input.value = "";
   syncInput();
+  syncStreaming();
+  ErisStats?.clearCall?.();
   els.input.focus();
 }
 
-function loadSession(id) {
+async function fetchHistory(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  if (!Array.isArray(data.items)) throw new Error("Invalid chat history");
+  return data.items;
+}
+
+function showHistoryError(message, retry) {
+  const error = errorBlock(message);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "regen";
+  button.textContent = "Try again";
+  button.addEventListener("click", retry);
+  error.append(button);
+  els.messages.insertBefore(error, scrollBtn);
+}
+
+async function loadSession(id) {
   const s = sessions.find((x) => x.id === id);
   if (!s) return;
   activeId = id;
@@ -368,6 +399,8 @@ function loadSession(id) {
   ErisAttach.clear();
   setQuote("");
   resetMessages();
+  syncStreaming();
+  ErisStats.metrics(s.metrics);
   const paint = () => {
     if (activeId !== id) return;
     if (!s.messages.length) {
@@ -383,8 +416,15 @@ function loadSession(id) {
         );
         const body = addMessage(m.role, answerRows.size ? "" : m.content, m.images, m.quote, m.files);
         const web = (m.sources || []).filter((x) => x.kind === "web");
-        const groups = (m.web && m.web.length ? m.web : web.length ? [{ query: "", items: web }] : [])
-          .map((g) => ({ r: g.r ?? 0, query: g.query, items: g.items }));
+        // A turn saved before the search groups were recorded kept only its
+        // rows, so those are drawn as one group. The fallback is only taken
+        // when the turn carries no cards: a price or a forecast also labels
+        // its source `web`, and one of those would otherwise come back as a
+        // search nobody ran.
+        const legacy = !m.cards?.length && !m.fetches?.length && web.length;
+        const groups = (m.web && m.web.length ? m.web : legacy ? [{ query: "", items: web }] : [])
+          .map((g) => ({ r: g.r ?? 0, query: g.query, items: g.items,
+                         ok: g.ok !== false, reason: g.reason || "" }));
         const reads = (m.fetches || []).map((f) => ({
           r: f.r ?? 0, url: f.url, chars: f.chars, ok: f.ok, reason: f.reason || "",
         }));
@@ -435,7 +475,11 @@ function loadSession(id) {
             put(tc.el);
             if (g.query) tc.addQuery(g.query);
             tc.addResults(g.items);
-            tc.done();
+            if (g.ok) tc.done();
+            // A search that failed has no rows to show and a sentence to
+            // replay, so it comes back in the state the live one ended in
+            // rather than as an empty card that looks like no results.
+            else tc.fail(g.reason);
           }
           for (const f of readRows.get(i) || []) {
             const fc = ErisToolCall.fetchPage(body);
@@ -459,21 +503,30 @@ function loadSession(id) {
       });
     }
   };
-  if (!s.messages.length && s.remote) {
-    fetch(`/api/chats/${encodeURIComponent(id)}`).then((r) => r.json()).then((j) => {
-      // The answer can arrive after the reader moved to another chat; writing
-      // it into this session and painting would redraw the chat they left.
-      if (activeId !== id) return;
-      // The stored turn is already the shape this list holds: the server's
-      // `turns` replays exactly the fields it writes, and `toPayload` below
-      // sends only the ones a request takes. Restating the field list here is
-      // what would drop a future column on reopen.
-      s.messages = j.items || [];
-      s.remote = false;
-      paint();
-    }).catch(paint);
-  } else {
+  if (!s.remote) {
     paint();
+    return;
+  }
+  const attempt = Symbol();
+  s.historyLoad = attempt;
+  const loading = document.createElement("p");
+  loading.className = "status";
+  loading.setAttribute("role", "status");
+  loading.textContent = "Loading chat…";
+  els.messages.insertBefore(loading, scrollBtn);
+  const isCurrent = () => activeId === id && s.historyLoad === attempt;
+  try {
+    const items = await fetchHistory(`/api/chats/${encodeURIComponent(id)}`);
+    if (!isCurrent()) return;
+    s.messages = items;
+    s.remote = false;
+    loading.remove();
+    refresh();
+    paint();
+  } catch {
+    if (!isCurrent()) return;
+    loading.remove();
+    showHistoryError("Could not load this chat.", () => loadSession(id));
   }
 }
 
@@ -503,7 +556,13 @@ function setStreaming(on) {
   refresh();
 }
 
-async function send(text, regen = false, quote = "") {
+// Whatever run belongs to the chat on screen decides what the composer shows:
+// the button is Stop only while this chat is answering, not while any chat is.
+function syncStreaming() {
+  setStreaming(isSending());
+}
+
+async function send(text, regen = false, quote = "", previousBody = null) {
   let s = current();
   if (!s) {
     s = { id: crypto.randomUUID(), title: UNTITLED, messages: [] };
@@ -520,7 +579,7 @@ async function send(text, regen = false, quote = "") {
     ErisAttach.clear();
   }
 
-  sending = true;
+  runs.set(s.id, null);
   refresh();
 
   if (!regen) {
@@ -537,11 +596,8 @@ async function send(text, regen = false, quote = "") {
       els.chatTitle.textContent = s.title;
       ErisSidebar.setChats(sessions);
     }
-  } else if (s.messages.at(-1)?.role === "assistant") {
-    s.messages.pop();
-    // Last DOM child is the sticky scroll button, not the message.
-    [...els.messages.querySelectorAll(".msg")].pop()?.remove();
   }
+  previousBody?.querySelector(".regen-error")?.remove();
 
   const body = addMessage("assistant", "");
 
@@ -627,9 +683,14 @@ async function send(text, regen = false, quote = "") {
   let thinkR = -1;
   let webCtl = null;
   let webR = -1;
-  // Fetch cards, oldest first. The engine runs one round's calls in order, so
-  // the card that started first is the one `fetch_done` closes first; the
-  // frame carries no URL to match on.
+  // The call the open search card belongs to. Two searches can sit in one
+  // round, so the round does not tell them apart and the id does.
+  let webId = "";
+  // Fetch cards, oldest first. A round runs its calls together and reports
+  // them as each finishes, so the order they close in is not the order they
+  // started in; the closing frame carries the id of the call it belongs to,
+  // and that is what a card is matched on. A round holds two reads of the same
+  // URL often enough that the URL alone would not tell them apart.
   let fetchQ = [];
   let sources = [];
   let webGroups = [];
@@ -675,6 +736,7 @@ async function send(text, regen = false, quote = "") {
     webCtl.done();
     webCtl = null;
     webR = -1;
+    webId = "";
   };
   // A fetch card is closed by its own `fetch_done`, not by the round ending:
   // a card left spinning through the rest of the round would be claiming a
@@ -699,9 +761,17 @@ async function send(text, regen = false, quote = "") {
     ansText = "";
   };
 
-  controller = new AbortController();
-  setStreaming(true);
+  const ctl = new AbortController();
+  const requestedModel = currentModel || undefined;
+  const requestedEffort = ErisPicker.getEffort(requestedModel);
+  runs.set(s.id, ctl);
+  syncStreaming();
+  s.metrics = null;
+  if (s.id === activeId) ErisStats.clearCall();
 
+  let receivedDone = false;
+  let failure = "";
+  let chatChanged = false;
   try {
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -709,13 +779,20 @@ async function send(text, regen = false, quote = "") {
       body: JSON.stringify({
         chat_id: s.id,
         regenerate: regen,
-        messages: toPayload(s),
+        messages: regen ? toPayload(s).slice(0, -1) : toPayload(s),
+        // Stated on the turn as well as stored on the account: a picker change
+        // that has not reached the database yet cannot be the model this
+        // answer came from, and the frame the model was called with is what the
+        // cards and the readout name.
+        model: requestedModel,
+        effort: requestedEffort,
       }),
-      signal: controller.signal,
+      signal: ctl.signal,
     });
     if (!res.ok || !res.body) {
       if (res.status === 401) location.href = "/auth.html";
-      throw new Error(`HTTP ${res.status}`);
+      const detail = await res.json().catch(() => ({}));
+      throw new Error(typeof detail.detail === "string" ? detail.detail : `HTTP ${res.status}`);
     }
 
     const reader = res.body.getReader();
@@ -732,35 +809,45 @@ async function send(text, regen = false, quote = "") {
         const line = part.trim();
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
-        if (data === "[DONE]") continue;
+        if (data === "[DONE]") {
+          receivedDone = true;
+          continue;
+        }
         let evt;
         try { evt = JSON.parse(data); } catch { continue; }
 
         if (evt.type === "tool") {
           finishThink();
-          if (webCtl && evt.r !== webR) finishWeb();
+          // One card per search call, which is also how a reload draws them:
+          // the server stores a group per call, so two searches in one round
+          // must not share a card here or the live turn and the reopened one
+          // would disagree about what was searched.
+          const same = webCtl && webR === evt.r && webId === (evt.id || "");
+          if (webCtl && !same) finishWeb();
           if (!webCtl) {
             clearStatus();
             closeAnswer(evt.r);
             webCtl = ErisToolCall.webSearch(body);
             webR = evt.r;
+            webId = evt.id || "";
           }
           webCtl.addQuery(evt.query || "Search");
-          webGroups.push({ r: evt.r, query: evt.query || "", items: [] });
+          webGroups.push({ id: evt.id || "", r: evt.r, query: evt.query || "", items: [] });
         } else if (evt.type === "fetch") {
           finishThink();
           clearStatus();
           closeAnswer(evt.r);
-          const g = { r: evt.r, url: evt.url, chars: 0 };
+          const g = { id: evt.id || "", r: evt.r, url: evt.url, chars: 0 };
           const ctl = ErisToolCall.fetchPage(body);
           ctl.setUrl(evt.url);
           fetchQ.push({ ctl, g });
           fetchGroups.push(g);
         } else if (evt.type === "fetch_done") {
-          // Closed by round, not by arrival order: calls of one round run in
-          // turn, but a card from an earlier round that already closed is gone
-          // from the queue, and this must not close someone else's.
-          const i = fetchQ.findIndex((f) => f.g.r === evt.r);
+          // Closed by round and by the call's own id together, the pair the
+          // server stores: a round runs its reads at once and reports them as
+          // each finishes, so two reads of the same URL would otherwise close
+          // whichever card happened to come first.
+          const i = fetchQ.findIndex((f) => f.g.r === evt.r && f.g.id === (evt.id || ""));
           if (i >= 0) {
             const [f] = fetchQ.splice(i, 1);
             f.g.chars = evt.chars || 0;
@@ -789,13 +876,15 @@ async function send(text, regen = false, quote = "") {
           sources.push(...evt.items);
           const web = evt.items.filter((x) => x.kind === "web");
           if (web.length) {
-            // Filed by the round the frame names: a search's results follow its
-            // own `tool` frame, but a fetch in the same round emits sources of
-            // its own, and those must not be appended to the search group.
-            const g = webGroups.find((x) => x.r === evt.r) ||
-              (webGroups[webGroups.length] = { r: evt.r, query: "", items: [] });
-            g.items.push(...web);
-            if (evt.r === webR) webCtl?.addResults(web);
+            // Filed under the search call that found them, by round and by the
+            // frame's id together, which is how the server files them: a fetch
+            // in the same round emits sources of its own, and two searches in
+            // one round each want their own list. A row with no group to join is
+            // a citation from some other tool — a price, a forecast — which is
+            // not a search and must not draw as one.
+            const g = webGroups.find((x) => x.r === evt.r && x.id === (evt.id || ""));
+            if (g) g.items.push(...web);
+            if (webCtl && webR === evt.r && webId === (evt.id || "")) webCtl.addResults(web);
           }
         } else if (evt.type === "tool_error") {
           // What the card says the tool failed at, stated once for every branch
@@ -805,7 +894,7 @@ async function send(text, regen = false, quote = "") {
           // A tool that failed still leaves the card it was drawing: the user
           // watching a search go by should see it end, not vanish.
           if (evt.tool === "fetch_url") {
-            const i = fetchQ.findIndex((f) => f.g.r === evt.r);
+            const i = fetchQ.findIndex((f) => f.g.r === evt.r && f.g.id === (evt.id || ""));
             if (i >= 0) {
               const [f] = fetchQ.splice(i, 1);
               f.ctl.fail(reason);
@@ -828,10 +917,24 @@ async function send(text, regen = false, quote = "") {
             const ctl = ErisToolCall[evt.tool](body);
             ctl.fail(reason);
             cardRows.push({ r: evt.r, tool: evt.tool, card: null, reason });
-          } else if (webCtl && (!evt.tool || evt.tool === "web_search")) {
-            webCtl.fail(reason);
-            webCtl = null;
-            webR = -1;
+          } else {
+            // A failed search draws no card of its own: the start frame already
+            // opened one, so the failure lands on the stored group and shows on
+            // the card on screen. A reload reads the group, and without this the
+            // turn comes back as if nothing had been asked. Only a search may
+            // claim a group; every other tool that failed a round earlier has no
+            // group of its own and must not take the search's.
+            const g = evt.tool === "web_search"
+              ? webGroups.find((x) => x.r === evt.r && x.id === (evt.id || ""))
+              : null;
+            if (g) { g.ok = false; g.reason = reason; }
+            if (webCtl && webR === evt.r && webId === (evt.id || "")
+                     && evt.tool === "web_search") {
+              webCtl.fail(reason);
+              webCtl = null;
+              webR = -1;
+              webId = "";
+            }
           }
         } else if (evt.type === "thinking") {
           if (!thinkCtl) {
@@ -845,9 +948,8 @@ async function send(text, regen = false, quote = "") {
           thinkCtl.append(evt.text);
           autoScroll();
         } else if (evt.type === "metrics") {
-          // The server states prompt usage once per call, on the frame that
-          // ends it, and nowhere else; the readout keeps the newest.
-          ErisStats.metrics(evt);
+          s.metrics = evt;
+          if (s.id === activeId) ErisStats.metrics(evt);
         } else if (evt.type === "title") {
           // The server names the chat after the answer, from what was asked;
           // the opening words it was showing were only a placeholder.
@@ -877,22 +979,27 @@ async function send(text, regen = false, quote = "") {
           ans.innerHTML = ErisMarkdown.render(ansText);
           autoScroll();
         } else if (evt.type === "error") {
-          body.append(errorBlock(evt.message));
+          failure = evt.message || "The answer failed.";
+          chatChanged = evt.code === "chat_changed";
+          body.append(errorBlock(failure));
         }
       }
     }
+    if (!receivedDone) throw new Error("Connection closed before the answer finished.");
   } catch (e) {
     if (e.name === "AbortError") {
       aborted = true;
       if (!raw && !thinkAll && !webCtl) setStatus("Stopped.");
     } else {
-      body.append(errorBlock(e.message));
+      failure = e.message;
+      body.append(errorBlock(failure));
     }
   } finally {
-    controller = null;
-    sending = false;
-    setStreaming(false);
-    els.input.focus();
+    // Only this chat's run is cleared. A second chat's run, started after the
+    // reader switched away, is a different entry and is left alone.
+    if (runs.get(s.id) === ctl) runs.delete(s.id);
+    syncStreaming();
+    if (s.id === activeId) els.input.focus();
     clearStatus();
     if (!aborted && !raw && !body.querySelector(".err")) {
       // Thinking rows and search rows are not an answer, so they no longer
@@ -906,12 +1013,26 @@ async function send(text, regen = false, quote = "") {
     // The strip carries the plan of the run in flight and nothing else, so a
     // turn that has been saved takes it away with it. The handle goes too: the
     // next run must draw its own card, not repaint this detached one.
-    clearPlan();
+    if (s.id === activeId) clearPlan();
     planCtl = null;
     ErisMarkdown.highlight(body);
     ErisMarkdown.linkCitations(body, sources);
-    if (raw) {
-      const groups = webGroups.filter((g) => g.items.length);
+    const replaced = regen && receivedDone && !aborted && !failure && raw.trim();
+    if (replaced) {
+      s.messages.pop();
+      previousBody?.closest(".msg")?.remove();
+    }
+    if (regen && !replaced) {
+      body.closest(".msg")?.remove();
+      const error = errorBlock(aborted ? "Regeneration stopped." : failure || "No replacement answer came back.");
+      error.classList.add("regen-error");
+      previousBody?.append(error);
+    }
+    if (raw.trim() && !chatChanged && (!regen || replaced)) {
+      // A group with no rows is dropped, but a failed one is kept: it has
+      // nothing to show and still has something to say. The server keeps the
+      // same two, so the turn on screen matches the one a reload reads back.
+      const groups = webGroups.filter((g) => g.items.length || g.ok === false);
       s.messages.push({
         role: "assistant",
         content: raw,
@@ -923,6 +1044,7 @@ async function send(text, regen = false, quote = "") {
         ...(answerRounds.length > 1 ? { answers: answerRounds } : {}),
       });
       addRegen(body, s);
+      if (s.id === activeId && !body.isConnected) loadSession(s.id);
     }
   }
 }
@@ -932,10 +1054,13 @@ async function send(text, regen = false, quote = "") {
 
 els.form.addEventListener("submit", (e) => {
   e.preventDefault();
-  if (sending) {
-    if (controller) controller.abort();
+  if (isSending()) {
+    // Only the chat on screen is stopped, and only its own run: the composer is
+    // the chat's, so the button it shows is the run it aborts.
+    runs.get(activeId)?.abort();
     return;
   }
+  if (chatListPending || current()?.remote) return;
   const text = els.input.value.trim();
   if (els.input.value.length > MAX) return;
   const hasImg = ErisAttach.hasImage() || ErisAttach.hasFile();
@@ -950,7 +1075,7 @@ els.form.addEventListener("submit", (e) => {
 els.input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();
-    if (!sending) els.form.requestSubmit();
+    if (!isSending()) els.form.requestSubmit();
   }
 });
 
@@ -1006,32 +1131,64 @@ els.form.addEventListener("drop", (e) => {
   if (files?.length) ErisAttach.add(files);
 });
 
-/* The model picker sits in the composer and writes the same preference the
-   settings dialog does, so /api/chat keeps resolving the model from the
-   account rather than from each request. The effort step is stored the same
-   way: it is an index into the model's own ladder, which the server resolves
-   against whichever model is in use. */
 ErisStats.init();
+let prefsWrite = Promise.resolve();
+
+function queuePrefs(body) {
+  const write = prefsWrite.then(() => postPrefs(body));
+  prefsWrite = write.catch(() => {});
+  return write;
+}
 
 ErisPicker.init({
   onModel: (model) => {
-    fetch("/api/prefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model }),
-    }).catch(() => {});
+    currentModel = model;
+    ErisStats.metrics(current()?.metrics);
+    queuePrefs({ model })
+      .then((j) => {
+        // A model the server moved away from (a fallback, or a list that did
+        // not hold it) is not the one the picker just chose. The control is
+        // repainted from the server's answer rather than left to name a model
+        // no turn would ask for.
+        if (currentModel === model && j && j.model && j.model !== model) reconcile(j, model);
+      })
+      .catch(() => {});
   },
-  onEffort: (effort) => {
-    fetch("/api/prefs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ effort }),
-    }).catch(() => {});
-  },
+  onEffort: (model, effort) => queuePrefs({ effort_model: model, effort }),
 });
 
+/* The picked id and the resolved one disagree, so the list is asked for once
+   more and both the menu and the readout are drawn from it. */
+function reconcile(j, previous) {
+  fetch("/api/models")
+    .then((r) => r.json())
+    .then((m) => {
+      if (currentModel !== previous) return;
+      currentModel = j.model;
+      ErisPicker.setModels(m.items, j.model, m.labels, m.capabilities);
+      ErisStats.metrics(current()?.metrics);
+    })
+    .catch(() => {});
+}
+
+/* A preference is followed by the model the account is on, resolved by the
+ * route rather than assumed here: the client writes an id, and a fallback the
+ * server applied afterwards is not visible from this side. */
+function postPrefs(body) {
+  return fetch("/api/prefs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`prefs ${r.status}`))));
+}
+
 fetch("/api/models").then((r) => r.json()).then((j) => {
+  // The default here is already resolved through the account's stored pick, so
+  // it is the id a turn would use before anyone touches a control.
+  if (j && j.default) currentModel = j.default;
   ErisPicker.setModels(j.items, j.default, j.labels, j.capabilities);
+  ErisStats.metrics(current()?.metrics);
 }).catch(() => {});
 
 
@@ -1063,9 +1220,16 @@ ErisSidebar.init({
     }).catch(() => {});
   },
   onDelete: async (id) => {
+    try {
+      const res = await fetch(`/api/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      els.messages.insertBefore(errorBlock("Could not delete this chat. Try again."), scrollBtn);
+      return;
+    }
+    runs.get(id)?.abort();
     sessions = sessions.filter((x) => x.id !== id);
     ErisSidebar.setChats(sessions);
-    await fetch(`/api/chats/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
     if (id === activeId) {
       if (!sessions.length) {
         blankChat();
@@ -1109,22 +1273,41 @@ window.addEventListener("eris:settings-saved", () => {
   refreshAccount();
   fetch("/api/models")
     .then((r) => r.json())
-    .then((j) => ErisPicker.setModels(j.items, j.default, j.labels, j.capabilities))
+    .then((j) => {
+      if (j && j.default) currentModel = j.default;
+      ErisPicker.setModels(j.items, j.default, j.labels, j.capabilities);
+      ErisStats.metrics(current()?.metrics);
+    })
     .catch(() => {});
+  // The dialog may have changed the model or the context, and the readout
+  // beside Send describes both. It is asked to load again rather than left to
+  // show the figures of the model that was in use before the save.
+  ErisStats?.load?.();
 });
 
-fetch("/api/chats").then((r) => r.json()).then((j) => {
-  sessions = (j.items || []).map((c) => ({ id: c.id, title: c.title, pinned: !!c.pinned, messages: [], remote: true }));
-  ErisSidebar.setChats(sessions);
-}).catch(() => {}).finally(() => {
-  if (!sessions.length) {
-    blankChat();
-  } else {
-    // Opening the first chat is what fetches its turns. Naming it here instead
-    // left the session marked remote with no messages, so the first question
-    // after a reload went out with no history.
-    loadSession(sessions[0].id);
+async function loadChatList() {
+  chatListPending = true;
+  refresh();
+  try {
+    const items = await fetchHistory("/api/chats");
+    const known = new Set(sessions.map((s) => s.id));
+    sessions.push(...items.filter((c) => !known.has(c.id)).map((c) => ({
+      id: c.id, title: c.title, pinned: !!c.pinned, messages: [], remote: true,
+    })));
+    ErisSidebar.setChats(sessions);
+    if (!activeId && sessions.length) loadSession(sessions[0].id);
+    else if (!activeId) blankChat();
+  } catch {
+    if (!activeId) {
+      resetMessages();
+      showHistoryError("Could not load your chat list.", loadChatList);
+    }
+  } finally {
+    chatListPending = false;
+    refresh();
   }
-});
+}
+
+loadChatList();
 syncInput();
 els.input.focus();

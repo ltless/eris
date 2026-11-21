@@ -6,8 +6,11 @@ cd "$(dirname "$0")"
 set -a; source .env; set +a
 
 PORT="${PORT:-9000}"
+ERIS_HOST="${ERIS_HOST:-127.0.0.1}"
 MODEL_PATH="${MODEL_PATH:-}"
 LLAMA_BIN="${LLAMA_BIN:-llama-server}"
+LLAMA_PORT="${LLAMA_PORT:-8080}"
+export MODEL_BASE_URL="${MODEL_BASE_URL:-http://localhost:11434/v1}"
 
 started_docker=0
 cleanup() {
@@ -67,8 +70,9 @@ fi
 if [ -n "$MODEL_PATH" ] && [ -f "$MODEL_PATH" ]; then
   if command -v "$LLAMA_BIN" >/dev/null; then
     echo "> starting $LLAMA_BIN ($MODEL_PATH)"
-    "$LLAMA_BIN" --model "$MODEL_PATH" --host 0.0.0.0 --port 8080 \
-      --ctx-size 16384 \
+    export MODEL_BASE_URL="http://127.0.0.1:$LLAMA_PORT/v1"
+    "$LLAMA_BIN" --model "$MODEL_PATH" --host 127.0.0.1 --port "$LLAMA_PORT" \
+      --ctx-size 32768 \
       --n-gpu-layers 99 \
       --reasoning-format deepseek &
     llama_pid=$!
@@ -91,4 +95,4 @@ fi
 echo "> Eris on http://localhost:$PORT"
 # Not exec: replacing this shell would throw away the EXIT trap, and the llama
 # server and the containers this script started would outlive it.
-"$PY" -m uvicorn app.api:app --host 0.0.0.0 --port "$PORT"
+"$PY" -m uvicorn app.api:app --host "$ERIS_HOST" --port "$PORT"

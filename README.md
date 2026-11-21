@@ -12,9 +12,8 @@ Browser side is plain HTML, JS and CSS. No build step, no bundler. `fetch`
 streams SSE, marked renders markdown, DOMPurify cleans it, highlight.js colours
 code.
 
-Backend is FastAPI on uvicorn. It talks to the model server with httpx over the
-native `/api/chat` route as NDJSON. The `/v1` on `MODEL_BASE_URL` exists only
-for the model list.
+Backend is FastAPI on uvicorn. It reads Ollama chat streams from `/api/chat`
+and llama.cpp chat streams from `/v1/chat/completions`.
 
 SearXNG runs in Docker and serves web search. If you already have a model server
 running somewhere, point `MODEL_BASE_URL` at it and skip the model half.
@@ -50,7 +49,12 @@ start `llama-server` if `MODEL_PATH` is set, then run uvicorn. Ctrl-C takes down
 what they started. Leave `MODEL_PATH` empty and they assume a model server is
 already up at `MODEL_BASE_URL`.
 
-Then open http://localhost:9000
+When `MODEL_PATH` is set and the launcher starts llama.cpp, both the server
+and Eris use `LLAMA_PORT` (default `8080`). For an existing Ollama or llama.cpp
+server, leave `MODEL_PATH` empty and set `MODEL_BASE_URL` instead.
+
+Open http://localhost:9000. Eris, the bundled model launcher, and SearXNG
+bind to loopback by default. Set `ERIS_HOST` explicitly to share the Eris UI.
 
 If PowerShell refuses the script:
 
@@ -79,11 +83,17 @@ restart it. `start.sh` does not; add the flag yourself if you want it.
 The box at the bottom has more in it than it looks.
 
 - Model picker. Remembers your choice per account.
-- Effort picker. The steps come from the model's own `think` set, asked once per
-  model. Some templates drop the tool list when `think` is `false`, so a tool
-  round sends the lowest rung the model names instead.
-- Ring and panel beside Send. Context used, what the server has loaded, KV
-  cost. Read-only, costs no tokens.
+- Effort picker. Options come from the model server's metadata. A choice is
+  saved per model. Default leaves the server in charge. Older Ollama servers
+  can expose the thinking capability without named levels.
+- Ring and panel beside Send. The ring shows tokens from the last completed
+  model call against its reported window, including prompt and generated
+  tokens. Cached tokens are part of the prompt total. If only the requested
+  window is known, the percentage is marked as an estimate. The panel also
+  lists the runner's current allocation and the model's maximum separately.
+- Context window. Leave the setting empty to use the server default. Ollama
+  accepts a per-request window up to the model's reported maximum. llama.cpp
+  reports the fixed window configured at server startup.
 - Attach. Images and text files. A photo is shrunk to 1024px and re-encoded as
   JPEG, since a 4MB phone photo is pixels the model will never resolve. A model
   that didn't declare vision shows the chip as refused instead of dropping it
@@ -126,27 +136,56 @@ panel is in Settings.
 
 ## Tools
 
-Eleven built in: `web_search`, `fetch_url`, `weather`, `wayback`, `read_file`,
-`crypto`, `crypto_trend`, `equity`, `equity_trend`, `screen`, `plan`.
+Eris selects up to three tool schemas per round from the latest request and
+relevant follow-ups. If a request needs fresh data and the first attempt yields
+none, the runtime can widen the selection once within the existing budget.
+Search results can make `fetch_url` available in the next round. Invalid
+arguments for a read tool get one correction round. Set `DYNAMIC_TOOLS=0`
+to use the full tool list for comparison.
+
+For requests such as searching for sources and then saving them to a file,
+`write_file` is offered after a tool returns data, subject to workspace access.
+
+Thirteen built in: `web_search`, `fetch_url`, `weather`, `wayback`, `read_file`,
+`list_workspace`, `write_file`, `crypto`, `crypto_trend`, `equity`,
+`equity_trend`, `screen`, `plan`.
 `fetch_url` reads PDFs too, and it refuses any address that isn't a public one,
 so it can't be pointed at your own network. `weather` and `wayback` read the
-open web as well and go through the same guard.
+open web as well and go through the same guard. The text it returns comes from
+the fullest of `<main>`, `<article>` and `<body>` rather than the first tag that
+exists, because a site that ships an empty `<main>` still has its prose one
+level down.
 
 `weather` takes a place by name, geocodes it, and answers with the conditions
 now and a few days ahead, from open-meteo. No key and no account. The name it
 is given is what a small model happened to type, so a name the geocoder doesn't
 know is retried without its administrative prefix before the tool gives up.
 
+`crypto_trend` reads daily candles from Binance, then its market-data host
+`data-api.binance.vision`, then Gate.io, then Coinbase, and stops at the first
+that answers. The second one is the same rows under a different name, which is
+what keeps a chart working on a network that filters the first. A source that
+never answers is reported as unreachable rather than as a pair nobody lists,
+because those are different problems and only one of them is worth retrying.
+
 `wayback` picks up where `fetch_url` stops: when a page answers 404, or when the
 user asks for a version that no longer exists, it finds the snapshots the
 Internet Archive holds and reads one back through the same fetcher. Ask it for
 a year, a month, or a day and it takes the nearest snapshot to that date.
 
-`read_file` reads a file attached to the message. A file over 2000 characters
-is named in the prompt rather than pasted into it, because every round resends
-the conversation and inline text is paid for on each one; the model reads the
-part it needs, and a long file comes back a slice at a time. The tool is only
-offered to a run that has a file attached.
+`read_file` reads text from a file attached to the message, or from a file in
+the workspace by its path. A file over 2000 characters is named in the prompt
+rather than pasted into it, because every round resends the conversation and
+inline text is paid for on each one; the model reads the part it needs, and a
+long file comes back a slice at a time, with the offset for the next call. The
+tool is offered to a run that has a file attached, or to one whose workspace
+directory is set.
+
+`list_workspace` names what a workspace folder holds, folders before files, so
+a run can find a file an earlier turn wrote before writing over it. It goes
+through the same path guard as `read_file` and `write_file`. Workspace access
+requires both an existing `WORKSPACE_DIR` and `WORKSPACE_USER_ID`, the numeric
+ID returned by `GET /api/auth/me` for the account that owns the directory.
 
 `equity` reads a share, index or ETF from Yahoo Finance: price, today's move,
 the day and 52-week ranges, volume, market cap, P/E and dividend yield. Several
@@ -169,9 +208,12 @@ steps after older tool messages have been dropped to fit the window. The card
 redraws in place, so the chat shows the plan as it stands rather than every
 revision.
 
-A tool that changes state is refused and never offered to the model. Nothing in
-this app can stop and ask whether you meant it, so the answer stays no instead of
-becoming yes by default. Same reason a token cannot run one.
+`write_file` requires `WORKSPACE_ALLOW_WRITE=1`. Workspace tools are available
+only to the configured account through its browser session. Bearer tokens can
+still read attachments sent with the request. Workspace paths must be relative
+to the configured directory. Absolute paths, drive letters, `..`, and links
+are refused. Replacing a file requires `overwrite` in the tool call. A
+successful write produces a card with the path.
 
 ## Routes
 
@@ -192,8 +234,8 @@ POST   /api/auth/profile        name
 POST   /api/auth/password
 POST   /api/auth/media          avatar, cover, model picture
 DELETE /api/auth/media
-GET    /api/models              ids, labels, default, capabilities, ctx_max
-GET    /api/effort              the think ladder for a model
+GET    /api/models              ids, labels, default, capabilities
+GET    /api/effort              declared levels and the choice for one model
 GET    /api/stats                what the server holds, no tokens spent
 POST   /api/prefs               model, effort, ctx, system prompt
 GET    /api/health              model server and SearXNG

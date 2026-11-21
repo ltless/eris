@@ -4,7 +4,9 @@ import base64
 import binascii
 import json
 import time
+from dataclasses import dataclass
 
+from .encoding import new_id
 from .store import open_db, path_from_env
 
 MAX_THINKING = 8000
@@ -132,12 +134,17 @@ _COLUMN_SQL = ", ".join(f"{name} {kind}" for name, kind, _ in COLUMNS)
 _COLUMN_NAMES = ", ".join(name for name, _, _ in COLUMNS)
 _COLUMN_MARKS = ", ".join("?" for _ in COLUMNS)
 _COLUMN_SET = {name for name, _, _ in COLUMNS}
+_INSERT_TURN = (
+    f"INSERT INTO turns(chat_id,role,content,{_COLUMN_NAMES},ts) "
+    f"VALUES(?,?,?,{_COLUMN_MARKS},?)"
+)
 
 SCHEMA = (
     "CREATE TABLE chats("
     "id TEXT PRIMARY KEY, user_id INTEGER NOT NULL, "
     f"title TEXT NOT NULL DEFAULT '{UNTITLED}', "
-    "pinned INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);"
+    "pinned INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL, "
+    "instance TEXT NOT NULL DEFAULT '');"
     "CREATE TABLE turns("
     "chat_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, "
     f"{_COLUMN_SQL}, ts INTEGER NOT NULL);"
@@ -156,6 +163,9 @@ def _migrate(conn):
     for name, kind, _ in COLUMNS:
         if name not in cols:
             conn.execute(f"ALTER TABLE turns ADD COLUMN {name} {kind}")
+    chat_cols = {r["name"] for r in conn.execute("PRAGMA table_info(chats)")}
+    if "instance" not in chat_cols:
+        conn.execute("ALTER TABLE chats ADD COLUMN instance TEXT NOT NULL DEFAULT ''")
 
 
 def db():
@@ -164,24 +174,20 @@ def db():
     return _db
 
 
-def save_turn(user_id, chat_id, role, text, **extra):
-    """Store one turn. `extra` holds any of `COLUMNS` by name; a field the table
-    does not have is refused rather than silently dropped."""
+@dataclass(frozen=True)
+class ChatRun:
+    chat_id: str
+    user_id: int
+    instance: str
+    anchor: int
+    regenerate: bool = False
+
+
+def _turn_fields(extra):
     unknown = set(extra) - _COLUMN_SET
     if unknown:
         raise TypeError(f"save_turn got an unknown field: {', '.join(sorted(unknown))}")
-    quote, images, files = extra.get("quote"), extra.get("images"), extra.get("files")
-    # A turn can be carried by any one of four things: the words typed under
-    # it, the selection it answers, an attached image, or an attached file. Any
-    # one alone is reason enough to keep the turn.
-    if not chat_id or not (text.strip() or (quote or "").strip() or images or files):
-        return
-    # chat_id comes from the client, so a turn may only land in a chat the
-    # caller owns. A missing row means this is the first turn of a new chat.
-    owner = db().execute("SELECT user_id FROM chats WHERE id=?", (chat_id,)).fetchone()
-    if owner and owner["user_id"] != user_id:
-        return
-    now = int(time.time() * 1000)
+    quote, images = extra.get("quote"), extra.get("images")
     thinking = extra.get("thinking")
     if isinstance(thinking, list):
         # Truncating the serialized JSON would leave it unparseable, so trim by
@@ -212,17 +218,63 @@ def save_turn(user_id, chat_id, role, text, **extra):
         if name not in stored:
             value = extra.get(name)
             stored[name] = json.dumps(value) if value else None
-    db().execute(
-        f"INSERT INTO turns(chat_id,role,content,{_COLUMN_NAMES},ts) "
-        f"VALUES(?,?,?,{_COLUMN_MARKS},?)",
-        (chat_id, role, text, *(stored[name] for name, _, _ in COLUMNS), now),
-    )
-    db().execute(
-        "INSERT INTO chats(id,user_id,ts) VALUES(?,?,?) "
-        "ON CONFLICT(id) DO UPDATE SET ts=excluded.ts",
-        (chat_id, user_id, now),
-    )
-    db().commit()
+    return tuple(stored[name] for name, _, _ in COLUMNS)
+
+
+def save_turn(user_id, chat_id, role, text, **extra):
+    """Append a turn and return the anchor for its reply."""
+    fields = _turn_fields(extra)
+    if not chat_id or not (text.strip() or (extra.get("quote") or "").strip()
+                           or extra.get("images") or extra.get("files")):
+        return None
+    now = int(time.time() * 1000)
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO chats(id,user_id,ts,instance) VALUES(?,?,?,?) "
+            "ON CONFLICT(id) DO NOTHING",
+            (chat_id, user_id, now, new_id()),
+        )
+        owner = conn.execute(
+            "SELECT instance FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)
+        ).fetchone()
+        if owner is None:
+            return None
+        turn = conn.execute(_INSERT_TURN, (chat_id, role, text, *fields, now))
+        conn.execute("UPDATE chats SET ts=? WHERE id=?", (now, chat_id))
+        return ChatRun(chat_id, user_id, owner["instance"], turn.lastrowid)
+
+
+def _latest_turn(conn, user_id, chat_id):
+    return conn.execute(
+        "SELECT t.rowid, t.role, c.instance FROM turns t "
+        "JOIN chats c ON c.id=t.chat_id WHERE c.id=? AND c.user_id=? "
+        "ORDER BY t.rowid DESC LIMIT 1", (chat_id, user_id),
+    ).fetchone()
+
+
+def start_regeneration(user_id, chat_id):
+    tail = _latest_turn(db(), user_id, chat_id)
+    if tail is None or tail["role"] != "assistant":
+        return None
+    return ChatRun(chat_id, user_id, tail["instance"], tail["rowid"], regenerate=True)
+
+
+def finish_run(run, text, **extra):
+    """Publish the reply only if the chat still has the turn this run started from."""
+    if not text.strip():
+        return False
+    fields = _turn_fields(extra)
+    now = int(time.time() * 1000)
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        tail = _latest_turn(conn, run.user_id, run.chat_id)
+        if tail is None or (tail["instance"], tail["rowid"]) != (run.instance, run.anchor):
+            return False
+        conn.execute(_INSERT_TURN, (run.chat_id, "assistant", text, *fields, now))
+        if run.regenerate:
+            conn.execute("DELETE FROM turns WHERE rowid=?", (run.anchor,))
+        conn.execute("UPDATE chats SET ts=? WHERE id=?", (now, run.chat_id))
+    return True
 
 
 def _placeholder(title):
@@ -253,18 +305,15 @@ def short_title(text, limit=TITLE_CHARS):
     return (cut[:space] if space > limit // 2 else cut).rstrip()
 
 
-def touch_title(chat_id, text, user_id=None):
+def touch_title(chat_id, text, user_id=None, *, instance=None):
     """Name a chat from its first user message, if nothing has named it yet."""
-    row = _title_row(chat_id, user_id)
-    if row and _placeholder(row["title"]):
-        title = short_title(text) or UNTITLED
-        if user_id is None:
-            db().execute("UPDATE chats SET title=? WHERE id=?", (title, chat_id))
-        else:
-            db().execute(
-                "UPDATE chats SET title=? WHERE id=? AND user_id=?", (title, chat_id, user_id)
-            )
-        db().commit()
+    with db() as conn:
+        conn.execute(
+            "UPDATE chats SET title=? WHERE id=? AND trim(title)=? "
+            "AND (? IS NULL OR user_id=?) AND (? IS NULL OR instance=?)",
+            (short_title(text) or UNTITLED, chat_id, UNTITLED,
+             user_id, user_id, instance, instance),
+        )
 
 
 def _title_row(chat_id, user_id):
@@ -306,31 +355,21 @@ def turns(user_id, chat_id, limit=100):
     return out
 
 
-def drop_last_assistant(user_id, chat_id):
-    row = db().execute(
-        "SELECT rowid FROM turns WHERE chat_id=? AND role='assistant' "
-        "AND chat_id IN (SELECT id FROM chats WHERE user_id=?) ORDER BY rowid DESC LIMIT 1",
-        (chat_id, user_id),
-    ).fetchone()
-    if row:
-        db().execute("DELETE FROM turns WHERE rowid=?", (row["rowid"],))
-        db().commit()
-
-
-def name_from_model(user_id, chat_id, title, source):
+def name_from_model(user_id, chat_id, title, source, *, instance=None):
     """Write the model's name for a chat, unless a name someone chose is there.
 
     Both that name and the one it replaces come from the first message, so the
     write is dropped when what is stored is neither: the user can rename the
     chat while the answer is still streaming, and that name wins.
     """
-    cur = _title_row(chat_id, user_id)
-    if cur is None or not (_placeholder(cur["title"]) or cur["title"] == short_title(source)):
-        return False
-    db().execute("UPDATE chats SET title=? WHERE id=? AND user_id=?",
-                 (short_title(title, NAME_CHARS) or UNTITLED, chat_id, user_id))
-    db().commit()
-    return True
+    with db() as conn:
+        updated = conn.execute(
+            "UPDATE chats SET title=? WHERE id=? AND user_id=? "
+            "AND (trim(title)=? OR title=?) AND (? IS NULL OR instance=?)",
+            (short_title(title, NAME_CHARS) or UNTITLED, chat_id, user_id, UNTITLED,
+             short_title(source), instance, instance),
+        )
+    return updated.rowcount == 1
 
 
 def set_meta(user_id, chat_id, title=None, pinned=None):
@@ -348,13 +387,7 @@ def set_meta(user_id, chat_id, title=None, pinned=None):
 
 
 def delete(user_id, chat_id):
-    # Check ownership first: turns are keyed by chat_id alone, so deleting them
-    # after a no-op chat delete would wipe another user's messages.
-    row = db().execute(
-        "SELECT id FROM chats WHERE id=? AND user_id=?", (chat_id, user_id)
-    ).fetchone()
-    if not row:
-        return
-    db().execute("DELETE FROM turns WHERE chat_id=?", (chat_id,))
-    db().execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat_id, user_id))
-    db().commit()
+    with db() as conn:
+        deleted = conn.execute("DELETE FROM chats WHERE id=? AND user_id=?", (chat_id, user_id))
+        if deleted.rowcount:
+            conn.execute("DELETE FROM turns WHERE chat_id=?", (chat_id,))

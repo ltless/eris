@@ -5,10 +5,23 @@ and tags — so a change to one tool lands in that tool's file alone. This modul
 only decides which of them a chat run gets.
 """
 
-from . import crypto, equity, fetch, files, market, plan, search, wayback, weather
+from . import (
+    crypto,
+    equity,
+    fetch,
+    files,
+    market,
+    plan,
+    search,
+    wayback,
+    weather,
+    write,
+)
 from .registry import registry
 
-MODULES = (search, fetch, weather, wayback, crypto, market, equity, plan, files)
+MODULES = (
+    search, fetch, weather, wayback, crypto, market, equity, plan, files, write,
+)
 
 
 def register_builtins():

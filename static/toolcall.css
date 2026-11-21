@@ -757,6 +757,21 @@
   margin-bottom: var(--sp-2);
 }
 
+.tc-td-listing {
+  display: flex;
+  flex: 1 1 14rem;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tc-td-listing span {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
 .tc-td-verdict {
   font-size: var(--fs-sm);
   font-weight: 600;
@@ -796,6 +811,10 @@
   height: 4px;
   border-radius: 2px;
   background: var(--border);
+}
+
+.tc-td-range-title {
+  grid-column: 1 / -1;
 }
 
 .tc-td-rangebar span {
@@ -923,28 +942,82 @@
   margin-top: var(--sp-3);
 }
 
-.tc-cc-head {
+.tc-cc-toolbar {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
   flex-wrap: wrap;
-  min-height: 18px;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
 }
 
-/* The readings for the bar under the cursor. It reserves its line so the plot
-   does not jump when the pointer enters, and it carries the direction as a sign
-   as well as a tint. */
-.tc-cc-read {
-  margin-left: auto;
+.tc-cc-range-label {
+  margin-inline-start: auto;
   color: var(--muted);
-  font-family: var(--mono);
-  font-size: var(--fs-2xs);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  font-size: var(--fs-xs);
 }
 
-.tc-cc-read[data-dir="up"] { color: var(--gain); }
-.tc-cc-read[data-dir="down"] { color: var(--danger); }
+.tc-cc-ranges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.tc-cc-ranges button {
+  min-height: var(--ctl-sm);
+  padding-inline: var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: 600 var(--fs-xs) var(--font);
+}
+
+.tc-cc-ranges button:hover,
+.tc-cc-ranges button[aria-pressed="true"] {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.tc-cc-ranges button[aria-pressed="true"] {
+  border-color: var(--border-strong);
+}
+
+.tc-cc-ranges button:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.tc-cc-head {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.tc-cc-read {
+  display: grid;
+  grid-template-columns: minmax(6rem, 1.35fr) repeat(5, minmax(0, 1fr));
+  gap: var(--sp-2);
+  margin: 0;
+  padding: var(--sp-2) 0;
+  border-block: 1px solid var(--border);
+}
+
+.tc-cc-read dt {
+  color: var(--faint);
+  font-size: var(--fs-2xs);
+}
+
+.tc-cc-read dd {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.tc-cc-read dd[data-dir] { font-weight: 600; }
+.tc-cc-read dd[data-dir="up"] { color: var(--gain); }
+.tc-cc-read dd[data-dir="down"] { color: var(--danger); }
 
 .tc-cc-body {
   position: relative;
@@ -968,7 +1041,9 @@
 }
 
 .tc-cc-plot {
-  height: 168px;
+  height: 224px;
+  cursor: crosshair;
+  touch-action: pan-y;
 }
 
 .tc-cc-vol {
@@ -1068,7 +1143,9 @@
 .tc-cc-price {
   grid-area: price;
   position: relative;
-  width: 4.5em;
+  width: var(--tick-width, 8ch);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .tc-cc-pricetag {
@@ -1114,12 +1191,22 @@
   white-space: nowrap;
 }
 
+.tc-cc-timetag[data-edge="start"] { transform: none; }
+.tc-cc-timetag[data-edge="end"] { transform: translateX(-100%); }
+
 .tc-cc-cursor {
   position: absolute;
   top: 0;
   bottom: 0;
   width: 0;
   border-left: 1px solid var(--muted);
+  pointer-events: none;
+}
+
+.tc-cc-crossline {
+  position: absolute;
+  inset-inline: 0;
+  border-top: 1px dashed var(--border-strong);
   pointer-events: none;
 }
 
@@ -1223,6 +1310,15 @@
   color: var(--danger);
 }
 
+/* A written file. The path is the one thing to check, so it carries the
+   weight; a long one wraps rather than running off the panel. */
+.tc-wf-path {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 /* Thinking text body */
 .tc-think {
   max-height: 220px;
@@ -1254,14 +1350,12 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  /* The price column is the widest fixed thing in the chart, so it gives way
-     first: a shorter figure column leaves the plot room for its bars. */
-  .tc-cc-price {
-    width: 3.6em;
+  .tc-cc-read {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .tc-cc-plot {
-    height: 140px;
+    height: 172px;
   }
 
   /* The figures keep their column and the name keeps the rest; at this width
@@ -1291,6 +1385,13 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+}
+
+@media (pointer: coarse) {
+  .tc-cc-ranges button {
+    min-height: var(--ctl-hit);
+    min-width: var(--ctl-hit);
   }
 }
 

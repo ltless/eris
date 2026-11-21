@@ -8,20 +8,12 @@ from `gpu` instead.
 
 import asyncio
 
-from .client import client
-from .endpoint import base_url
 from .gpu import gpu_info
+from .metadata import (
+    configured_context, llama_window, model_context, model_info, positive_int,
+    requested_context, runner_report, server_properties,
+)
 from ..config import settings
-
-# The endpoint reports allocated context and residency on its runtime route;
-# `/api/show` reports the model's architecture. Neither costs a generation, so
-# they are asked directly. Residency moves, so it is asked every time; the
-# architecture cannot change under a model id, and the answer is 12 KB, so it
-# is kept.
-PS_TIMEOUT = 6
-SHOW_TIMEOUT = 30
-
-_SHOWN: dict = {}
 
 # Bytes per KV element, by the cache type the server was started with. llama.cpp
 # stores each block of 32 elements as the elements plus one scale (f32 for
@@ -57,11 +49,11 @@ def architecture(model_info):
     than assumed. A field the model doesn't state is simply absent, and
     `kv_bytes` refuses to guess past that.
     """
-    arch = None
-    for key in model_info or ():
-        if key.endswith(".block_count"):
-            arch = key[: -len(".block_count")]
-            break
+    model_info = model_info if isinstance(model_info, dict) else {}
+    arch = model_info.get("general.architecture")
+    if not arch:
+        arch = next((key.removesuffix(".block_count") for key in model_info
+                     if key.endswith(".block_count")), None)
     if not arch:
         return {}
     out = {}
@@ -69,6 +61,8 @@ def architecture(model_info):
         value = model_info.get(f"{arch}.{suffix}")
         if value is not None:
             out[name] = value
+    if any(key.startswith(f"{arch}.ssm.") for key in model_info):
+        out["hybrid"] = True
     return out
 
 
@@ -99,6 +93,8 @@ def kv_bytes(info, ctx, cache_type=None):
     with the context — which is the whole difference between a model that
     reads a long prompt cheaply and one that does not.
     """
+    if info.get("hybrid"):
+        return None
     layers = info.get("layers")
     heads = info.get("kv_heads")
     key_len = info.get("key_length")
@@ -141,46 +137,6 @@ def _num(value):
         return None
 
 
-async def runtime_status(model):
-    """Which model the runner holds, on which context, and until when.
-
-    An empty answer is a real answer: a model that is not loaded is not in
-    memory, and saying so is the point of asking. The route is the native one
-    because the loaded set is a runtime fact, not a model-list fact.
-    """
-    try:
-        r = await client().get(base_url() + "/api/ps", timeout=PS_TIMEOUT)
-        if r.status_code >= 400:
-            return None
-        rows = r.json().get("models") or []
-    except Exception:
-        return None
-    for row in rows:
-        if row.get("name") == model or row.get("model") == model:
-            return row
-    return None
-
-
-async def model_info(model):
-    """The model's own metadata, kept per id.
-
-    A failed ask is not remembered: the model may be pulled a minute later, and
-    a cached `None` would then answer for a model this server can describe.
-    """
-    if model in _SHOWN:
-        return _SHOWN[model]
-    try:
-        r = await client().post(base_url() + "/api/show", json={"model": model},
-                                timeout=SHOW_TIMEOUT)
-        if r.status_code >= 400:
-            return None
-        shown = r.json()
-    except Exception:
-        return None
-    _SHOWN[model] = shown
-    return shown
-
-
 async def model_stats(model, ctx=None):
     """Everything the panel shows, gathered in one place.
 
@@ -189,34 +145,40 @@ async def model_stats(model, ctx=None):
     actually reserved. Prompt usage is not here: the counts only ever come off
     a streamed answer, and the panel keeps the last ones it was sent.
     """
-    loaded, shown, gpu = await asyncio.gather(
-        runtime_status(model),
+    (runtime_known, loaded), shown, gpu = await asyncio.gather(
+        runner_report(model),
         model_info(model),
         gpu_info(),
     )
+    props = await server_properties(model) if shown is None and loaded is None else None
     info = architecture((shown or {}).get("model_info") or {})
-    allocated = _num((loaded or {}).get("context_length"))
-    # The runner's own reservation is what KV is really sized against; before
-    # it loads, the figure is an estimate for the context that would be asked
-    # for, which is why the answer says which one it is.
-    sized_ctx = allocated or ctx or _num(info.get("context"))
+    fixed = llama_window(props)
+    sleeping = bool((props or {}).get("is_sleeping"))
+    live = loaded is not None or fixed is not None and not sleeping
+    allocated = positive_int((loaded or {}).get("context_length")) or (fixed if live else None)
+    maximum = model_context(shown)
+    requested = None if fixed else requested_context(ctx, maximum)
+    configured = fixed or requested_context(configured_context(shown), maximum)
+    sized_ctx = allocated or requested or configured
     cache_type = cache_name()
     return {
         "model": model,
-        "loaded": loaded is not None,
+        "loaded": live,
+        "status_known": runtime_known or fixed is not None,
         "expires_at": (loaded or {}).get("expires_at"),
         "size": _num((loaded or {}).get("size")),
         "size_vram": _num((loaded or {}).get("size_vram")),
         "context": {
-            "max": _num(info.get("context")),
+            "max": maximum,
             "allocated": allocated,
-            "wanted": _num(ctx),
+            "wanted": positive_int(ctx),
+            "requested": requested,
+            "configured": configured,
+            "editable": fixed is None,
         },
         "kv": {
             "bytes": kv_bytes(info, sized_ctx, cache_type),
             "ctx": sized_ctx,
-            # False when the figure describes a context that is not loaded yet.
-            "estimated": allocated is None,
             # The cache type this figure was computed for. The server states it
             # nowhere, so it is named here rather than left to be assumed: a
             # reader can then tell a figure that is out of date from one that

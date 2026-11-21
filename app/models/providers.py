@@ -11,8 +11,12 @@ import re
 import httpx
 
 from ..encoding import image_part_url, text_part_text
-from .endpoint import auth_headers, chat_url, model_for, models_url
-from .ladder import think_for_request
+from .endpoint import auth_headers, base_url, chat_url, model_for, models_url
+from .ladder import cached_reasoning, request_effort
+from .metadata import (
+    cached_model_info, cached_properties, configured_context, llama_window, positive_int,
+    requested_context, runtime_status, server_properties,
+)
 
 
 def to_native(messages):
@@ -38,7 +42,11 @@ def to_native(messages):
 def normalize_call(call):
     """Native streams send tool arguments as an object, OpenAI-style servers
     send a JSON string. Runners downstream expect the object."""
-    fn = call.get("function") or {}
+    if not isinstance(call, dict):
+        return {}
+    fn = call.get("function")
+    if not isinstance(fn, dict):
+        fn = {}
     args = fn.get("arguments")
     if isinstance(args, str):
         try:
@@ -57,18 +65,28 @@ def parse_metrics(chunk):
     is optional: a server that counts differently reports fewer of them, and a
     missing count is better than a made-up one.
     """
+    usage = chunk.get("usage")
+    if isinstance(usage, dict):
+        details = usage.get("prompt_tokens_details") or {}
+        return {
+            field: count for field, count in {
+                "prompt_eval_count": usage.get("prompt_tokens"),
+                "eval_count": usage.get("completion_tokens"),
+                "prompt_eval_cached_count": details.get("cached_tokens") if isinstance(details, dict) else None,
+            }.items() if type(count) is int and count >= 0
+        } or None
     if not chunk.get("done"):
         return None
     out = {}
     for name in ("prompt_eval_count", "prompt_eval_cached_count", "eval_count",
-                 "eval_duration", "load_duration"):
+                 "eval_duration", "load_duration", "context_window", "context_length"):
         value = chunk.get(name)
-        if isinstance(value, (int, float)):
+        if type(value) in (int, float) and value >= 0:
             out[name] = value
     return out or None
 
 
-def parse_chunk(line):
+def parse_chunk(line, *, tool_fragments=None):
     """One streamed line -> list of (kind, value) events.
 
     The native stream is bare JSON with a `message` object, one per line.
@@ -89,24 +107,57 @@ def parse_chunk(line):
         chunk = json.loads(line)
     except json.JSONDecodeError:
         return []
+    # A line that parses as anything but an object is not a frame: `null`, a
+    # bare number, an array. Read as one anyway it raises `AttributeError`
+    # inside the stream, where nothing catches it, and the turn ends with no
+    # closing frame and no error.
+    if not isinstance(chunk, dict):
+        return []
     msg = chunk.get("message")
-    if msg is None:
+    if not isinstance(msg, dict):
         choices = chunk.get("choices") or []
-        msg = (choices[0].get("delta") or {}) if choices else {}
+        first = choices[0] if isinstance(choices, list) and choices else None
+        delta = (first or {}).get("delta") if isinstance(first, dict) else None
+        msg = delta if isinstance(delta, dict) else {}
     events = []
     if msg.get("content"):
         events.append(("delta", msg["content"]))
     think = msg.get("thinking") or msg.get("reasoning_content")
     if think:
         events.append(("thinking", think))
-    if msg.get("tool_calls"):
-        events.append(("tool_calls", [normalize_call(c) for c in msg["tool_calls"]]))
+    calls = msg.get("tool_calls")
+    if isinstance(calls, list) and calls:
+        # A malformed entry is dropped here rather than normalized into a call
+        # with no name, which would be offered to the registry as an unknown
+        # tool and reported as one.
+        if tool_fragments is None:
+            events.append(("tool_calls", [normalize_call(c) for c in calls if isinstance(c, dict)]))
+        else:
+            _accumulate_calls(tool_fragments, calls)
     # The closing frame carries both a last message and the counts, so this is
     # an addition to that frame rather than a branch away from it.
     done = parse_metrics(chunk)
     if done:
         events.append(("metrics", done))
     return events
+
+
+def _accumulate_calls(parts, calls):
+    for call in calls:
+        if not isinstance(call, dict) or type(call.get("index")) is not int:
+            continue
+        item = parts.setdefault(call["index"], {
+            "type": "function", "id": "", "function": {"name": "", "arguments": ""},
+        })
+        if call.get("id"):
+            item["id"] = call["id"]
+        fn = call.get("function") or {}
+        if isinstance(fn, dict):
+            name, args = fn.get("name"), fn.get("arguments")
+            if isinstance(name, str):
+                item["function"]["name"] += name
+            if isinstance(args, str):
+                item["function"]["arguments"] += args
 
 
 def merge_tool_calls(calls, incoming):
@@ -132,47 +183,100 @@ class ModelError(Exception):
     """
 
 
-async def stream_completion(messages, model=None, thinking=False, tools=None, ctx=None,
-                            limit=None):
+def _compatible_messages(messages):
+    out = []
+    for message in messages:
+        if not message.get("tool_calls"):
+            out.append(message)
+            continue
+        calls = []
+        for call in message["tool_calls"]:
+            fn = call["function"]
+            args = fn.get("arguments")
+            calls.append({**call, "type": "function",
+                          "function": {**fn, "arguments": args if isinstance(args, str)
+                                       else json.dumps(args or {})}})
+        out.append({**message, "tool_calls": calls})
+    return out
+
+
+def _chat_payload(messages, model, thinking, tools, ctx, limit, *, compatible=False):
+    value = request_effort(cached_reasoning(model), thinking)
     payload = {
-        "model": model_for(model),
-        "messages": to_native(messages),
-        "stream": True,
+        "model": model, "stream": True,
+        "messages": _compatible_messages(messages) if compatible else to_native(messages),
     }
-    # `false` skips the thinking channel, `true` takes the model's own
-    # default, and a level names a stated effort. The ladder is per model,
-    # so the value arrives already resolved against think_ladder rather
-    # than assumed here; `think_for_request` keeps a tool round off `false`
-    # on the models where that rung also switches the tools off.
-    value = think_for_request(thinking, model, tools)
-    if value is not None:
-        payload["think"] = value
-    if ctx or limit:
-        # `limit` caps the answer in tokens, which is how a call that wants a
-        # phrase rather than an essay stays a phrase on a talkative model.
-        payload["options"] = {}
-        if ctx:
-            payload["options"]["num_ctx"] = ctx
+    if compatible:
+        payload["stream_options"] = {"include_usage": True}
+        if isinstance(value, str):
+            payload["reasoning_effort"] = value
         if limit:
-            payload["options"]["num_predict"] = limit
+            payload["max_tokens"] = limit
+    else:
+        if value is not None:
+            payload["think"] = value
+        options = {}
+        if ctx:
+            options["num_ctx"] = ctx
+        if limit:
+            options["num_predict"] = limit
+        if options:
+            payload["options"] = options
     if tools:
         payload["tools"] = tools
+    return payload
+
+
+async def _call_metrics(metrics, model, ctx, props):
+    window = positive_int(metrics.get("context_window")) or positive_int(metrics.get("context_length"))
+    source = "reported" if window else None
+    requested = requested_context(ctx)
+    if not window and props:
+        window, source = llama_window(props), "runner"
+    if not window and ("prompt_eval_count" in metrics or "eval_count" in metrics):
+        loaded = await runtime_status(model, timeout=2)
+        observed = positive_int((loaded or {}).get("context_length"))
+        # A runner may have been reassigned between generation and the poll.
+        if not requested or observed == requested:
+            window = observed
+        source = "runner" if window else None
+    if not window:
+        window = requested or configured_context(cached_model_info(model))
+        source = "requested" if window else None
+    return {**metrics, "model": model, "context_window": window, "context_source": source}
+
+
+async def stream_completion(messages, model=None, thinking=False, tools=None, ctx=None,
+                            limit=None):
+    model = model_for(model)
+    props = cached_properties(model)
     url = chat_url()
-    # The streaming call keeps its own client: it holds a socket open for the
-    # length of a generation, which no shared client's timeout should govern.
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as c:
-            async with c.stream("POST", url, json=payload, headers=auth_headers()) as r:
-                if r.status_code >= 400:
-                    body = (await r.aread()).decode(errors="replace")
-                    # The server's own text says what is wrong with the request;
-                    # the status alone does not.
-                    raise ModelError(f"model server returned {r.status_code}: {body[:400]}")
-                async for line in r.aiter_lines():
-                    for event in parse_chunk(line):
-                        yield event
+            for _ in range(2):
+                url = base_url() + "/v1/chat/completions" if props else chat_url()
+                payload = _chat_payload(messages, model, thinking, tools, ctx, limit,
+                                        compatible=bool(props))
+                async with c.stream("POST", url, json=payload, headers=auth_headers()) as r:
+                    if r.status_code >= 400:
+                        body = (await r.aread()).decode(errors="replace")
+                        if r.status_code in {404, 405} and not props and cached_model_info(model) is None:
+                            props = await server_properties(model)
+                            if props:
+                                continue
+                        raise ModelError(f"model server returned {r.status_code}: {body[:400]}")
+                    fragments = {} if props else None
+                    async for line in r.aiter_lines():
+                        for kind, value in parse_chunk(line, tool_fragments=fragments):
+                            if kind == "metrics":
+                                value = await _call_metrics(value, model, ctx, props)
+                                value["effort"] = payload.get("reasoning_effort") if props else payload.get("think")
+                            yield kind, value
+                    if fragments:
+                        yield "tool_calls", [normalize_call(fragments[i]) for i in sorted(fragments)]
+                    return
     except httpx.HTTPError as e:
-        raise ModelError(f"cannot reach the model server at {chat_url()}: {e}") from e
+        raise ModelError(f"cannot reach the model server at {url}: {e}") from e
 
 
 TITLE_PROMPT = (
@@ -186,7 +290,7 @@ TITLE_PROMPT = (
 TITLE_LIMIT = 24
 
 
-async def title_for(prompt, model=None):
+async def title_for(prompt, model=None, ctx=None):
     """A short title naming what the first message is about.
 
     A title is a second model call, so it is allowed to fail quietly: an
@@ -202,6 +306,7 @@ async def title_for(prompt, model=None):
             ],
             model=model,
             thinking=False,
+            ctx=ctx,
             limit=TITLE_LIMIT,
         ):
             if kind == "delta":

@@ -5,6 +5,7 @@ browser reads, health reports each dependency honestly, and every route
 refuses an anonymous caller.
 """
 
+import asyncio
 import json
 import os
 import sys
@@ -13,14 +14,18 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, ".")
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from app import api, auth, chats, tokens
 from app.config import settings
 from app.models import providers
+from app.models.ladder import Reasoning
+from app.runtime import engine
 
 
 def searches(payload):
@@ -133,6 +138,8 @@ class Harness:
             mod._db = None
         self.old_url = settings.model_base_url
         self.old_searx = settings.searxng_url
+        self.old_dynamic_tools = settings.dynamic_tools
+        settings.dynamic_tools = False
         self.old_media = api.MEDIA_DIR
         api.MEDIA_DIR = Path(self.dir) / "uploads"
         self.stub = stub or StubModel()
@@ -156,6 +163,7 @@ class Harness:
         self.client.close()
         settings.model_base_url = self.old_url
         settings.searxng_url = self.old_searx
+        settings.dynamic_tools = self.old_dynamic_tools
         api.MEDIA_DIR = self.old_media
         self.stub.stop()
         for mod in (auth, chats, tokens):
@@ -186,6 +194,18 @@ class ChatStreamChecks(unittest.TestCase):
     def test_the_stream_ends_with_done(self):
         r = self.h.ask()
         self.assertIn("[DONE]", r.text)
+
+    def test_dynamic_routing_reaches_the_model_through_the_chat_endpoint(self):
+        with patch.object(settings, "dynamic_tools", True):
+            self.h.ask("Jelasin cara kerja SSE")
+            self.assertFalse(self.h.stub.calls[-1].get("tools"))
+            self.h.client.post("/api/chat", json={"messages": [
+                {"role": "user", "content": "Cuaca Singapura hari ini?"},
+                {"role": "assistant", "content": "Laporan cuaca hari ini."},
+                {"role": "user", "content": "Kalau besok?"},
+            ]})
+        self.assertEqual([spec["function"]["name"] for spec in self.h.stub.calls[-1]["tools"]],
+                         ["weather", "web_search"])
 
     def test_a_new_chat_is_named_from_what_was_asked(self):
         """The sidebar's placeholder is replaced by the model's own name.
@@ -283,13 +303,16 @@ class ChatStreamChecks(unittest.TestCase):
         from app.runtime import events as ev
 
         frame = api.sse_frame(
-            emit(ev.TOOL_STARTED, tool="web_search", round=1, args={"query": "gold price"})
+            emit(ev.TOOL_STARTED, tool="web_search", round=1, id="s1",
+                 args={"query": "gold price"})
         )
-        self.assertEqual(frame, {"type": "tool", "r": 1, "query": "gold price"})
+        self.assertEqual(frame, {"type": "tool", "r": 1, "id": "s1",
+                                 "query": "gold price"})
 
         sources = api.sse_frame(emit(
-            ev.SOURCE_FOUND, n=1, source="https://a.com", title="A", kind="web"))
+            ev.SOURCE_FOUND, n=1, id="s1", source="https://a.com", title="A", kind="web"))
         self.assertEqual(sources["type"], "sources")
+        self.assertEqual(sources["id"], "s1")
         self.assertEqual(sources["items"][0]["source"], "https://a.com")
 
         self.assertEqual(api.sse_frame(emit(ev.MODEL_DELTA, text="hi", round=2)),
@@ -323,18 +346,24 @@ class ChatStreamChecks(unittest.TestCase):
         self.assertEqual(frame["tool"], "fetch_url")
         self.assertEqual(frame["reason"], "the server answered 403")
 
-    def test_a_fetch_is_its_own_card_and_carries_its_round(self):
+    def test_a_fetch_is_its_own_card_and_carries_its_call_id(self):
         """A read opened by the model, not by the search: two frames, and the
-        round on both so the browser can close the right card."""
+        call's own id on both so the browser can close the right card. A round
+        runs its calls at once, so the round alone cannot pick between two
+        reads of the same URL."""
         from app.runtime.events import emit
         from app.runtime import events as ev
 
         opened = api.sse_frame(emit(
-            ev.TOOL_STARTED, tool="fetch_url", round=2, args={"url": "https://a.com/x"}))
-        self.assertEqual(opened, {"type": "fetch", "r": 2, "url": "https://a.com/x"})
+            ev.TOOL_STARTED, tool="fetch_url", round=2, id="c1",
+            args={"url": "https://a.com/x"}))
+        self.assertEqual(opened, {"type": "fetch", "r": 2, "id": "c1",
+                                  "url": "https://a.com/x"})
 
-        closed = api.sse_frame(emit(ev.TOOL_COMPLETED, tool="fetch_url", round=2, chars=1234))
-        self.assertEqual(closed, {"type": "fetch_done", "r": 2, "chars": 1234})
+        closed = api.sse_frame(emit(
+            ev.TOOL_COMPLETED, tool="fetch_url", round=2, id="c1", chars=1234))
+        self.assertEqual(closed, {"type": "fetch_done", "r": 2, "id": "c1",
+                                  "url": "", "chars": 1234})
 
     def test_a_weather_card_travels_whole_on_the_frame_that_ends_the_tool(self):
         """The card is drawn in one pass, so the payload it draws from rides on
@@ -480,9 +509,88 @@ class ChatStreamChecks(unittest.TestCase):
     def test_regenerating_replaces_the_previous_answer(self):
         chat_id = "c"
         sse_events(self.h.ask("q", chat_id=chat_id))
+        self.h.stub.answer = "replacement"
         sse_events(self.h.ask("q", chat_id=chat_id, regenerate=True))
         turns = self.h.client.get(f"/api/chats/{chat_id}").json()["items"]
         self.assertEqual([t["role"] for t in turns], ["user", "assistant"])
+        self.assertEqual(turns[-1]["content"], "replacement")
+
+    def test_failed_regeneration_keeps_the_previous_answer(self):
+        self.h.ask("q", chat_id="c")
+        before = self.h.client.get("/api/chats/c").json()["items"]
+
+        async def failing_model(*args, **kwargs):
+            yield "delta", "incomplete replacement"
+            raise providers.ModelError("model failed")
+
+        with patch.object(engine, "stream_completion", failing_model):
+            events = sse_events(self.h.ask("q", chat_id="c", regenerate=True))
+        self.assertTrue(any(e["type"] == "error" for e in events))
+        self.assertEqual(self.h.client.get("/api/chats/c").json()["items"], before)
+
+    def test_follow_up_keeps_only_its_own_quote(self):
+        self.h.client.post("/api/chat", json={
+            "chat_id": "quotes",
+            "messages": [
+                {"role": "user", "content": "first", "quote": "quoted before"},
+                {"role": "assistant", "content": "answer"},
+                {"role": "user", "content": "follow up"},
+            ],
+        })
+        turns = self.h.client.get("/api/chats/quotes").json()["items"]
+        self.assertEqual(turns[0], {"role": "user", "content": "follow up"})
+
+    def test_stop_persists_the_text_already_streamed(self):
+        user = self.h.client.get("/api/auth/me").json()
+
+        async def stop_after_delta():
+            waiting = asyncio.Event()
+            frames = []
+
+            async def model(*args, **kwargs):
+                yield "thinking", "some thought"
+                yield "delta", "partial answer"
+                waiting.set()
+                await asyncio.Event().wait()
+
+            async def receive():
+                await waiting.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(frame):
+                frames.append(frame)
+
+            scope = {"type": "http", "asgi": {"spec_version": "2.3"}}
+            req = api.ChatRequest(chat_id="stop", messages=[{"role": "user", "content": "q"}])
+            with patch.object(engine, "stream_completion", model):
+                response = await api.chat(req, Request(scope), user)
+                await asyncio.wait_for(response(scope, receive, send), timeout=2)
+            self.assertTrue(any(b"partial answer" in frame.get("body", b"") for frame in frames))
+
+        asyncio.run(stop_after_delta())
+        stored = self.h.client.get("/api/chats/stop").json()["items"]
+        self.assertEqual([t["content"] for t in stored], ["q", "partial answer"])
+        self.assertEqual(stored[-1]["thinking"], ["some thought"])
+
+    def test_deleted_chat_stays_deleted_when_a_run_finishes(self):
+        self.h.ask("q", chat_id="delete")
+        user = self.h.client.get("/api/auth/me").json()
+
+        async def model(*args, **kwargs):
+            yield "delta", "answer already streaming"
+
+        async def delete_after_delta():
+            req = api.ChatRequest(chat_id="delete", messages=[{"role": "user", "content": "q2"}])
+            response = await api.chat(req, Request({"type": "http"}), user)
+            stream = response.body_iterator
+            self.assertIn("answer already streaming", await anext(stream))
+            await api.chat_delete("delete", user)
+            self.assertIn("chat_changed", "".join([frame async for frame in stream]))
+
+        with patch.object(engine, "stream_completion", model):
+            asyncio.run(delete_after_delta())
+        self.assertEqual(self.h.client.get("/api/chats/delete").json()["items"], [])
+        self.assertEqual(self.h.client.get("/api/chats").json()["items"], [])
 
     def test_a_model_that_is_down_reports_an_error_frame(self):
         self.h.stub.stop()
@@ -537,6 +645,54 @@ class ChatStreamChecks(unittest.TestCase):
             self.assertIn(key, got)
         self.assertFalse(got["loaded"])
         self.assertIsNone(got["kv"]["bytes"])
+
+    def test_effort_uses_exact_values_and_stays_with_the_model(self):
+        profiles = {
+            "switch": Reasoning((False, True), True, "metadata"),
+            "levels": Reasoning(("low", "high"), "low", "metadata"),
+        }
+        client = self.h.client
+        with (patch.object(api, "reasoning", new_callable=AsyncMock, side_effect=profiles.get),
+              patch.object(api, "cached_reasoning", side_effect=profiles.get)):
+            self.assertEqual(client.post("/api/prefs", json={
+                "model": "switch", "effort": False,
+            }).status_code, 200)
+            self.assertEqual(client.post("/api/prefs", json={
+                "model": "levels", "effort": "high",
+            }).status_code, 200)
+            self.assertIs(client.get("/api/effort?model=switch").json()["current"], False)
+            levels = client.get("/api/effort?model=levels").json()
+            self.assertEqual(levels["current"], "high")
+            self.assertEqual(levels["efforts"][0], {"value": None, "label": "Default (Low)"})
+            self.assertEqual(client.post("/api/prefs", json={
+                "effort_model": "levels", "effort": False,
+            }).status_code, 422)
+            self.h.ask(model="levels", effort=None)
+            self.assertNotIn("think", self.h.stub.calls[-1])
+            self.h.ask(model="switch", effort=False)
+            self.assertIs(self.h.stub.calls[-1]["think"], False)
+
+    def test_legacy_effort_index_does_not_follow_a_model_change(self):
+        client = self.h.client
+        user_id = client.get("/api/auth/me").json()["id"]
+        auth.update_prefs(user_id, lambda prefs: prefs.update({"model": "old", "effort": 1}))
+        profile = Reasoning(("low", "high"), "low", "metadata")
+        with patch.object(api, "reasoning", new_callable=AsyncMock, return_value=profile):
+            self.assertEqual(client.post("/api/prefs", json={"model": "new"}).status_code, 200)
+            self.assertEqual(client.get("/api/effort?model=old").json()["current"], "high")
+            self.assertIsNone(client.get("/api/effort?model=new").json()["current"])
+
+    def test_requested_context_is_checked_against_the_selected_model(self):
+        shown = {"model_info": {"general.architecture": "test", "test.context_length": 8192}}
+        with (patch.object(api, "model_info", new_callable=AsyncMock, return_value=shown),
+              patch.object(api, "cached_model_info", return_value=shown),
+              patch.object(api, "reasoning", new_callable=AsyncMock, return_value=Reasoning())):
+            client = self.h.client
+            self.assertEqual(client.post("/api/prefs", json={"ctx": 32768}).status_code, 200)
+            self.assertEqual(client.get("/api/auth/me").json()["prefs"]["ctx"], 8192)
+            self.h.ask("question", chat_id="c")
+        self.assertTrue(self.h.stub.payloads)
+        self.assertTrue(all(p["options"]["num_ctx"] == 8192 for p in self.h.stub.payloads))
 
 
 class AnonymousChecks(unittest.TestCase):
@@ -607,6 +763,28 @@ class TokenChecks(unittest.TestCase):
         self.assertEqual(c.get("/api/tokens").status_code, 401)
         self.assertEqual(c.patch("/api/chats/x", json={"title": "t"}).status_code, 401)
         c.close()
+
+    def test_only_the_configured_browser_account_gets_workspace_tools(self):
+        owner = self.h.client.get("/api/auth/me").json()["id"]
+        names = {"read_file", "list_workspace", "write_file"}
+
+        def offered(client):
+            response = client.post("/api/chat", json={"messages": [
+                {"role": "user", "content": "hello"},
+            ]})
+            self.assertEqual(response.status_code, 200)
+            return names & {spec["function"]["name"] for spec in self.h.stub.calls[-1]["tools"]}
+
+        value = self.mint()["token"]
+        with (tempfile.TemporaryDirectory() as root,
+              self.h.second() as other, self.bearer(value) as bearer,
+              patch.dict(os.environ, {"WORKSPACE_DIR": root, "WORKSPACE_USER_ID": str(owner),
+                                      "WORKSPACE_ALLOW_WRITE": "0"})):
+            self.assertEqual(offered(self.h.client), {"read_file", "list_workspace"})
+            os.environ["WORKSPACE_ALLOW_WRITE"] = "1"
+            self.assertEqual(offered(self.h.client), names)
+            self.assertEqual(offered(other), set())
+            self.assertEqual(offered(bearer), set())
 
     def test_a_revoked_token_stops_working(self):
         got = self.mint()

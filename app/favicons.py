@@ -120,7 +120,7 @@ async def _fetch(client, url, max_bytes, types):
                     chunks.append(part)
                     if total >= max_bytes:
                         break
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError):
             return None
         raw = b"".join(chunks)[:max_bytes]
         return (raw, ctype, url) if raw else None

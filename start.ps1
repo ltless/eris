@@ -60,9 +60,12 @@ function Get-InstallCandidates([string]$Relative) {
 }
 
 $Port = if ($env:PORT) { $env:PORT } else { '9000' }
+$ErisHost = if ($env:ERIS_HOST) { $env:ERIS_HOST } else { '127.0.0.1' }
 $ModelPath = if ($env:MODEL_PATH) { $env:MODEL_PATH } else { '' }
 $LlamaBin = if ($env:LLAMA_BIN) { $env:LLAMA_BIN } else { 'llama-server' }
-$ModelBaseUrl = if ($env:MODEL_BASE_URL) { $env:MODEL_BASE_URL } else { 'http://localhost:8080/v1' }
+$LlamaPort = if ($env:LLAMA_PORT) { $env:LLAMA_PORT } else { '8080' }
+$ModelBaseUrl = if ($env:MODEL_BASE_URL) { $env:MODEL_BASE_URL } else { 'http://localhost:11434/v1' }
+$env:MODEL_BASE_URL = $ModelBaseUrl
 
 # @(...) around the whole expression, not after each term: `+` on two strings
 # concatenates them, so the parens here are what make this a list of paths.
@@ -134,11 +137,13 @@ try {
     if ($ModelPath -and (Test-Path -LiteralPath $ModelPath -PathType Leaf)) {
         if ($LlamaExe) {
             Write-Host "> starting $LlamaExe ($ModelPath)"
+            $ModelBaseUrl = "http://127.0.0.1:${LlamaPort}/v1"
+            $env:MODEL_BASE_URL = $ModelBaseUrl
             $llamaProc = Start-Process -FilePath $LlamaExe -PassThru -NoNewWindow -ArgumentList @(
-                '--model', $ModelPath,
-                '--host', '0.0.0.0',
-                '--port', '8080',
-                '--ctx-size', '16384',
+                '--model', ('"{0}"' -f $ModelPath),
+                '--host', '127.0.0.1',
+                '--port', $LlamaPort,
+                '--ctx-size', '32768',
                 '--n-gpu-layers', '99',
                 '--reasoning-format', 'deepseek'
             )
@@ -165,7 +170,7 @@ try {
     Write-Host "> Eris on http://localhost:$Port"
     # Watching `app` rather than the whole tree: the default scan includes
     # .venv, where every installed package is a file to stat on each save.
-    & $venvPython -m uvicorn app.api:app --host 0.0.0.0 --port $Port --reload --reload-dir app
+    & $venvPython -m uvicorn app.api:app --host $ErisHost --port $Port --reload --reload-dir app
 }
 finally {
     if ($llamaProc -and -not $llamaProc.HasExited) {
